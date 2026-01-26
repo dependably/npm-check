@@ -1,25 +1,6 @@
-# dependencies
+# .gitignore
 node_modules/
-
-# build outputs
-dist/
-build/
-
-# logs
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-
-# environment
-.env
-.env.local
-
-# macOS
-.DS_Store
-
-# coverage
 coverage/
-
-# editor/IDE
-.vscode/
-.idea/
+*.log
+.env
+.DS_Store

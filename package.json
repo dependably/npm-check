@@ -1,0 +1,27 @@
+// package.json
+{
+  "name": "package-lock-fixer",
+  "version": "1.0.0",
+  "description": "A comprehensive tool for validating, migrating, and updating npm package-lock.json files across versions 1, 2, and 3.",
+  "main": "src/index.js",
+  "bin": {
+    "cli": "bin/cli.js"
+  },
+  "scripts": {
+    "test": "jest",
+    "lint": "eslint ."
+  },
+  "keywords": [
+    "npm",
+    "package-lock",
+    "validator",
+    "migrator",
+    "updater"
+  ],
+  "author": "Mistral AI",
+  "license": "MIT",
+  "devDependencies": {
+    "eslint": "^8.0.0",
+    "jest": "^29.0.0"
+  }
+}

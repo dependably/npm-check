@@ -1,208 +1,101 @@
-// Package-lock.json migrator
-
-import { detectLockfileVersion, getFormatInfo, parsePackagePath, buildPackagePath, LOCKFILE_VERSIONS } from './format-library.js';
+// src/migrator.js
+import { detectLockfileVersion, hasPackagesMap, hasDependenciesTree, LOCKFILE_VERSIONS } from './format-library.js';
 
 export class MigrationError extends Error {
-  constructor(message, code, details = {}) {
+  constructor(message) {
     super(message);
     this.name = 'MigrationError';
-    this.code = code;
-    this.details = details;
   }
+}
+
+export function migrateToVersion(lockfile, targetVersion) {
+  const currentVersion = detectLockfileVersion(lockfile);
+  if (targetVersion === currentVersion) return lockfile;
+
+  if (![LOCKFILE_VERSIONS.V1, LOCKFILE_VERSIONS.V2, LOCKFILE_VERSIONS.V3].includes(targetVersion)) {
+    throw new MigrationError(`Unsupported target version: ${targetVersion}`);
+  }
+
+  let migrated = { ...lockfile };
+
+  if (currentVersion === LOCKFILE_VERSIONS.V1 && targetVersion === LOCKFILE_VERSIONS.V2) {
+    migrated = migrateV1toV2(migrated);
+  } else if (currentVersion === LOCKFILE_VERSIONS.V2 && targetVersion === LOCKFILE_VERSIONS.V3) {
+    migrated = migrateV2toV3(migrated);
+  } else if (currentVersion === LOCKFILE_VERSIONS.V3 && targetVersion === LOCKFILE_VERSIONS.V2) {
+    migrated = migrateV3toV2(migrated);
+  } else if (currentVersion === LOCKFILE_VERSIONS.V1 && targetVersion === LOCKFILE_VERSIONS.V3) {
+    migrated = migrateV1toV3(migrated);
+  } else {
+    throw new MigrationError(`Unsupported migration path from ${currentVersion} to ${targetVersion}`);
+  }
+
+  migrated.lockfileVersion = targetVersion;
+  return migrated;
+}
+
+function migrateV1toV2(lockfile) {
+  const packages = {};
+  const rootPkg = {
+    name: lockfile.name,
+    version: lockfile.version,
+    dependencies: lockfile.dependencies
+  };
+  packages[''] = rootPkg;
+  return { ...lockfile, packages, requires: true };
+}
+
+function migrateV2toV3(lockfile) {
+  const dependencies = {};
+  for (const [path, pkg] of Object.entries(lockfile.packages)) {
+    if (path === '') continue;
+    const depName = pkg.name;
+    dependencies[depName] = {
+      version: pkg.version,
+      resolved: pkg.resolved,
+      integrity: pkg.integrity
+    };
+  }
+  return { ...lockfile, dependencies };
+}
+
+function migrateV3toV2(lockfile) {
+  const packages = {};
+  packages[''] = {
+    name: lockfile.name,
+    version: lockfile.version,
+    dependencies: lockfile.dependencies
+  };
+  for (const [name, dep] of Object.entries(lockfile.dependencies)) {
+    packages[`node_modules/${name}`] = {
+      name,
+      version: dep.version,
+      resolved: dep.resolved,
+      integrity: dep.integrity
+    };
+  }
+  return { ...lockfile, packages, requires: true };
+}
+
+function migrateV1toV3(lockfile) {
+  const migrated = migrateV1toV2(lockfile);
+  return migrateV2toV3(migrated);
 }
 
 export class PackageLockMigrator {
   constructor(options = {}) {
-    this.options = {
-      preserveMetadata: options.preserveMetadata ?? true,
-      strict: options.strict ?? false,
-      ...options
-    };
+    this.preserveMetadata = options.preserveMetadata || false;
   }
 
-  migrate(lockfileData, targetVersion) {
-    const sourceVersion = detectLockfileVersion(lockfileData);
-
-    if (sourceVersion === targetVersion) {
-      return { ...lockfileData };
-    }
-
-    if (![1, 2, 3].includes(targetVersion)) {
-      throw new MigrationError(
-        `Invalid target version: ${targetVersion}`,
-        'INVALID_TARGET_VERSION'
-      );
-    }
-
-    const migrationPath = this.getMigrationPath(sourceVersion, targetVersion);
-    let result = { ...lockfileData };
-
-    for (const step of migrationPath) {
-      result = this.executeMigrationStep(result, step.from, step.to);
-    }
-
-    return result;
-  }
-
-  getMigrationPath(from, to) {
-    const paths = [];
-
-    if (from < to) {
-      for (let v = from; v < to; v++) {
-        paths.push({ from: v, to: v + 1 });
-      }
-    } else {
-      for (let v = from; v > to; v--) {
-        paths.push({ from: v, to: v - 1 });
-      }
-    }
-
-    return paths;
-  }
-
-  executeMigrationStep(data, fromVersion, toVersion) {
-    if (fromVersion === 1 && toVersion === 2) {
-      return this.migrateV1ToV2(data);
-    }
-    if (fromVersion === 2 && toVersion === 3) {
-      return this.migrateV2ToV3(data);
-    }
-    if (fromVersion === 2 && toVersion === 1) {
-      return this.migrateV2ToV1(data);
-    }
-    if (fromVersion === 3 && toVersion === 2) {
-      return this.migrateV3ToV2(data);
-    }
-
-    throw new MigrationError(
-      `No migration path from version ${fromVersion} to ${toVersion}`,
-      'NO_MIGRATION_PATH'
-    );
-  }
-
-  migrateV1ToV2(data) {
-    const result = {
-      name: data.name,
-      version: data.version,
-      lockfileVersion: 2,
-      requires: true,
-      packages: {},
-      dependencies: data.dependencies || {}
-    };
-
-    result.packages[''] = {
-      name: data.name,
-      version: data.version,
-      license: data.license,
-      dependencies: this.extractRootDependencies(data.dependencies || {}),
-      devDependencies: this.extractRootDevDependencies(data.dependencies || {})
-    };
-
-    this.buildPackagesMapFromDependencies(data.dependencies || {}, result.packages);
-
-    return result;
-  }
-
-  migrateV2ToV3(data) {
-    const result = {
-      name: data.name,
-      version: data.version,
-      lockfileVersion: 3,
-      requires: true,
-      packages: data.packages || {}
-    };
-
-    return result;
-  }
-
-  migrateV2ToV1(data) {
-    const result = {
-      name: data.name,
-      version: data.version,
-      lockfileVersion: 1,
-      requires: true,
-      dependencies: data.dependencies || {}
-    };
-
-    if (!data.dependencies && data.packages) {
-      result.dependencies = this.buildDependenciesTreeFromPackages(data.packages);
-    }
-
-    return result;
-  }
-
-  migrateV3ToV2(data) {
-    const result = {
-      name: data.name,
-      version: data.version,
-      lockfileVersion: 2,
-      requires: true,
-      packages: data.packages || {},
-      dependencies: {}
-    };
-
-    if (data.packages) {
-      result.dependencies = this.buildDependenciesTreeFromPackages(data.packages);
-    }
-
-    return result;
-  }
-
-  buildPackagesMapFromDependencies(dependencies, packagesMap, parentPath = '') {
-    for (const [name, dep] of Object.entries(dependencies)) {
-      const pkgPath = buildPackagePath(name, parentPath);
-
-      const pkg = {
-        version: dep.version,
-        resolved: dep.resolved,
-        integrity: dep.integrity
+  migrate(lockfile, targetVersion) {
+    const migrated = migrateToVersion(lockfile, targetVersion);
+    if (this.preserveMetadata) {
+      const metadata = {
+        name: lockfile.name,
+        version: lockfile.version
       };
-
-      if (dep.dev) pkg.dev = true;
-      if (dep.optional) pkg.optional = true;
-      if (dep.requires) pkg.dependencies = { ...dep.requires };
-
-      packagesMap[pkgPath] = pkg;
-
-      if (dep.dependencies) {
-        this.buildPackagesMapFromDependencies(dep.dependencies, packagesMap, pkgPath);
-      }
+      return { ...migrated, ...metadata };
     }
-  }
-
-  buildDependenciesTreeFromPackages(packages) {
-    const tree = {};
-    const packagesByName = new Map();
-
-    for (const [path, pkg] of Object.entries(packages)) {
-      if (path === '') continue;
-
-      const pathInfo = parsePackagePath(path);
-
-      if (pathInfo.depth === 1) {
-        const depNode = this.packageToDepNode(pkg);
-        tree[pathInfo.name] = depNode;
-        packagesByName.set(pathInfo.name, depNode);
-      }
-    }
-
-    for (const [path, pkg] of Object.entries(packages)) {
-      if (path === '') continue;
-
-      const pathInfo = parsePackagePath(path);
-
-      if (pathInfo.depth > 1) {
-        const parts = path.split('/node_modules/');
-        const parentName = parts[parts.length - 2].split('/').pop();
-        const parent = packagesByName.get(parentName);
-
-        if (parent) {
-          if (!parent.dependencies) parent.dependencies = {};
-          parent.dependencies[pathInfo.name] = this.packageToDepNode(pkg);
-        }
-      }
-    }
-
-    return tree;
+    return migrated;
   }
 }
