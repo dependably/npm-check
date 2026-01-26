@@ -9,6 +9,9 @@ Completed:
 - Parser/IO utilities (`src/parser.js`) for reading/writing lockfiles
 - Updater core utilities (`src/updater.js`) including `upgradeIntegrityHashes` and `deduplicatePackages` (basic implementations)
 - Basic CLI interface (`bin/cli.js`) exposing commands: `validate`, `migrate`, `upgrade-hashes`, `dedupe`, `fix`, `backups`, `restore` (ESM)
+  - Renamed CLI from `cli` to `npfix` with both `npfix` and `package-lock-fixer` aliases
+  - Made file argument optional (defaults to `./package-lock.json`)
+  - Made `migrate` command default to version 3 (latest)
 - Automated fixer (`src/fixer.js`) with basic strategies: auto-migration, placeholder integrity filling, deduplication
 - Main index (`src/index.js`) exporting core API functions (parseLockfile, serializeLockfile, validatePackageLock, migrateToVersion, PackageLockMigrator, MigrationError, upgradeIntegrityHashes, deduplicatePackages, fixPackageLock, LOCKFILE_VERSIONS)
 - Backup system (`src/backup.js`) with createBackup, listBackups, restoreFromLatestBackup, cleanOldBackups utilities
@@ -28,19 +31,34 @@ Completed:
 - MIT LICENSE for open-source distribution
 - npm publishing guide with step-by-step instructions
 - Enhanced package.json with metadata for npm registry (repository, homepage, bugs, keywords, engines, files)
+- Performance utilities module (`src/performance.js`) with:
+  - Shallow copy strategies for avoiding deep clones
+  - Batch processing with automatic yield points for garbage collection
+  - Memory profiling utilities (`getMemoryStats`)
+  - Lazy filtering without full copies (`filterPackagesLazy`)
+  - Map-based deduplication for O(1) lookups (`createDedupeMap`, `reconstructFromDedupeMap`)
+  - Lockfile chunking for parallel/streaming processing
+  - Size estimation and large-file detection
+- Optimized updater module (`src/updater-optimized.js`) with:
+  - `upgradeIntegrityHashesOptimized` - memory-efficient hash upgrades
+  - `deduplicatePackagesOptimized` - fast deduplication using Maps
+  - `findPackagesMatching` - lazy package filtering
+  - `countUniquePackages` - efficient unique count
+  - `findDuplicatePackages` - identify all duplicate packages
+- Comprehensive test suites for performance module (`tests/performance.test.js`, `tests/updater-optimized.test.js`) with 94 total tests
 
 In Progress:
 - (none currently)
 
 Planned (Priority Order):
-1. Full Updater features: targeted dependency updates, rollback capability, change diffs
-2. Backup & rollback system enhancements (compression, retention policies)
-3. Interactive conflict-resolution flow (CLI-driven prompts or small TUI)
-4. Performance improvements for large lockfiles (streaming, memory optimization)
-5. Plugin system for custom validators and migration hooks
-6. GitHub Actions CI (lower priority - run tests and lints on PRs)
+1. Streaming JSON parser for very large lockfiles (avoid full in-memory load)
+2. Parallel processing support for CPU-bound operations
+3. Progress reporting for long-running operations
+4. Performance benchmarking suite for comparing standard vs optimized operations
 
 Notes:
 - Code locations: core logic in `src/`; CLI in `bin/`; tests in `tests/`.
 - Keep non-destructive defaults: make backups before write operations.
+- Performance features use shallow copies and batch processing to minimize memory usage.
+- All new performance features are exported from main `src/index.js` for easy access.
 

@@ -5,3 +5,23 @@ export { migrateToVersion, PackageLockMigrator, MigrationError } from './migrato
 export { upgradeIntegrityHashes, deduplicatePackages } from './updater.js';
 export { fixPackageLock } from './fixer.js';
 export { LOCKFILE_VERSIONS } from './format-library.js';
+export {
+  shallowCopyLockfile,
+  processBatchedPackages,
+  getMemoryStats,
+  filterPackagesLazy,
+  createDedupeMap,
+  reconstructFromDedupeMap,
+  chunkLockfile,
+  mergeLockfileChunks,
+  estimateLockfileSize,
+  isLargeLockfile
+} from './performance.js';
+export {
+  upgradeIntegrityHashesOptimized,
+  deduplicatePackagesOptimized,
+  findPackagesMatching,
+  countUniquePackages,
+  findDuplicatePackages
+} from './updater-optimized.js';
+

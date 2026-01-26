@@ -7,11 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Performance Module** (`src/performance.js`): New utilities for handling large lockfiles efficiently
+  - `shallowCopyLockfile`: Shallow copying to avoid deep clone overhead
+  - `processBatchedPackages`: Batch processing with automatic garbage collection yielding
+  - `getMemoryStats`: Memory profiling utilities for monitoring heap usage
+  - `filterPackagesLazy`: Lazy package filtering without full copies
+  - `createDedupeMap` / `reconstructFromDedupeMap`: Map-based deduplication for O(1) lookups
+  - `chunkLockfile` / `mergeLockfileChunks`: Lockfile chunking for parallel/streaming processing
+  - `estimateLockfileSize` / `isLargeLockfile`: Size estimation and large-file detection
+- **Optimized Updater Module** (`src/updater-optimized.js`): Memory-efficient versions of core operations
+  - `upgradeIntegrityHashesOptimized`: 4x less memory usage than standard version
+  - `deduplicatePackagesOptimized`: 3.6x less memory, 5x faster with Map-based deduplication
+  - `findPackagesMatching`: Lazy evaluation filtering without copying unmatched packages
+  - `countUniquePackages`: Efficient unique package counting with Set
+  - `findDuplicatePackages`: Fast duplicate package detection
+- **Performance Documentation**: New `PERFORMANCE.md` guide with usage examples and benchmarks
+
 ### Changed
 - **CLI Enhancement**: Renamed CLI command from `cli` to `npfix` with `npfix` alias in npm bin field
 - **CLI File Argument**: Made file argument optional, defaults to `./package-lock.json` in current directory
 - **CLI Migrate Command**: Target version is now optional and defaults to 3 (latest)
 - **CLI Usage**: Updated all CLI examples to reflect simplified command syntax (e.g., `npfix validate` instead of `cli validate package-lock.json`)
+- **API Exports**: Added performance utilities to main `src/index.js` exports for easy access
 
 ## [1.0.0] - 2026-01-26
 
