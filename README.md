@@ -17,16 +17,25 @@ npm install -g package-lock-fixer
 ## Usage
 ```bash
 # Validate a lockfile
-cli validate package-lock.json
+npfix validate
 
-# Migrate to v3
-cli migrate package-lock.json 3
+# Migrate to latest version (v3)
+npfix migrate
+
+# Migrate to a specific version
+npfix migrate 2
 
 # Upgrade integrity hashes
-cli upgrade-hashes package-lock.json
+npfix upgrade-hashes
 
 # Deduplicate packages
-cli dedupe package-lock.json
+npfix dedupe
+
+# Run automated fixer
+npfix fix --write
+
+# Specify custom file path
+npfix validate /path/to/package-lock.json
 ```
 
 ## API
@@ -51,27 +60,36 @@ import {
   ```
 
   ## CLI Usage
-  The repository includes a lightweight CLI exposed as the `cli` binary (entry: `bin/cli.js`). Example commands:
+The repository includes a lightweight CLI exposed as the `npfix` binary (entry: `bin/cli.js`). Example commands:
 
-  ```bash
-  # Validate a lockfile
-  cli validate package-lock.json
+```bash
+# Validate a lockfile (defaults to ./package-lock.json)
+npfix validate
 
-  # Migrate to v3
-  cli migrate package-lock.json 3
+# Migrate to latest version (v3)
+npfix migrate
 
-  # Run automated fixer (adds placeholders for missing integrity, dedupes packages)
-  cli fix package-lock.json
+# Migrate to a specific version
+npfix migrate 2
 
-  # Upgrade integrity hashes
-  cli upgrade-hashes package-lock.json
+# Run automated fixer (adds placeholders for missing integrity, dedupes packages)
+npfix fix --write
 
-  # Deduplicate packages
-  cli dedupe package-lock.json
-  ```
+# Upgrade integrity hashes
+npfix upgrade-hashes --write
 
-  Notes:
-  - The CLI is implemented as an ESM script to match `type: "module"` in `package.json`.
+# Deduplicate packages
+npfix dedupe --write
+
+# Specify a custom file path
+npfix validate ./path/to/package-lock.json
+```
+
+Notes:
+- The file argument is optional and defaults to `./package-lock.json` in the current directory.
+- The migrate command defaults to version 3 (latest) when no target version is specified.
+- The CLI is implemented as an ESM script to match `type: "module"` in `package.json`.
+- Aliases: `package-lock-fixer` and `npfix` both point to the same CLI.
 
   ## Fixer (automated)
   `src/fixer.js` provides `fixPackageLock(lockfile, options)` which applies safe, non-destructive fixes and returns `{ fixedLockfile, fixes }`.

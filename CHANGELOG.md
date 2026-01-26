@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+- **CLI Enhancement**: Renamed CLI command from `cli` to `npfix` with `npfix` alias in npm bin field
+- **CLI File Argument**: Made file argument optional, defaults to `./package-lock.json` in current directory
+- **CLI Migrate Command**: Target version is now optional and defaults to 3 (latest)
+- **CLI Usage**: Updated all CLI examples to reflect simplified command syntax (e.g., `npfix validate` instead of `cli validate package-lock.json`)
+
 ## [1.0.0] - 2026-01-26
 
 ### Added

@@ -16,27 +16,29 @@ function printHelp() {
 Package Lockfile Tool
 
 Usage:
-  cli.js <command> [options]
+  npfix <command> [file] [options]
 
 Commands:
-  validate <file>            Validate a package-lock.json file
-  migrate <file> <target>    Migrate to target lockfile version (1, 2, or 3)
-  upgrade-hashes <file>      Upgrade integrity hashes from sha1 to sha256
-  dedupe <file>              Deduplicate packages in the lockfile
-  fix <file> [--write]       Run automated fixer (optionally write changes)
-  backups <file>             List all backups for a file
-  restore <file>             Restore file from latest backup
+  validate [file]            Validate a package-lock.json file (defaults to ./package-lock.json)
+  migrate [file] [target]    Migrate to target lockfile version (1, 2, or 3; defaults to 3)
+  upgrade-hashes [file]      Upgrade integrity hashes from sha1 to sha256
+  dedupe [file]              Deduplicate packages in the lockfile
+  fix [file] [--write]       Run automated fixer (optionally write changes)
+  backups [file]             List all backups for a file
+  restore [file]             Restore file from latest backup
 
 Options:
   --write                    Write changes to file (creates backup first)
   -h, --help                 Show this help
 
 Examples:
-  cli.js validate package-lock.json
-  cli.js migrate package-lock.json 3
-  cli.js fix package-lock.json --write
-  cli.js backups package-lock.json
-  cli.js restore package-lock.json
+  npfix validate
+  npfix migrate
+  npfix migrate 2
+  npfix fix --write
+  npfix backups
+  npfix restore
+  npfix validate /path/to/package-lock.json
 `);
 }
 
@@ -46,11 +48,15 @@ if (argv.length === 0 || argv[0] === '--help' || argv[0] === '-h') {
 }
 
 const command = argv[0];
-const filePath = argv[1];
+let filePath = argv[1];
 
-if (!filePath) {
-  console.error('Error: No file specified.');
-  process.exit(1);
+// Determine if argv[1] is a file or an option flag
+// If argv[1] is missing or starts with --, use default
+if (!filePath || filePath.startsWith('--')) {
+  filePath = 'package-lock.json';
+} else if (filePath.match(/^-/)) {
+  // It's a flag, not a file; use default
+  filePath = 'package-lock.json';
 }
 
 const absolutePath = path.resolve(filePath);
@@ -75,13 +81,31 @@ switch (command) {
     break;
   }
   case 'migrate': {
-    const target = parseInt(argv[2], 10);
+    // argv[1] might be a file, a target number, or --write flag (if no file specified)
+    // argv[2] might be a target number or --write flag (if file was specified)
+    let target;
+    let writeIndex;
+
+    if (argv[1] === filePath) {
+      // File was explicitly provided: migrate <file> [target] [--write]
+      target = argv[2] ? parseInt(argv[2], 10) : 3; // Default to 3
+      writeIndex = 3;
+    } else if (isNaN(parseInt(argv[1], 10))) {
+      // argv[1] is not a number, so no target specified: migrate [--write]
+      target = 3; // Default to 3
+      writeIndex = 1;
+    } else {
+      // argv[1] is the target: migrate <target> [--write]
+      target = parseInt(argv[1], 10);
+      writeIndex = 2;
+    }
+
     if (![1, 2, 3].includes(target)) {
       console.error('Error: Target version must be 1, 2, or 3.');
       process.exit(1);
     }
     const migrated = migrateToVersion(lockfile, target);
-    if (argv[3] === '--write') {
+    if (argv[writeIndex] === '--write') {
       createBackup(absolutePath);
       try {
         fs.writeFileSync(absolutePath, JSON.stringify(migrated, null, 2) + '\n', 'utf8');
@@ -96,8 +120,18 @@ switch (command) {
     break;
   }
   case 'upgrade-hashes': {
+    // argv[1] might be a file or --write flag (if no file specified)
+    let writeIndex = 2;
+    if (argv[1] === filePath) {
+      // File was explicitly provided: upgrade-hashes <file> [--write]
+      writeIndex = 2;
+    } else {
+      // No file, so argv[1] might be the flag: upgrade-hashes [--write]
+      writeIndex = 1;
+    }
+
     const upgraded = upgradeIntegrityHashes(lockfile);
-    if (argv[2] === '--write') {
+    if (argv[writeIndex] === '--write') {
       createBackup(absolutePath);
       try {
         fs.writeFileSync(absolutePath, JSON.stringify(upgraded, null, 2) + '\n', 'utf8');
@@ -112,7 +146,17 @@ switch (command) {
     break;
   }
   case 'fix': {
-    const writeMode = argv[2] === '--write';
+    // argv[1] might be a file or --write flag (if no file specified)
+    let writeIndex = 2;
+    if (argv[1] === filePath) {
+      // File was explicitly provided: fix <file> [--write]
+      writeIndex = 2;
+    } else {
+      // No file, so argv[1] might be the flag: fix [--write]
+      writeIndex = 1;
+    }
+
+    const writeMode = argv[writeIndex] === '--write';
     const result = fixPackageLock(lockfile, { fillMissingIntegrity: true, dedupe: true });
 
     console.log(`\nFix Results:`);
@@ -136,8 +180,18 @@ switch (command) {
     break;
   }
   case 'dedupe': {
+    // argv[1] might be a file or --write flag (if no file specified)
+    let writeIndex = 2;
+    if (argv[1] === filePath) {
+      // File was explicitly provided: dedupe <file> [--write]
+      writeIndex = 2;
+    } else {
+      // No file, so argv[1] might be the flag: dedupe [--write]
+      writeIndex = 1;
+    }
+
     const deduped = deduplicatePackages(lockfile);
-    if (argv[2] === '--write') {
+    if (argv[writeIndex] === '--write') {
       createBackup(absolutePath);
       try {
         fs.writeFileSync(absolutePath, JSON.stringify(deduped, null, 2) + '\n', 'utf8');

@@ -5,7 +5,8 @@
   "main": "src/index.js",
   "type": "module",
   "bin": {
-    "package-lock-fixer": "bin/cli.js"
+    "package-lock-fixer": "bin/cli.js",
+    "npfix": "bin/cli.js"
   },
   "files": [
     "src/",
