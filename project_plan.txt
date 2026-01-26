@@ -1,25 +1,32 @@
 # project_plan.txt
 # Project Plan (synchronised with repository files)
 
-
 Completed:
 - Format library (`src/format-library.js`) with utilities for detecting lockfile versions and parsing/stringifying lockfiles
 - Validation engine (`src/validator.js`) with structural/data/consistency checks and configurable options
 - Bidirectional migrator (`src/migrator.js`) covering v1↔v2↔v3 paths with support for multiple migration paths
 - Parser/IO utilities (`src/parser.js`) for reading/writing lockfiles
-- Updater core utilities (`src/updater.js`) including `upgradeIntegrityHashes` and `deduplicatePackages` (basic implementations)
+- Updater core utilities (`src/updater.js`) with immutable operations using optimized implementations:
+  - `upgradeIntegrityHashes` - upgrades integrity hashes with recursive nested dependency support
+  - `deduplicatePackages` - removes duplicate packages efficiently
+  - Additional exports: `findPackagesMatching`, `countUniquePackages`, `findDuplicatePackages`
 - Basic CLI interface (`bin/cli.js`) exposing commands: `validate`, `migrate`, `upgrade-hashes`, `dedupe`, `fix`, `backups`, `restore` (ESM)
   - Renamed CLI from `cli` to `npfix` with both `npfix` and `package-lock-fixer` aliases
   - Made file argument optional (defaults to `./package-lock.json`)
   - Made `migrate` command default to version 3 (latest)
-- Automated fixer (`src/fixer.js`) with basic strategies: auto-migration, placeholder integrity filling, deduplication
-- Main index (`src/index.js`) exporting core API functions (parseLockfile, serializeLockfile, validatePackageLock, migrateToVersion, PackageLockMigrator, MigrationError, upgradeIntegrityHashes, deduplicatePackages, fixPackageLock, LOCKFILE_VERSIONS)
+  - Refactored for maintainability: removed manual argument parsing duplication
+  - Added better UX with emoji indicators and clear error messages
+- Automated fixer (`src/fixer.js`) with strategies: auto-migration, placeholder integrity filling, deduplication
+  - Added FixerError for traceable error reporting
+- Main index (`src/index.js`) exporting core API functions (no duplication of updater implementations)
 - Backup system (`src/backup.js`) with createBackup, listBackups, restoreFromLatestBackup, cleanOldBackups utilities
+  - Added BackupError for explicit fail-fast error handling
 - Integrity hash generation (`src/integrity.js`) with SHA512 hashing and placeholder validation
 - Enhanced CLI with `--write` flag for safe file modifications with automatic backup creation
 - README with CLI and Fixer documentation (`README.md`)
 - Comprehensive tests covering edge cases: workspaces, git dependencies, optional/peer dependencies, bundled packages
-- Test files: `tests/fixer.test.js`, `tests/migrator.test.js`, `tests/parser.test.js`, `tests/updater.test.js`, `tests/validator.test.js`, `tests/backup.test.js`, `tests/integrity.test.js`
+  - All 95 tests passing ✅
+  - Test files: `tests/fixer.test.js`, `tests/migrator.test.js`, `tests/parser.test.js`, `tests/updater.test.js`, `tests/validator.test.js`, `tests/backup.test.js`, `tests/integrity.test.js`, `tests/updater-optimized.test.js`, `tests/performance.test.js`
 - ESLint configuration (`.eslintrc.cjs`) for code quality
 - Jest configuration (`jest.config.mjs`) with ESM support via Babel
 - Babel configuration (`.babelrc`) for ES6+ transpilation
@@ -40,12 +47,19 @@ Completed:
   - Lockfile chunking for parallel/streaming processing
   - Size estimation and large-file detection
 - Optimized updater module (`src/updater-optimized.js`) with:
-  - `upgradeIntegrityHashesOptimized` - memory-efficient hash upgrades
+  - `upgradeIntegrityHashesOptimized` - memory-efficient hash upgrades with recursive nested dependency support
   - `deduplicatePackagesOptimized` - fast deduplication using Maps
   - `findPackagesMatching` - lazy package filtering
   - `countUniquePackages` - efficient unique count
   - `findDuplicatePackages` - identify all duplicate packages
-- Comprehensive test suites for performance module (`tests/performance.test.js`, `tests/updater-optimized.test.js`) with 94 total tests
+- Comprehensive test suites for performance module (`tests/performance.test.js`, `tests/updater-optimized.test.js`) with 95 total tests
+
+## CRITICAL FIXES APPLIED (this session):
+1. **Data Mutation Issue FIXED**: `upgradeIntegrityHashes` now uses immutable shallow copies instead of mutating input objects
+2. **V2→V3 Migration Data Loss FIXED**: Now preserves all packages instead of losing nested packages
+3. **Error Handling STANDARDIZED**: Consistent fail-fast approach with explicit error types (BackupError, FixerError)
+4. **Code Duplication ELIMINATED**: `src/updater.js` now re-exports from `src/updater-optimized.js`, removing maintenance burden
+5. **CLI REFACTORED**: Removed complex manual argument parsing, improved UX and error handling
 
 In Progress:
 - (none currently)
@@ -55,10 +69,12 @@ Planned (Priority Order):
 2. Parallel processing support for CPU-bound operations
 3. Progress reporting for long-running operations
 4. Performance benchmarking suite for comparing standard vs optimized operations
+5. Interactive mode for guided lockfile fixing
 
 Notes:
 - Code locations: core logic in `src/`; CLI in `bin/`; tests in `tests/`.
 - Keep non-destructive defaults: make backups before write operations.
-- Performance features use shallow copies and batch processing to minimize memory usage.
-- All new performance features are exported from main `src/index.js` for easy access.
-
+- All performance features are exported from main `src/index.js` for easy access.
+- Immutability is now the standard across all updater operations.
+- All error handling uses explicit error types (not silent failures).
+- No code duplication between updater implementations.
