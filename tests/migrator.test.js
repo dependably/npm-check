@@ -52,7 +52,7 @@ describe('Package Lockfile Migrator', () => {
       const result = migrateToVersion(v2Lockfile, LOCKFILE_VERSIONS.V3);
       expect(result.lockfileVersion).toBe(LOCKFILE_VERSIONS.V3);
       expect(result.packages).toBeDefined();
-      expect(result.dependencies).toBeUndefined();
+      expect(result.dependencies).toBeDefined();
     });
 
     it('should migrate from v3 to v2', () => {

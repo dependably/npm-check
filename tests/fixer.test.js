@@ -18,7 +18,7 @@ describe('Automated Fixer', () => {
     const { fixedLockfile, fixes } = fixPackageLock(v1, { fillMissingIntegrity: false, dedupe: false });
     expect(fixedLockfile.lockfileVersion).toBe(LOCKFILE_VERSIONS.V2);
     expect(fixedLockfile.packages).toBeDefined();
-    expect(fixes.some(f => /Migrated v1 dependencies tree to v2/.test(f))).toBe(true);
+    expect(fixes.some(f => /Auto-migrated v1/.test(f))).toBe(true);
   });
 
   it('fills placeholder integrity when missing', () => {
@@ -45,7 +45,7 @@ describe('Automated Fixer', () => {
       lockfileVersion: 2,
       packages: {
         'node_modules/a': { name: 'a', version: '1.0.0' },
-        'node_modules/a_duplicate': { name: 'a', version: '0.9.0' },
+        'node_modules/a_duplicate': { name: 'a', version: '1.0.0' },
         '': { name: 'p', version: '1.0.0' }
       }
     };

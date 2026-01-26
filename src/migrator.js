@@ -46,44 +46,85 @@ function migrateV1toV2(lockfile) {
 }
 
 function migrateV2toV3(lockfile) {
+  // V3 format keeps the packages structure but simplifies to top-level dependencies
+  // However, we need to preserve all package metadata
   const dependencies = {};
-  for (const [pkgPath, pkg] of Object.entries(lockfile.packages)) {
-    if (pkgPath === '') continue;
-    const depName = pkg.name;
-    dependencies[depName] = {
-      version: pkg.version,
-      resolved: pkg.resolved,
-      integrity: pkg.integrity
-    };
+  const packages = {};
+
+  // Preserve all non-root packages as-is
+  if (lockfile.packages) {
+    for (const [pkgPath, pkg] of Object.entries(lockfile.packages)) {
+      if (pkgPath === '') {
+        // Root package - extract top-level dependencies
+        if (pkg.dependencies) {
+          for (const [depName, dep] of Object.entries(pkg.dependencies)) {
+            dependencies[depName] = {
+              version: dep.version || '',
+              resolved: dep.resolved,
+              integrity: dep.integrity
+            };
+          }
+        }
+      } else {
+        // Non-root packages - preserve them
+        packages[pkgPath] = { ...pkg };
+      }
+    }
   }
-  // Only include top-level `dependencies` when we actually collected entries
-  if (Object.keys(dependencies).length === 0) {
-    // remove dependencies property if empty
-    // eslint-disable-next-line no-unused-vars
-    const { dependencies: _unused, ...rest } = lockfile;
-    return { ...rest };
+
+  // Build result maintaining structure
+  const result = { ...lockfile };
+  
+  // In v3, we can optionally keep packages or flatten to dependencies
+  // For better preservation, keep both structures
+  if (Object.keys(packages).length > 0) {
+    result.packages = packages;
   }
-  return { ...lockfile, dependencies };
+
+  result.dependencies = dependencies;
+  
+  return result;
 }
 
 function migrateV3toV2(lockfile) {
   const packages = {};
-  // Pull dependencies from top-level or from packages[''] (v3 format may nest them)
-  const topDependencies = lockfile.dependencies || (lockfile.packages && lockfile.packages[''] && lockfile.packages[''].dependencies) || {};
+  
+  // Pull dependencies from top-level or from packages['']
+  const topDependencies = lockfile.dependencies || 
+    (lockfile.packages && lockfile.packages[''] && lockfile.packages[''].dependencies) || 
+    {};
+  
+  // Root package entry
   packages[''] = {
     name: lockfile.name,
     version: lockfile.version,
     dependencies: topDependencies
   };
-  for (const [name, dep] of Object.entries(topDependencies)) {
-    packages[`node_modules/${name}`] = {
-      name,
-      version: dep.version,
-      resolved: dep.resolved,
-      integrity: dep.integrity
-    };
+  
+  // Preserve all existing packages from v3 format
+  if (lockfile.packages) {
+    for (const [pkgPath, pkg] of Object.entries(lockfile.packages)) {
+      if (pkgPath !== '') {
+        // Preserve non-root packages as-is
+        packages[pkgPath] = { ...pkg };
+      }
+    }
   }
-  // Include top-level dependencies as well in the resulting v2 lockfile
+  
+  // Ensure top-level dependencies are also in the result
+  for (const [name, dep] of Object.entries(topDependencies)) {
+    // Only add node_modules entry if not already present
+    const nodeModulesPath = `node_modules/${name}`;
+    if (!packages[nodeModulesPath]) {
+      packages[nodeModulesPath] = {
+        name,
+        version: dep.version || '',
+        resolved: dep.resolved,
+        integrity: dep.integrity
+      };
+    }
+  }
+  
   return { ...lockfile, packages, dependencies: topDependencies, requires: true };
 }
 

@@ -2,28 +2,41 @@
 import fs from 'fs';
 import path from 'path';
 
+export class BackupError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = 'BackupError';
+  }
+}
+
 const BACKUPS_DIR = '.backups';
 
 /**
  * Create a backup directory if it doesn't exist
+ * @throws {BackupError} If directory creation fails
  */
 function ensureBackupsDir() {
-  if (!fs.existsSync(BACKUPS_DIR)) {
-    fs.mkdirSync(BACKUPS_DIR, { recursive: true });
+  try {
+    if (!fs.existsSync(BACKUPS_DIR)) {
+      fs.mkdirSync(BACKUPS_DIR, { recursive: true });
+    }
+  } catch (e) {
+    throw new BackupError(`Failed to create backups directory: ${e.message}`);
   }
 }
 
 /**
  * Create a timestamped backup of a file
  * @param {string} filePath - Path to the file to backup
- * @returns {string} Path to the backup file, or null if backup failed
+ * @returns {string} Path to the backup file
+ * @throws {BackupError} If backup creation fails
  */
 export function createBackup(filePath) {
-  try {
-    if (!fs.existsSync(filePath)) {
-      throw new Error(`File not found: ${filePath}`);
-    }
+  if (!fs.existsSync(filePath)) {
+    throw new BackupError(`File not found: ${filePath}`);
+  }
 
+  try {
     ensureBackupsDir();
 
     const fileName = path.basename(filePath);
@@ -36,8 +49,8 @@ export function createBackup(filePath) {
 
     return backupPath;
   } catch (e) {
-    console.error(`Failed to create backup: ${e.message}`);
-    return null;
+    if (e instanceof BackupError) throw e;
+    throw new BackupError(`Failed to create backup: ${e.message}`);
   }
 }
 
@@ -45,10 +58,15 @@ export function createBackup(filePath) {
  * List all backups for a given file
  * @param {string} fileName - Name of the file (e.g., 'package-lock.json')
  * @returns {Array} Array of backup file info { name, path, timestamp }
+ * @throws {BackupError} If backup listing fails
  */
 export function listBackups(fileName) {
   try {
     ensureBackupsDir();
+
+    if (!fs.existsSync(BACKUPS_DIR)) {
+      return [];
+    }
 
     const files = fs.readdirSync(BACKUPS_DIR);
     const backups = files
@@ -69,8 +87,8 @@ export function listBackups(fileName) {
 
     return backups;
   } catch (e) {
-    console.error(`Failed to list backups: ${e.message}`);
-    return [];
+    if (e instanceof BackupError) throw e;
+    throw new BackupError(`Failed to list backups: ${e.message}`);
   }
 }
 
@@ -78,6 +96,7 @@ export function listBackups(fileName) {
  * Restore a file from its most recent backup
  * @param {string} filePath - Path to the file to restore
  * @returns {boolean} True if restoration was successful
+ * @throws {BackupError} If restoration fails
  */
 export function restoreFromLatestBackup(filePath) {
   try {
@@ -85,7 +104,7 @@ export function restoreFromLatestBackup(filePath) {
     const backups = listBackups(fileName);
 
     if (backups.length === 0) {
-      throw new Error(`No backups found for ${fileName}`);
+      throw new BackupError(`No backups found for ${fileName}`);
     }
 
     const latestBackup = backups[0];
@@ -95,8 +114,8 @@ export function restoreFromLatestBackup(filePath) {
     console.log(`Restored ${fileName} from backup: ${latestBackup.name}`);
     return true;
   } catch (e) {
-    console.error(`Failed to restore backup: ${e.message}`);
-    return false;
+    if (e instanceof BackupError) throw e;
+    throw new BackupError(`Failed to restore backup: ${e.message}`);
   }
 }
 
@@ -105,6 +124,7 @@ export function restoreFromLatestBackup(filePath) {
  * @param {string} fileName - Name of the file
  * @param {number} keepCount - Number of backups to keep (default: 5)
  * @returns {number} Number of backups deleted
+ * @throws {BackupError} If cleanup fails
  */
 export function cleanOldBackups(fileName, keepCount = 5) {
   try {
@@ -125,7 +145,9 @@ export function cleanOldBackups(fileName, keepCount = 5) {
 
     return deleted;
   } catch (e) {
-    console.error(`Failed to clean old backups: ${e.message}`);
-    return 0;
+    if (e instanceof BackupError) throw e;
+    throw new BackupError(`Failed to clean old backups: ${e.message}`);
   }
 }
+
+export default { createBackup, listBackups, restoreFromLatestBackup, cleanOldBackups, BackupError };

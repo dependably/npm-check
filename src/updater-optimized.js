@@ -35,6 +35,27 @@ export function upgradeIntegrityHashesOptimized(lockfileData, options = {}) {
     return hash;
   };
 
+  // Helper to recursively upgrade integrity hashes in dependency trees
+  const upgradeDependencies = (deps) => {
+    if (!deps || typeof deps !== 'object') return deps;
+    
+    const upgraded = {};
+    for (const [depName, dep] of Object.entries(deps)) {
+      if (!dep || typeof dep !== 'object') {
+        upgraded[depName] = dep;
+        continue;
+      }
+      
+      // Upgrade this dependency and recursively upgrade nested ones
+      upgraded[depName] = {
+        ...dep,
+        ...(dep.integrity && { integrity: upgradeHash(dep.integrity) }),
+        ...(dep.dependencies && { dependencies: upgradeDependencies(dep.dependencies) })
+      };
+    }
+    return upgraded;
+  };
+
   // Process packages directly without deep recursion
   const packages = result.packages || {};
   const upgradedPackages = {};
@@ -53,53 +74,21 @@ export function upgradeIntegrityHashesOptimized(lockfileData, options = {}) {
       upgradedPkg.integrity = upgradeHash(upgradedPkg.integrity);
     }
 
-    // Upgrade nested integrity hashes with single-level iteration
+    // Upgrade nested integrity hashes recursively
     if (upgradedPkg.dependencies && typeof upgradedPkg.dependencies === 'object') {
-      upgradedPkg.dependencies = { ...upgradedPkg.dependencies };
-      for (const [depName, dep] of Object.entries(upgradedPkg.dependencies)) {
-        if (dep && dep.integrity) {
-          upgradedPkg.dependencies[depName] = {
-            ...dep,
-            integrity: upgradeHash(dep.integrity)
-          };
-        }
-      }
+      upgradedPkg.dependencies = upgradeDependencies(upgradedPkg.dependencies);
     }
 
     if (upgradedPkg.devDependencies && typeof upgradedPkg.devDependencies === 'object') {
-      upgradedPkg.devDependencies = { ...upgradedPkg.devDependencies };
-      for (const [depName, dep] of Object.entries(upgradedPkg.devDependencies)) {
-        if (dep && dep.integrity) {
-          upgradedPkg.devDependencies[depName] = {
-            ...dep,
-            integrity: upgradeHash(dep.integrity)
-          };
-        }
-      }
+      upgradedPkg.devDependencies = upgradeDependencies(upgradedPkg.devDependencies);
     }
 
     if (upgradedPkg.peerDependencies && typeof upgradedPkg.peerDependencies === 'object') {
-      upgradedPkg.peerDependencies = { ...upgradedPkg.peerDependencies };
-      for (const [depName, dep] of Object.entries(upgradedPkg.peerDependencies)) {
-        if (dep && dep.integrity) {
-          upgradedPkg.peerDependencies[depName] = {
-            ...dep,
-            integrity: upgradeHash(dep.integrity)
-          };
-        }
-      }
+      upgradedPkg.peerDependencies = upgradeDependencies(upgradedPkg.peerDependencies);
     }
 
     if (upgradedPkg.optionalDependencies && typeof upgradedPkg.optionalDependencies === 'object') {
-      upgradedPkg.optionalDependencies = { ...upgradedPkg.optionalDependencies };
-      for (const [depName, dep] of Object.entries(upgradedPkg.optionalDependencies)) {
-        if (dep && dep.integrity) {
-          upgradedPkg.optionalDependencies[depName] = {
-            ...dep,
-            integrity: upgradeHash(dep.integrity)
-          };
-        }
-      }
+      upgradedPkg.optionalDependencies = upgradeDependencies(upgradedPkg.optionalDependencies);
     }
 
     upgradedPackages[path] = upgradedPkg;
