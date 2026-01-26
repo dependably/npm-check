@@ -5,21 +5,51 @@
   "main": "src/index.js",
   "type": "module",
   "bin": {
-    "cli": "bin/cli.js"
+    "package-lock-fixer": "bin/cli.js"
   },
+  "files": [
+    "src/",
+    "bin/",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "test": "node --experimental-vm-modules ./node_modules/jest/bin/jest.js --config=jest.config.mjs",
-    "lint": "eslint ."
+    "lint": "eslint .",
+    "prepublishOnly": "npm run test && npm run lint"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/mhiland/package-lock-fixer.git"
+  },
+  "homepage": "https://github.com/mhiland/package-lock-fixer#readme",
+  "bugs": {
+    "url": "https://github.com/mhiland/package-lock-fixer/issues"
   },
   "keywords": [
     "npm",
     "package-lock",
+    "npm-package-lock",
     "validator",
     "migrator",
-    "updater"
+    "updater",
+    "lockfile",
+    "package-lock.json",
+    "integrity",
+    "hash",
+    "sha512",
+    "node-modules"
   ],
-  "author": "MHiland",
+  "author": {
+    "name": "MHiland",
+    "email": "michael@example.com",
+    "url": "https://github.com/mhiland"
+  },
   "license": "MIT",
+  "engines": {
+    "node": ">=14.0.0",
+    "npm": ">=6.0.0"
+  },
   "devDependencies": {
     "@babel/core": "^7.28.6",
     "@babel/preset-env": "^7.28.6",
