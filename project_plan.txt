@@ -1,0 +1,68 @@
+# Project Plan
+
+## Goal
+Deliver a robust npm tool that validates, migrates, and fixes `package-lock.json` files across npm versions 1, 2, and 3.
+
+## Basic Project Structure
+```
+package-lock-fixer/
+├── src/
+│   ├── index.js      // Entry point for the library API
+│   ├── parser.js      // Utility to parse and build lockfile structures
+│   ├── validator.js   // PackageLockValidator implementation
+│   ├── migrator.js    // PackageLockMigrator implementation
+│   └── updater.js    // Helpers for updating lockfiles (e.g., integrity upgrades)
+├── bin/
+│   └── cli.js        // lockfix command‑line interface
+├── tests/
+├── package.json
+└── README.md
+```
+
+## Milestones & File‑Level Deliverables
+1. **`src/formats.js`** (extracted from existing formats library)
+   - Constants, JSON schemas, helper utilities.
+
+2. **`src/parser.js`**
+   - Functions to read, parse, and serialize lockfiles.
+
+3. **`src/validator.js`**
+   - `validatePackageLock(lockfile, options)`.
+   - `validateWithPackageJson(lockfile, packageJson, options)`.
+   - Consistency checks, strict mode.
+
+4. **`src/migrator.js`**
+   - `migrateToVersion(lockfile, targetVersion, options)`.
+   - Deduplication, integrity upgrade.
+
+5. **`src/updater.js`**
+   - Functions for upgrading dependencies while preserving integrity.
+
+6. **`src/index.js`**
+   - Export the public API: `{ PackageLockValidator, validatePackageLock, validateWithPackageJson, PackageLockMigrator, migrateToVersion, upgradeToV3, downgradeToV1, normalizeToV2 }`.
+
+7. **`bin/cli.js`**
+   - Implement `lockfix` CLI with sub‑commands: `validate`, `migrate`, `upgrade`.
+   - Parse global flags (`--strict`, `--dedupe`, `--upgrade-integrity`).
+
+8. **Tests**
+   - Place unit tests under `tests/` following `*_test.js` naming.
+   - Test both validator and migrator functions, as well as CLI command flow.
+
+9. **Documentation**
+   - `README.md` with installation, usage, and testing instructions.
+   - `CLAUDE.md` updated to explain the library structure.
+
+## Deliverables
+- A single npm package `package-lock-fixer` containing validator, migrator, and CLI.
+- Comprehensive test suite.
+- Public API documented in README.
+
+## Timeline
+| Phase | Tasks |
+|-------|-------|
+| 1 | Create formats, parser, and updater modules. |
+| 2 | Implement validator with unit tests. |
+| 3 | Implement migrator with unit tests. |
+| 4 | Build CLI and integration tests. |
+| 5 | Final documentation, CI, and publish to npm. |
