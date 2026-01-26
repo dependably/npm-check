@@ -1,9 +1,35 @@
 # project_plan.txt
-# Project Plan
+# Project Plan (updated to match CLAUDE.md)
 
-- Implement core validation logic.
-- Add migration support for v1, v2, v3.
-- Implement updater utilities.
-- Write comprehensive tests.
-- Build CLI interface.
-- Add documentation and README.
+Completed:
+- Format library with comprehensive schemas for v1/v2/v3
+- Full validation engine with configurable options
+- Bidirectional migration between v1, v2, v3 (including multi-step paths)
+- Path parsing and manipulation utilities
+
+In Progress:
+- Automated fixer (repair strategies for integrity, resolved URLs, duplicates)
+- CLI interface (command surface + output formatting)
+- Documentation, examples, and README improvements
+
+Planned:
+- Updater: dependency update management, rollback capability, diffs
+- Backup & rollback system for non-destructive operations
+- Interactive conflict resolution UI (CLI-driven)
+- Performance improvements for large lockfiles (streaming support)
+- Plugin system for custom validators and migration hooks
+- Packaging + publish (npm package + global CLI)
+
+Testing & CI:
+- Write targeted tests for `fixer`, `cli`, and `updater` components
+- Add pre-commit validation hooks and CI integration (validate on PR)
+
+Next Steps (short-term):
+1. Finish the automated fixer implementation and unit tests.
+2. Complete CLI commands: `validate`, `migrate`, `fix`, `dedupe`, `check`.
+3. Update `README.md` with usage examples and migration guide.
+4. Add CI workflow to run tests and validation on push/PR.
+
+Notes:
+- Keep `CLAUDE.md` and `README.md` as higher-level documentation sources.
+- Use non-destructive defaults; create backups before writes.
