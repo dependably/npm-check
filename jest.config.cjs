@@ -1,8 +1,9 @@
 // jest.config.cjs
 module.exports = {
   testEnvironment: 'node',
-  // extensionsToTreatAsEsm: ['.js'],
-  transform: {},
+  transform: {
+    '^.+\\.js$': 'babel-jest'
+  },
   moduleNameMapper: {
     '^src/(.*)$': '<rootDir>/src/$1'
   },

@@ -56,17 +56,25 @@ function migrateV2toV3(lockfile) {
       integrity: pkg.integrity
     };
   }
+  // Only include top-level `dependencies` when we actually collected entries
+  if (Object.keys(dependencies).length === 0) {
+    // remove dependencies property if empty
+    const { dependencies: _unused, ...rest } = lockfile;
+    return { ...rest };
+  }
   return { ...lockfile, dependencies };
 }
 
 function migrateV3toV2(lockfile) {
   const packages = {};
+  // Pull dependencies from top-level or from packages[''] (v3 format may nest them)
+  const topDependencies = lockfile.dependencies || (lockfile.packages && lockfile.packages[''] && lockfile.packages[''].dependencies) || {};
   packages[''] = {
     name: lockfile.name,
     version: lockfile.version,
-    dependencies: lockfile.dependencies
+    dependencies: topDependencies
   };
-  for (const [name, dep] of Object.entries(lockfile.dependencies)) {
+  for (const [name, dep] of Object.entries(topDependencies)) {
     packages[`node_modules/${name}`] = {
       name,
       version: dep.version,
@@ -74,7 +82,8 @@ function migrateV3toV2(lockfile) {
       integrity: dep.integrity
     };
   }
-  return { ...lockfile, packages, requires: true };
+  // Include top-level dependencies as well in the resulting v2 lockfile
+  return { ...lockfile, packages, dependencies: topDependencies, requires: true };
 }
 
 function migrateV1toV3(lockfile) {
