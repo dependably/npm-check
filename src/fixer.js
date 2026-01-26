@@ -2,6 +2,7 @@
 import { migrateToVersion } from './migrator.js';
 import { LOCKFILE_VERSIONS } from './format-library.js';
 import { deduplicatePackages } from './updater.js';
+import { isPlaceholder } from './integrity.js';
 
 /**
  * Attempt to automatically fix common package-lock issues.
@@ -39,8 +40,11 @@ export function fixPackageLock(lockfile, options = {}) {
     for (const [pkgPath, pkg] of Object.entries(fixed.packages)) {
       if (pkg && typeof pkg === 'object') {
         if (!pkg.integrity) {
-          pkg.integrity = 'sha256-PLACEHOLDER';
+          pkg.integrity = 'sha512-PLACEHOLDER';
           fixes.push(`Added placeholder integrity for package at ${pkgPath}`);
+        } else if (isPlaceholder(pkg.integrity)) {
+          // Already has placeholder, no action needed
+          continue;
         }
       }
     }

@@ -1,5 +1,5 @@
 // src/migrator.js
-import { detectLockfileVersion, hasPackagesMap, hasDependenciesTree, LOCKFILE_VERSIONS } from './format-library.js';
+import { detectLockfileVersion, LOCKFILE_VERSIONS } from './format-library.js';
 
 export class MigrationError extends Error {
   constructor(message) {
@@ -47,8 +47,8 @@ function migrateV1toV2(lockfile) {
 
 function migrateV2toV3(lockfile) {
   const dependencies = {};
-  for (const [path, pkg] of Object.entries(lockfile.packages)) {
-    if (path === '') continue;
+  for (const [pkgPath, pkg] of Object.entries(lockfile.packages)) {
+    if (pkgPath === '') continue;
     const depName = pkg.name;
     dependencies[depName] = {
       version: pkg.version,
@@ -59,6 +59,7 @@ function migrateV2toV3(lockfile) {
   // Only include top-level `dependencies` when we actually collected entries
   if (Object.keys(dependencies).length === 0) {
     // remove dependencies property if empty
+    // eslint-disable-next-line no-unused-vars
     const { dependencies: _unused, ...rest } = lockfile;
     return { ...rest };
   }

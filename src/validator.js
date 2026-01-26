@@ -108,7 +108,7 @@ function validateDependenciesTree(dependencies, errors, depth = 0) {
 
     // Validate integrity on dependency objects if present
     if (dep.integrity) {
-      const integrityRegex = /^sha(?:256|512)-[A-Za-z0-9+\/=\.\-]+$/;
+      const integrityRegex = /^sha(?:256|512)-[A-Za-z0-9+/=.\-]+$/;
       if (typeof dep.integrity !== 'string' || !integrityRegex.test(dep.integrity)) {
         errors.push(new ValidationError(`Invalid integrity hash for dependency ${name}`, 'INVALID_INTEGRITY'));
       }
@@ -134,7 +134,7 @@ function validatePackagesMap(packages, errors, warnings, options) {
     }
     if (pkg.integrity) {
       // Basic integrity validation (sha256/sha512 prefixes)
-      const integrityRegex = /^sha(?:256|512)-[A-Za-z0-9+\/=\.\-]+$/;
+      const integrityRegex = /^sha(?:256|512)-[A-Za-z0-9+/=.\-]+$/;
       if (typeof pkg.integrity !== 'string' || !integrityRegex.test(pkg.integrity)) {
         errors.push(new ValidationError(`Invalid integrity hash for package at ${path}`, 'INVALID_INTEGRITY'));
       }
@@ -162,7 +162,7 @@ function validatePackagesMap(packages, errors, warnings, options) {
 function validateAgainstPackageJson(lockfile, packageJson, errors) {
   const lockDeps = lockfile.packages && lockfile.packages[''] && lockfile.packages[''].dependencies;
   const pkgDeps = packageJson.dependencies || {};
-  for (const [name, version] of Object.entries(pkgDeps)) {
+  for (const [name] of Object.entries(pkgDeps)) {
     if (!lockDeps || !lockDeps[name]) {
       errors.push(new ValidationError(`Missing dependency ${name} in lockfile`, 'MISSING_IN_LOCKFILE'));
     }

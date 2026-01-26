@@ -1,8 +1,6 @@
 // tests/validator.test.js
-import { readFileSync } from 'fs';
 import fs from 'fs';
-import { validatePackageLock, ValidationError } from '../src/validator.js';
-import { parseLockfile } from '../src/parser.js';
+import { validatePackageLock } from '../src/validator.js';
 import { LOCKFILE_VERSIONS } from '../src/format-library.js';
 
 describe('Package Lockfile Validator', () => {
@@ -271,6 +269,143 @@ describe('Package Lockfile Validator', () => {
       const result = validatePackageLock(lockfile, packageJson, { validateAgainstPackageJson: true });
       expect(result.valid).toBe(false);
       expect(result.errors.some(e => e.code === 'MISSING_IN_LOCKFILE')).toBe(true);
+    });
+  });
+
+  describe('Edge Cases', () => {
+    it('handles workspace packages with link flag', () => {
+      const lockfile = {
+        name: 'monorepo',
+        version: '1.0.0',
+        lockfileVersion: 3,
+        packages: {
+          '': { name: 'monorepo', version: '1.0.0' },
+          'packages/app': { name: '@org/app', version: '1.0.0', link: true },
+          'packages/lib': { name: '@org/lib', version: '1.0.0', link: true }
+        }
+      };
+
+      const result = validatePackageLock(lockfile);
+      expect(result.valid).toBe(true);
+    });
+
+    it('handles git dependencies with resolved URLs', () => {
+      const lockfile = {
+        name: 'test',
+        version: '1.0.0',
+        lockfileVersion: 2,
+        packages: {
+          '': { name: 'test', version: '1.0.0' },
+          'node_modules/git-pkg': {
+            name: 'git-pkg',
+            version: '0.0.0-git+https://github.com/user/repo.git#commit',
+            resolved: 'git+https://github.com/user/repo.git#commit'
+          }
+        }
+      };
+
+      const result = validatePackageLock(lockfile);
+      expect(result.valid).toBe(true);
+    });
+
+    it('handles optional dependencies correctly', () => {
+      const lockfile = {
+        name: 'test',
+        version: '1.0.0',
+        lockfileVersion: 2,
+        packages: {
+          '': {
+            name: 'test',
+            version: '1.0.0',
+            optionalDependencies: { sharp: '*' }
+          },
+          'node_modules/sharp': {
+            name: 'sharp',
+            version: '0.30.0',
+            optional: true
+          }
+        }
+      };
+
+      const result = validatePackageLock(lockfile);
+      // Should handle optional dependencies without crashing
+      expect(result).toBeDefined();
+    });
+
+    it('handles peer dependencies with peerDependencies field', () => {
+      const lockfile = {
+        name: 'test',
+        version: '1.0.0',
+        lockfileVersion: 2,
+        packages: {
+          '': { name: 'test', version: '1.0.0' },
+          'node_modules/react': {
+            name: 'react',
+            version: '18.0.0',
+            peerDependencies: { 'react-dom': '18' }
+          }
+        }
+      };
+
+      const result = validatePackageLock(lockfile);
+      // Should handle peer dependencies without crashing
+      expect(result).toBeDefined();
+    });
+
+    it('handles bundled dependencies', () => {
+      const lockfile = {
+        name: 'test',
+        version: '1.0.0',
+        lockfileVersion: 2,
+        packages: {
+          '': {
+            name: 'test',
+            version: '1.0.0',
+            dependencies: { bundled: '*' }
+          },
+          'node_modules/bundled': {
+            name: 'bundled',
+            version: '1.0.0',
+            bundled: true
+          }
+        }
+      };
+
+      const result = validatePackageLock(lockfile);
+      // Should handle bundled dependencies without crashing
+      expect(result).toBeDefined();
+    });
+
+    it('validates lockfile with multiple package scopes', () => {
+      const lockfile = {
+        name: 'test',
+        version: '1.0.0',
+        lockfileVersion: 3,
+        packages: {
+          '': { name: 'test', version: '1.0.0' },
+          'node_modules/@org/pkg1': { name: '@org/pkg1', version: '1.0.0' },
+          'node_modules/@org/pkg2': { name: '@org/pkg2', version: '2.0.0' },
+          'node_modules/@other/pkg': { name: '@other/pkg', version: '1.5.0' }
+        }
+      };
+
+      const result = validatePackageLock(lockfile);
+      expect(result.valid).toBe(true);
+    });
+
+    it('handles missing integrity with allowMissingIntegrity option', () => {
+      const lockfile = {
+        name: 'test',
+        version: '1.0.0',
+        lockfileVersion: 2,
+        packages: {
+          '': { name: 'test', version: '1.0.0' },
+          'node_modules/pkg': { name: 'pkg', version: '1.0.0' }
+        }
+      };
+
+      const result = validatePackageLock(lockfile, { allowMissingIntegrity: true });
+      expect(result.valid).toBe(true);
     });
   });
 });

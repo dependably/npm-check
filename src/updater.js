@@ -1,5 +1,5 @@
 // Placeholder for future updater utilities
-import { detectLockfileVersion, hasPackagesMap, hasDependenciesTree, parseLockfile } from './format-library.js';
+import { detectLockfileVersion, hasPackagesMap, hasDependenciesTree } from './format-library.js';
 
 // Helper function to compare semantic version strings
 function compareVersions(v1, v2) {
@@ -73,7 +73,7 @@ export function upgradeIntegrityHashes(lockfileData, options = {}) {
     }
   };
 
-  for (const [path, pkg] of Object.entries(lockfileData.packages || {})) {
+  for (const [, pkg] of Object.entries(lockfileData.packages || {})) {
     processPackage(pkg);
   }
 
