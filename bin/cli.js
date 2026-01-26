@@ -1,12 +1,13 @@
 #!/usr/bin/env node
 
-const fs = require('fs');
-const path = require('path');
-const { parseLockfile } = require('../src/parser.js');
-const { validatePackageLock } = require('../src/validator.js');
-const { migrateToVersion } = require('../src/migrator.js');
-const { upgradeIntegrityHashes, deduplicatePackages } = require('../src/updater.js');
-const { LOCKFILE_VERSIONS } = require('../src/format-library.js');
+import fs from 'fs';
+import path from 'path';
+import { parseLockfile } from '../src/parser.js';
+import { validatePackageLock } from '../src/validator.js';
+import { migrateToVersion } from '../src/migrator.js';
+import { upgradeIntegrityHashes, deduplicatePackages } from '../src/updater.js';
+import { LOCKFILE_VERSIONS } from '../src/format-library.js';
+import { fixPackageLock } from '../src/fixer.js';
 
 const argv = process.argv.slice(2);
 
@@ -50,10 +51,9 @@ if (!fs.existsSync(absolutePath)) {
   process.exit(1);
 }
 
-const fileContent = fs.readFileSync(absolutePath, 'utf8');
 let lockfile;
 try {
-  lockfile = parseLockfile(fileContent);
+  lockfile = parseLockfile(absolutePath);
 } catch (e) {
   console.error('Error parsing lockfile:', e.message);
   process.exit(1);
@@ -79,6 +79,12 @@ switch (command) {
   case 'upgrade-hashes': {
     const upgraded = upgradeIntegrityHashes(lockfile);
     console.log(JSON.stringify(upgraded, null, 2));
+    break;
+  }
+  case 'fix': {
+    // default fixer options: fill missing integrities and dedupe
+    const result = fixPackageLock(lockfile, { fillMissingIntegrity: true, dedupe: true });
+    console.log(JSON.stringify({ result: result.fixes, fixed: result.fixedLockfile }, null, 2));
     break;
   }
   case 'dedupe': {

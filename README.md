@@ -33,15 +33,87 @@ cli dedupe package-lock.json
 ```js
 import {
   parsePackageLock,
-  validatePackageLock,
-  migrateToVersion,
-  upgradeIntegrityHashes,
-  deduplicatePackages
-} from 'package-lock-fixer';
-```
+  ````markdown
+  # Package Lockfile Fixer
 
-## Contributing
-Pull requests are welcome! Please run the test suite before submitting.
+  A comprehensive tool for validating, migrating, fixing, and updating npm `package-lock.json` files across versions 1, 2, and 3.
 
-## License
-MIT
+  ## Features
+  - **Validation** – Structural, semantic, and consistency checks (`src/validator.js`).
+  - **Migration** – Convert between lockfile versions (`src/migrator.js`).
+  - **Fixer** – Automated repair strategies for common issues (`src/fixer.js`).
+  - **Updater** – Upgrade integrity hashes and deduplicate packages (`src/updater.js`).
+  - **CLI** – Command-line interface: `validate`, `migrate`, `fix`, `upgrade-hashes`, `dedupe`.
+
+  ## Installation
+  ```bash
+  npm install -g package-lock-fixer
+  ```
+
+  ## CLI Usage
+  The repository includes a lightweight CLI exposed as the `cli` binary (entry: `bin/cli.js`). Example commands:
+
+  ```bash
+  # Validate a lockfile
+  cli validate package-lock.json
+
+  # Migrate to v3
+  cli migrate package-lock.json 3
+
+  # Run automated fixer (adds placeholders for missing integrity, dedupes packages)
+  cli fix package-lock.json
+
+  # Upgrade integrity hashes
+  cli upgrade-hashes package-lock.json
+
+  # Deduplicate packages
+  cli dedupe package-lock.json
+  ```
+
+  Notes:
+  - The CLI is implemented as an ESM script to match `type: "module"` in `package.json`.
+
+  ## Fixer (automated)
+  `src/fixer.js` provides `fixPackageLock(lockfile, options)` which applies safe, non-destructive fixes and returns `{ fixedLockfile, fixes }`.
+
+  Example (programmatic):
+
+  ```js
+  import { parseLockfile } from './src/parser.js';
+  import { fixPackageLock } from './src/fixer.js';
+
+  const lockfile = parseLockfile('package-lock.json');
+  const { fixedLockfile, fixes } = fixPackageLock(lockfile, {
+    fillMissingIntegrity: true, // add placeholder integrity values when missing
+    dedupe: true,               // remove duplicate package entries
+    normalizeTo: 2              // optionally migrate to a target lockfile version
+  });
+
+  // Persist the fixed lockfile with parse/serialize helpers from `src/parser.js`
+  ```
+
+  ## Programmatic API
+  Main exports are located in `src/` and include:
+
+  - `parseLockfile(filePath)` — read and parse a lockfile (`src/parser.js`).
+  - `validatePackageLock(lockfile, packageJson?, options?)` — validate a lockfile (`src/validator.js`).
+  - `migrateToVersion(lockfile, targetVersion)` — migrate between lockfile formats (`src/migrator.js`).
+  - `fixPackageLock(lockfile, options)` — automated fixer (`src/fixer.js`).
+  - `upgradeIntegrityHashes(lockfile, options)` and `deduplicatePackages(lockfile, options)` — updater utilities (`src/updater.js`).
+
+  ## Development & Tests
+  Run the unit tests with:
+
+  ```bash
+  npm test
+  ```
+
+  There are tests for core modules in `tests/` (migrator, parser, updater, validator, fixer).
+
+  ## Contributing
+  Pull requests are welcome. Please run tests and linters before submitting.
+
+  ## License
+  MIT
+
+  ````

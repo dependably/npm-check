@@ -1,35 +1,43 @@
 # project_plan.txt
-# Project Plan (updated to match CLAUDE.md)
+# project_plan.txt
+# Project Plan (synchronised with repository files)
+
 
 Completed:
-- Format library with comprehensive schemas for v1/v2/v3
-- Full validation engine with configurable options
-- Bidirectional migration between v1, v2, v3 (including multi-step paths)
-- Path parsing and manipulation utilities
+- Format library (`src/format-library.js`) with utilities for detecting lockfile versions and parsing/stringifying lockfiles
+- Validation engine (`src/validator.js`) with structural/data/consistency checks and configurable options
+- Bidirectional migrator (`src/migrator.js`) covering v1↔v2↔v3 paths and a `PackageLockMigrator` helper
+- Parser/IO utilities (`src/parser.js`) for reading/writing lockfiles
+- Updater core utilities (`src/updater.js`) including `upgradeIntegrityHashes` and `deduplicatePackages` (basic implementations)
+- Basic CLI interface (`bin/cli.js`) exposing commands: `validate`, `migrate`, `upgrade-hashes`, `dedupe`, `fix` (ESM)
+- Automated fixer (`src/fixer.js`) with basic strategies: auto-migration, placeholder integrity filling, deduplication
+- README updated with CLI and Fixer documentation (`README.md`)
+- Tests for core modules and fixer: `tests/migrator.test.js`, `tests/parser.test.js`, `tests/updater.test.js`, `tests/validator.test.js`, `tests/fixer.test.js`
 
 In Progress:
-- Automated fixer (repair strategies for integrity, resolved URLs, duplicates)
-- CLI interface (command surface + output formatting)
-- Documentation, examples, and README improvements
+- Test coverage expansion and CI integration
 
 Planned:
-- Updater: dependency update management, rollback capability, diffs
-- Backup & rollback system for non-destructive operations
-- Interactive conflict resolution UI (CLI-driven)
-- Performance improvements for large lockfiles (streaming support)
+- Full Updater features: targeted dependency updates, rollback capability, change diffs
+- Backup & rollback system for non-destructive file operations
+- Interactive conflict-resolution flow (CLI-driven prompts or small TUI)
+- Performance improvements for large lockfiles (streaming, memory optimization)
 - Plugin system for custom validators and migration hooks
-- Packaging + publish (npm package + global CLI)
+- Packaging and publish workflow (npm package + global CLI packaging)
 
 Testing & CI:
-- Write targeted tests for `fixer`, `cli`, and `updater` components
-- Add pre-commit validation hooks and CI integration (validate on PR)
+- The repo contains unit tests and `npm test` is configured; add GitHub Actions (or other CI) to run tests and lints on PRs
+- Add pre-commit hooks to run fast validations (lint, limited tests)
 
-Next Steps (short-term):
-1. Finish the automated fixer implementation and unit tests.
-2. Complete CLI commands: `validate`, `migrate`, `fix`, `dedupe`, `check`.
-3. Update `README.md` with usage examples and migration guide.
-4. Add CI workflow to run tests and validation on push/PR.
+
+Short-term Next Steps:
+1. Add CI (GitHub Actions) to run `npm test` and lint on push/PR.
+2. Improve fixer: regenerate real integrity hashes (optional network/tarball access) and add safe backups before writes.
+3. Expand tests to cover edge-cases: workspaces, git dependencies, optional/peer dependencies.
+4. Add pre-commit hooks for linting and quick validation.
+5. Prep packaging/publish steps (npm package metadata, CHANGELOG, release notes).
 
 Notes:
-- Keep `CLAUDE.md` and `README.md` as higher-level documentation sources.
-- Use non-destructive defaults; create backups before writes.
+- Code locations: core logic in `src/`; CLI in `bin/`; tests in `tests/`.
+- Keep non-destructive defaults: make backups before write operations.
+
