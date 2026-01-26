@@ -1,5 +1,6 @@
 // tests/validator.test.js
 import { readFileSync } from 'fs';
+import fs from 'fs';
 import { validatePackageLock, ValidationError } from '../src/validator.js';
 import { parseLockfile } from '../src/parser.js';
 import { LOCKFILE_VERSIONS } from '../src/format-library.js';
@@ -14,8 +15,8 @@ describe('Package Lockfile Validator', () => {
 
   afterEach(() => {
     // Clean up test file
-    if (testLockfilePath && require('fs').existsSync(testLockfilePath)) {
-      require('fs').unlinkSync(testLockfilePath);
+    if (testLockfilePath && fs.existsSync(testLockfilePath)) {
+      fs.unlinkSync(testLockfilePath);
     }
   });
 

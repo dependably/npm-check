@@ -1,8 +1,8 @@
-const { test } = require('@jest/globals');
-const assert = require('node:assert/strict');
-const fs = require('fs');
-const path = require('path');
-const { parseLockfile, serializeLockfile } = require('../src/parser.js');
+import { test } from '@jest/globals';
+import assert from 'node:assert/strict';
+import fs from 'fs';
+import path from 'path';
+import { parseLockfile, serializeLockfile } from '../src/parser.js';
 
 test('parser: serialize and parse a lockfile', async () => {
   const tmpPath = path.join(process.cwd(), 'tests', 'tmp-lock.json');

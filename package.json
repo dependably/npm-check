@@ -8,7 +8,7 @@
     "cli": "bin/cli.js"
   },
   "scripts": {
-    "test": "jest",
+    "test": "node --experimental-vm-modules ./node_modules/jest/bin/jest.js --config=jest.config.mjs",
     "lint": "eslint ."
   },
   "keywords": [
