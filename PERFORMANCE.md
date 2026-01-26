@@ -87,7 +87,7 @@ if (isLargeLockfile(lockfile, 10)) { // 10MB threshold
 }
 ```
 
-### Optimized Updater Module (`src/updater-optimized.js`)
+### Optimized Updater Module (`src/updater.js`)
 
 High-level operations using performance utilities:
 
@@ -271,7 +271,7 @@ console.log('After processing:', getMemoryStats());
 
 All performance utilities include comprehensive tests:
 - `tests/performance.test.js`: 30+ tests for core utilities
-- `tests/updater-optimized.test.js`: 20+ tests for optimized operations
+- `tests/updater.test.js`: 20+ tests for optimized operations
 
 Run tests with: `npm test`
 

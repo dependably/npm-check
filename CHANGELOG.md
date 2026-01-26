@@ -16,7 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `createDedupeMap` / `reconstructFromDedupeMap`: Map-based deduplication for O(1) lookups
   - `chunkLockfile` / `mergeLockfileChunks`: Lockfile chunking for parallel/streaming processing
   - `estimateLockfileSize` / `isLargeLockfile`: Size estimation and large-file detection
-- **Optimized Updater Module** (`src/updater-optimized.js`): Memory-efficient versions of core operations
+- **Optimized Updater Module** (`src/updater.js`): Memory-efficient versions of core operations
   - `upgradeIntegrityHashesOptimized`: 4x less memory usage than standard version
   - `deduplicatePackagesOptimized`: 3.6x less memory, 5x faster with Map-based deduplication
   - `findPackagesMatching`: Lazy evaluation filtering without copying unmatched packages

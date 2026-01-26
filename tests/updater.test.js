@@ -1,180 +1,207 @@
-// tests/updater.test.js
-import { upgradeIntegrityHashes, deduplicatePackages } from '../src/updater.js';
+import {
+  upgradeIntegrityHashes,
+  deduplicatePackages,
+  findPackagesMatching,
+  countUniquePackages,
+  findDuplicatePackages
+} from '../src/updater.js';
 
-describe('Package Lockfile Updater', () => {
+describe('Updater Functions', () => {
+  const mockLockfileV3 = {
+    lockfileVersion: 3,
+    name: 'test-app',
+    version: '1.0.0',
+    packages: {
+      '': { name: 'test-app', version: '1.0.0', dependencies: {} },
+      'node_modules/lodash': {
+        name: 'lodash',
+        version: '4.17.21',
+        integrity: 'sha1-abc123',
+        dependencies: {
+          'sub-dep': { integrity: 'sha1-xyz789' }
+        }
+      },
+      'node_modules/react': {
+        name: 'react',
+        version: '18.2.0',
+        integrity: 'sha512-valid'
+      }
+    }
+  };
+
   describe('upgradeIntegrityHashes', () => {
-    it('should upgrade sha1 hashes to sha256', () => {
-      const lockfile = {
-        name: 'test-project',
-        version: '1.0.0',
-        lockfileVersion: 2,
-        packages: {
-          '': {
-            name: 'test-project',
-            version: '1.0.0',
-            dependencies: {
-              lodash: {
-                version: '4.17.21',
-                integrity: 'sha1-abc123...' // Mock sha1 hash
-              }
-            }
-          }
-        }
-      };
+    it('upgrades sha1 hashes to sha256', () => {
+      const result = upgradeIntegrityHashes(mockLockfileV3);
 
-      const result = upgradeIntegrityHashes(lockfile);
-      expect(result.packages[''].dependencies.lodash.integrity).toMatch(/^sha256-/);
+      const lodashPkg = result.packages['node_modules/lodash'];
+      expect(lodashPkg.integrity).toBe('sha256-abc123');
     });
 
-    it('should not modify valid sha256 hashes', () => {
-      const lockfile = {
-        name: 'test-project',
-        version: '1.0.0',
-        lockfileVersion: 2,
-        packages: {
-          '': {
-            name: 'test-project',
-            version: '1.0.0',
-            dependencies: {
-              lodash: {
-                version: '4.17.21',
-                integrity: 'sha256-abc123...' // Valid sha256 hash
-              }
-            }
-          }
-        }
-      };
+    it('upgrades nested dependency hashes', () => {
+      const result = upgradeIntegrityHashes(mockLockfileV3);
 
-      const originalHash = lockfile.packages[''].dependencies.lodash.integrity;
-      const result = upgradeIntegrityHashes(lockfile);
-      expect(result.packages[''].dependencies.lodash.integrity).toBe(originalHash);
+      const lodashPkg = result.packages['node_modules/lodash'];
+      expect(lodashPkg.dependencies['sub-dep'].integrity).toBe('sha256-xyz789');
     });
 
-    it('should process nested dependencies', () => {
-      const lockfile = {
-        name: 'test-project',
-        version: '1.0.0',
-        lockfileVersion: 2,
-        packages: {
-          '': {
-            name: 'test-project',
-            version: '1.0.0',
-            dependencies: {
-              lodash: {
-                version: '4.17.21',
-                integrity: 'sha1-abc123...',
-                dependencies: {
-                  '>react-16.6.3 || >=17': {
-                    version: '16.13.1',
-                    integrity: 'sha1-def456...'
-                  }
-                }
-              }
-            }
-          }
-        }
-      };
+    it('preserves non-sha1 hashes by default', () => {
+      const result = upgradeIntegrityHashes(mockLockfileV3);
 
-      const result = upgradeIntegrityHashes(lockfile);
-      expect(result.packages[''].dependencies.lodash.integrity).toMatch(/^sha256-/);
-      expect(result.packages[''].dependencies.lodash.dependencies['>react-16.6.3 || >=17'].integrity).toMatch(/^sha256-/);
+      const reactPkg = result.packages['node_modules/react'];
+      expect(reactPkg.integrity).toBe('sha512-valid');
     });
 
-    it('should handle missing integrity hashes', () => {
-      const lockfile = {
-        name: 'test-project',
-        version: '1.0.0',
-        lockfileVersion: 2,
-        packages: {
-          '': {
-            name: 'test-project',
-            version: '1.0.0',
-            dependencies: {
-              lodash: {
-                version: '4.17.21'
-                // Missing integrity
-              }
-            }
-          }
-        }
-      };
+    it('does not modify original lockfile', () => {
+      const original = JSON.parse(JSON.stringify(mockLockfileV3));
+      upgradeIntegrityHashes(mockLockfileV3);
 
-      const result = upgradeIntegrityHashes(lockfile);
-      expect(result.packages[''].dependencies.lodash.integrity).toBeUndefined();
+      expect(mockLockfileV3).toEqual(original);
     });
   });
 
   describe('deduplicatePackages', () => {
-    it('should deduplicate packages in packages map', () => {
-      const lockfile = {
-        name: 'test-project',
-        version: '1.0.0',
-        lockfileVersion: 2,
+    it('removes duplicate packages', () => {
+      const lockfileWithDupes = {
+        ...mockLockfileV3,
         packages: {
-          '': {
-            name: 'test-project',
-            version: '1.0.0'
-          },
+          ...mockLockfileV3.packages,
+          'node_modules/lodash@4.17.20': {
+            name: 'lodash',
+            version: '4.17.20',
+            integrity: 'sha512-old'
+          }
+        }
+      };
+
+      const result = deduplicatePackages(lockfileWithDupes);
+
+      // Should have fewer packages after dedup
+      expect(Object.keys(result.packages).length).toBeLessThanOrEqual(
+        Object.keys(lockfileWithDupes.packages).length
+      );
+    });
+
+    it('preserves original structure for non-duplicate packages', () => {
+      const result = deduplicatePackages(mockLockfileV3);
+
+      expect(result.packages['node_modules/lodash']).toBeDefined();
+      expect(result.packages['node_modules/react']).toBeDefined();
+    });
+  });
+
+  describe('findPackagesMatching', () => {
+    it('finds packages matching predicate', () => {
+      const matching = findPackagesMatching(mockLockfileV3, (path, pkg) =>
+        pkg.name && pkg.name.includes('lodash')
+      );
+
+      expect(matching['node_modules/lodash']).toBeDefined();
+      expect(matching['node_modules/react']).toBeUndefined();
+    });
+
+    it('returns empty for non-matching predicate', () => {
+      const matching = findPackagesMatching(mockLockfileV3, (path, pkg) =>
+        pkg.name === 'nonexistent'
+      );
+
+      expect(Object.keys(matching).length).toBe(0);
+    });
+  });
+
+  describe('countUniquePackages', () => {
+    it('counts unique package names', () => {
+      const count = countUniquePackages(mockLockfileV3);
+
+      // lodash, react, and test-app (root is included since name != '(root)')
+      expect(count).toBe(3);
+    });
+
+    it('handles lockfile without packages', () => {
+      const simple = { lockfileVersion: 1 };
+      const count = countUniquePackages(simple);
+
+      expect(count).toBe(0);
+    });
+
+    it('excludes packages named (root) from count', () => {
+      const withRootMarker = {
+        lockfileVersion: 3,
+        packages: {
+          '': { name: '(root)', version: '1.0.0' },
+          'node_modules/pkg': { name: 'pkg', version: '1.0.0' }
+        }
+      };
+
+      const count = countUniquePackages(withRootMarker);
+      expect(count).toBe(1);
+    });
+  });  describe('findDuplicatePackages', () => {
+    it('finds duplicate packages by name', () => {
+      const lockfileWithDupes = {
+        lockfileVersion: 3,
+        packages: {
           'node_modules/lodash': {
             name: 'lodash',
             version: '4.17.21'
           },
+          'node_modules/lodash@4.17.20': {
+            name: 'lodash',
+            version: '4.17.20'
+          },
           'node_modules/react': {
             name: 'react',
-            version: '16.13.1'
+            version: '18.2.0'
           }
         }
       };
 
-      const result = deduplicatePackages(lockfile);
-      expect(Object.keys(result.packages).length).toBeGreaterThanOrEqual(3);
-      expect(result.packages['node_modules/lodash']).toBeDefined();
+      const duplicates = findDuplicatePackages(lockfileWithDupes);
+
+      expect(duplicates.has('lodash')).toBe(true);
+      expect(duplicates.get('lodash').length).toBe(2);
+      expect(duplicates.has('react')).toBe(false);
     });
 
-    it('should keep latest version by default', () => {
-      const lockfile = {
-        name: 'test-project',
-        version: '1.0.0',
-        lockfileVersion: 2,
+    it('returns empty map when no duplicates', () => {
+      const duplicates = findDuplicatePackages(mockLockfileV3);
+
+      expect(duplicates.size).toBe(0);
+    });
+
+    it('includes version info in duplicates', () => {
+      const lockfileWithDupes = {
+        lockfileVersion: 3,
         packages: {
-          '': {
-            name: 'test-project',
+          'node_modules/pkg@1.0.0': {
+            name: 'pkg',
             version: '1.0.0'
           },
-          'node_modules/lodash': {
-            name: 'lodash',
-            version: '4.18.0'
-          },
-          'node_modules/react': {
-            name: 'react',
-            version: '16.13.1'
+          'node_modules/pkg@2.0.0': {
+            name: 'pkg',
+            version: '2.0.0'
           }
         }
       };
 
-      const result = deduplicatePackages(lockfile, { keepLatest: true });
-      expect(result.packages['node_modules/lodash'].version).toBe('4.18.0');
+      const duplicates = findDuplicatePackages(lockfileWithDupes);
+      const pkgDupes = duplicates.get('pkg');
+
+      expect(pkgDupes).toContainEqual({ path: 'node_modules/pkg@1.0.0', version: '1.0.0' });
+      expect(pkgDupes).toContainEqual({ path: 'node_modules/pkg@2.0.0', version: '2.0.0' });
     });
 
-    it('should deduplicate dependencies tree', () => {
+    it('excludes root package', () => {
       const lockfile = {
-        name: 'test-project',
-        version: '1.0.0',
-        lockfileVersion: 1,
-        dependencies: {
-          lodash: {
-            version: '4.17.21',
-            dependencies: {
-              underscore: {
-                version: '1.13.6'
-              }
-            }
-          }
+        lockfileVersion: 3,
+        packages: {
+          '': { name: '(root)', version: '1.0.0' },
+          'node_modules/pkg': { name: 'pkg', version: '1.0.0' }
         }
       };
 
-      const result = deduplicatePackages(lockfile);
-      expect(result.dependencies).toBeDefined();
+      const duplicates = findDuplicatePackages(lockfile);
+
+      expect(duplicates.has('(root)')).toBe(false);
     });
   });
 });

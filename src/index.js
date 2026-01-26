@@ -9,7 +9,7 @@ export {
   countUniquePackages,
   findDuplicatePackages
 } from './updater.js';
-export { fixPackageLock } from './fixer.js';
+export { fixPackageLock, FixerError } from './fixer.js';
 export { LOCKFILE_VERSIONS } from './format-library.js';
 export {
   shallowCopyLockfile,
