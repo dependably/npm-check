@@ -1,41 +1,37 @@
 # project_plan.txt
-# project_plan.txt
 # Project Plan (synchronised with repository files)
 
 
 Completed:
 - Format library (`src/format-library.js`) with utilities for detecting lockfile versions and parsing/stringifying lockfiles
 - Validation engine (`src/validator.js`) with structural/data/consistency checks and configurable options
-- Bidirectional migrator (`src/migrator.js`) covering v1↔v2↔v3 paths and a `PackageLockMigrator` helper
+- Bidirectional migrator (`src/migrator.js`) covering v1↔v2↔v3 paths with support for multiple migration paths
 - Parser/IO utilities (`src/parser.js`) for reading/writing lockfiles
 - Updater core utilities (`src/updater.js`) including `upgradeIntegrityHashes` and `deduplicatePackages` (basic implementations)
 - Basic CLI interface (`bin/cli.js`) exposing commands: `validate`, `migrate`, `upgrade-hashes`, `dedupe`, `fix` (ESM)
 - Automated fixer (`src/fixer.js`) with basic strategies: auto-migration, placeholder integrity filling, deduplication
-- README updated with CLI and Fixer documentation (`README.md`)
-- Tests for core modules and fixer: `tests/migrator.test.js`, `tests/parser.test.js`, `tests/updater.test.js`, `tests/validator.test.js`, `tests/fixer.test.js`
+- Main index (`src/index.js`) exporting core API functions (parseLockfile, serializeLockfile, validatePackageLock, migrateToVersion, PackageLockMigrator, MigrationError, upgradeIntegrityHashes, deduplicatePackages, fixPackageLock, LOCKFILE_VERSIONS)
+- README with CLI and Fixer documentation (`README.md`)
+- Tests for core modules: `tests/migrator.test.js`, `tests/parser.test.js`, `tests/updater.test.js`, `tests/validator.test.js`, `tests/fixer.test.js`
+- ESLint configuration (`eslintrc.js`) for code quality
+- Jest configuration (`jest.config.mjs`) with ESM support via Babel
+- Babel configuration (`.babelrc`) for ES6+ transpilation
+- Setup helper script (`setup.js`) for project initialization
+- Git repository with .gitignore configured
 
 In Progress:
-- Test coverage expansion and CI integration
+- Test coverage expansion (edge-cases: workspaces, git dependencies, optional/peer dependencies)
 
-Planned:
-- Full Updater features: targeted dependency updates, rollback capability, change diffs
-- Backup & rollback system for non-destructive file operations
-- Interactive conflict-resolution flow (CLI-driven prompts or small TUI)
-- Performance improvements for large lockfiles (streaming, memory optimization)
-- Plugin system for custom validators and migration hooks
-- Packaging and publish workflow (npm package + global CLI packaging)
-
-Testing & CI:
-- The repo contains unit tests and `npm test` is configured; add GitHub Actions (or other CI) to run tests and lints on PRs
-- Add pre-commit hooks to run fast validations (lint, limited tests)
-
-
-Short-term Next Steps:
-1. Add CI (GitHub Actions) to run `npm test` and lint on push/PR.
-2. Improve fixer: regenerate real integrity hashes (optional network/tarball access) and add safe backups before writes.
-3. Expand tests to cover edge-cases: workspaces, git dependencies, optional/peer dependencies.
-4. Add pre-commit hooks for linting and quick validation.
-5. Prep packaging/publish steps (npm package metadata, CHANGELOG, release notes).
+Planned (Priority Order):
+1. Improve fixer: regenerate real integrity hashes (optional network/tarball access) and add safe backups before writes
+2. Add pre-commit hooks for linting and quick validation
+3. Prep packaging/publish steps (npm package metadata, CHANGELOG, release notes)
+4. Full Updater features: targeted dependency updates, rollback capability, change diffs
+5. Backup & rollback system for non-destructive file operations
+6. Interactive conflict-resolution flow (CLI-driven prompts or small TUI)
+7. Performance improvements for large lockfiles (streaming, memory optimization)
+8. Plugin system for custom validators and migration hooks
+9. GitHub Actions CI (lower priority - run tests and lints on PRs)
 
 Notes:
 - Code locations: core logic in `src/`; CLI in `bin/`; tests in `tests/`.
