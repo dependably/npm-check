@@ -24,7 +24,7 @@ import { parallelUpgradeIntegrityHashes as parallelUpgrade, parallelDeduplicateP
 function compareVersions(v1, v2) {
   if (!v1 || !v2) return 0;
   if (v1 === v2) return 0;
-  
+
   // Parse version strings (handle formats like "1.2.3", "1.2.3-alpha", "1.2.3+build")
   const parseVersion = (v) => {
     // Remove build metadata (everything after +)
@@ -33,14 +33,14 @@ function compareVersions(v1, v2) {
     const parts = clean.split('-');
     const version = parts[0];
     const prerelease = parts.length > 1 ? parts.slice(1).join('-') : '';
-    
+
     // Parse major.minor.patch
     const numbers = version.split('.').map(n => parseInt(n, 10) || 0);
     // Ensure we have at least 3 parts (major.minor.patch)
     while (numbers.length < 3) {
       numbers.push(0);
     }
-    
+
     return {
       major: numbers[0],
       minor: numbers[1],
@@ -48,10 +48,10 @@ function compareVersions(v1, v2) {
       prerelease
     };
   };
-  
+
   const parsed1 = parseVersion(v1);
   const parsed2 = parseVersion(v2);
-  
+
   // Compare major.minor.patch numerically
   if (parsed1.major !== parsed2.major) {
     return parsed1.major > parsed2.major ? 1 : -1;
@@ -62,7 +62,7 @@ function compareVersions(v1, v2) {
   if (parsed1.patch !== parsed2.patch) {
     return parsed1.patch > parsed2.patch ? 1 : -1;
   }
-  
+
   // If versions are equal, pre-release versions are considered lower
   if (parsed1.prerelease && !parsed2.prerelease) {
     return -1;
@@ -74,7 +74,7 @@ function compareVersions(v1, v2) {
     // Simple string comparison for pre-release (could be improved)
     return parsed1.prerelease > parsed2.prerelease ? 1 : (parsed1.prerelease < parsed2.prerelease ? -1 : 0);
   }
-  
+
   return 0;
 }
 
@@ -89,7 +89,7 @@ function compareVersions(v1, v2) {
  */
 export function upgradeIntegrityHashes(lockfileData, options = {}) {
   const { all = false, onProgress = null, parallel = false } = options;
-  
+
   // Use parallel processing if requested and file is large
   if (parallel && isLargeLockfile(lockfileData, 10)) {
     return parallelUpgrade(lockfileData, {
@@ -119,14 +119,14 @@ export function upgradeIntegrityHashes(lockfileData, options = {}) {
   // Helper to recursively upgrade integrity hashes in dependency trees
   const upgradeDependencies = (deps) => {
     if (!deps || typeof deps !== 'object') return deps;
-    
+
     const upgraded = {};
     for (const [depName, dep] of Object.entries(deps)) {
       if (!dep || typeof dep !== 'object') {
         upgraded[depName] = dep;
         continue;
       }
-      
+
       // Upgrade this dependency and recursively upgrade nested ones
       upgraded[depName] = {
         ...dep,
@@ -181,7 +181,7 @@ export function upgradeIntegrityHashes(lockfileData, options = {}) {
 
     upgradedPackages[path] = upgradedPkg;
     processed++;
-    
+
     if (onProgress && processed % 100 === 0) {
       onProgress({ current: processed, total, percentage: Math.round((processed / total) * 100), stage: 'Upgrading integrity hashes' });
     }
@@ -203,7 +203,7 @@ export function upgradeIntegrityHashes(lockfileData, options = {}) {
  */
 export function deduplicatePackages(lockfileData, options = {}) {
   const { keepLatest = false, onProgress = null, parallel = false } = options;
-  
+
   // Use parallel processing if requested and file is large
   if (parallel && isLargeLockfile(lockfileData, 10)) {
     return parallelDedupe(lockfileData, {
@@ -220,11 +220,11 @@ export function deduplicatePackages(lockfileData, options = {}) {
   if (hasPackagesMap(version) && result.packages) {
     const packages = result.packages;
     const total = Object.keys(packages).length;
-    
+
     if (onProgress) {
       onProgress({ current: 0, total, percentage: 0, stage: 'Building deduplication map' });
     }
-    
+
     const dedupeMap = createDedupeMap(packages);
 
     // Optionally keep only latest versions
@@ -232,24 +232,24 @@ export function deduplicatePackages(lockfileData, options = {}) {
       if (onProgress) {
         onProgress({ current: Math.floor(total * 0.3), total, percentage: 30, stage: 'Grouping packages by name' });
       }
-      
+
       // Group packages by name
       const packagesByName = new Map();
-      
+
       for (const [key, entry] of dedupeMap.entries()) {
         if (!entry || !entry.pkg || !entry.pkg.name) continue;
-        
+
         const packageName = entry.pkg.name;
         if (!packagesByName.has(packageName)) {
           packagesByName.set(packageName, []);
         }
         packagesByName.get(packageName).push({ key, entry, version: entry.pkg.version || '0.0.0' });
       }
-      
+
       if (onProgress) {
         onProgress({ current: Math.floor(total * 0.6), total, percentage: 60, stage: 'Finding latest versions' });
       }
-      
+
       // For each package name, keep only the latest version
       const latestVersionsMap = new Map();
       for (const [, versions] of packagesByName.entries()) {
@@ -267,11 +267,11 @@ export function deduplicatePackages(lockfileData, options = {}) {
           latestVersionsMap.set(latest.key, latest.entry);
         }
       }
-      
+
       if (onProgress) {
         onProgress({ current: Math.floor(total * 0.9), total, percentage: 90, stage: 'Reconstructing packages' });
       }
-      
+
       // Replace dedupeMap with only latest versions
       dedupeMap.clear();
       for (const [key, entry] of latestVersionsMap.entries()) {
@@ -280,7 +280,7 @@ export function deduplicatePackages(lockfileData, options = {}) {
     }
 
     result.packages = reconstructFromDedupeMap(dedupeMap);
-    
+
     if (onProgress) {
       onProgress({ current: total, total, percentage: 100, stage: 'Deduplication complete' });
     }

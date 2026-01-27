@@ -48,12 +48,12 @@ function getFilePath(arg1) {
   if (!arg1 || arg1.startsWith('-')) {
     return path.resolve('package-lock.json');
   }
-  
+
   // Check if arg1 looks like a numeric target version or other command arg
   if (arg1.match(/^\d+$/)) {
     return path.resolve('package-lock.json');
   }
-  
+
   // arg1 is a file path
   return path.resolve(arg1);
 }
@@ -94,13 +94,13 @@ async function main() {
       case 'validate': {
         const filePath = getFilePath(argv[1]);
         ensureFileExists(filePath);
-        
+
         const lockfile = parseLockfile(filePath);
         const result = validatePackageLock(lockfile);
-        
+
         console.log('\n📋 Validation Result:');
         console.log(JSON.stringify(result, null, 2));
-        
+
         process.exit(result.valid ? 0 : 1);
         break;
       }
@@ -108,7 +108,7 @@ async function main() {
       case 'migrate': {
         const filePath = getFilePath(argv[1]);
         ensureFileExists(filePath);
-        
+
         // Get target version (default: 3)
         let target = 3;
         if (argv[1] && argv[1].match(/^\d+$/) && !argv[1].startsWith('/')) {
@@ -121,9 +121,9 @@ async function main() {
 
         const lockfile = parseLockfile(filePath);
         const migrated = migrateToVersion(lockfile, target);
-        
+
         console.log(`\n✅ Migrated lockfile to version ${target}`);
-        
+
         if (hasWrite) {
           createBackup(filePath);
           fs.writeFileSync(filePath, JSON.stringify(migrated, null, 2) + '\n', 'utf8');
@@ -141,7 +141,7 @@ async function main() {
         const hasWrite = argv.includes('--write');
 
         const lockfile = parseLockfile(filePath);
-        
+
         // Setup progress reporting
         let lastProgress = null;
         const onProgress = (progress) => {
@@ -151,13 +151,13 @@ async function main() {
             lastProgress = progress;
           }
         };
-        
+
         const upgraded = upgradeIntegrityHashes(lockfile, { onProgress });
-        
+
         // Clear progress line and show completion
         process.stdout.write('\r' + ' '.repeat(80) + '\r');
         console.log('\n✅ Upgraded integrity hashes');
-        
+
         if (hasWrite) {
           createBackup(filePath);
           fs.writeFileSync(filePath, JSON.stringify(upgraded, null, 2) + '\n', 'utf8');
@@ -176,7 +176,7 @@ async function main() {
 
         const lockfile = parseLockfile(filePath);
         const beforeCount = lockfile.packages ? Object.keys(lockfile.packages).length : 0;
-        
+
         // Setup progress reporting
         let lastProgress = null;
         const onProgress = (progress) => {
@@ -186,7 +186,7 @@ async function main() {
             lastProgress = progress;
           }
         };
-        
+
         const deduped = deduplicatePackages(lockfile, { onProgress });
         const afterCount = deduped.packages ? Object.keys(deduped.packages).length : 0;
 
@@ -194,7 +194,7 @@ async function main() {
         process.stdout.write('\r' + ' '.repeat(80) + '\r');
         console.log(`\n✅ Deduplication complete`);
         console.log(`   Packages: ${beforeCount} → ${afterCount} (removed ${beforeCount - afterCount})`);
-        
+
         if (hasWrite) {
           createBackup(filePath);
           fs.writeFileSync(filePath, JSON.stringify(deduped, null, 2) + '\n', 'utf8');
@@ -216,7 +216,7 @@ async function main() {
 
         console.log('\n✅ Fixer Results:');
         fixes.forEach(fix => console.log(`   • ${fix}`));
-        
+
         if (hasWrite) {
           createBackup(filePath);
           fs.writeFileSync(filePath, JSON.stringify(fixedLockfile, null, 2) + '\n', 'utf8');
@@ -231,9 +231,9 @@ async function main() {
       case 'backups': {
         const filePath = getFilePath(argv[1]);
         const fileName = path.basename(filePath);
-        
+
         const backups = listBackups(fileName);
-        
+
         if (backups.length === 0) {
           console.log(`\n📦 No backups found for ${fileName}`);
         } else {
@@ -248,7 +248,7 @@ async function main() {
       case 'restore': {
         const filePath = getFilePath(argv[1]);
         ensureFileExists(filePath);
-        
+
         restoreFromLatestBackup(filePath);
         console.log(`\n✅ File restored successfully`);
         break;

@@ -12,10 +12,10 @@ parentPort.on('message', async (task) => {
     const result = migrateToVersion(chunk, targetVersion);
     parentPort.postMessage({ success: true, result, chunkIndex: task.chunkIndex });
   } catch (error) {
-    parentPort.postMessage({ 
-      success: false, 
-      error: error.message, 
-      chunkIndex: task.chunkIndex 
+    parentPort.postMessage({
+      success: false,
+      error: error.message,
+      chunkIndex: task.chunkIndex
     });
   }
 });

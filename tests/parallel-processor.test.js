@@ -89,7 +89,7 @@ describe('Parallel Processor', () => {
   describe('Integration with updater.js', () => {
     it('updater functions accept parallel option', () => {
       const lockfile = createLargeLockfile(20000);
-      
+
       // Should return a Promise when parallel is enabled
       const result = upgradeIntegrityHashes(lockfile, { parallel: true });
       expect(result).toBeInstanceOf(Promise);
@@ -121,7 +121,7 @@ describe('Parallel Processor', () => {
     it('chunkLockfile creates multiple chunks for large files', () => {
       const largeLockfile = createLargeLockfile(15000);
       const chunks = chunkLockfile(largeLockfile, 5000);
-      
+
       expect(chunks.length).toBeGreaterThan(1);
       expect(chunks[0].lockfileVersion).toBe(3);
       expect(chunks[0].packages).toBeDefined();
@@ -136,7 +136,7 @@ describe('Parallel Processor', () => {
           '': { name: 'test', version: '1.0.0' }
         }
       };
-      
+
       const chunks = chunkLockfile(smallLockfile, 5000);
       expect(chunks.length).toBe(1);
     });
