@@ -8,6 +8,7 @@ import { migrateToVersion } from '../src/migrator.js';
 import { upgradeIntegrityHashes, deduplicatePackages } from '../src/updater.js';
 import { fixPackageLock } from '../src/fixer.js';
 import { createBackup, listBackups, restoreFromLatestBackup, BackupError } from '../src/backup.js';
+import { createProgressBar } from '../src/progress-reporter.js';
 
 const argv = process.argv.slice(2);
 
@@ -140,8 +141,21 @@ async function main() {
         const hasWrite = argv.includes('--write');
 
         const lockfile = parseLockfile(filePath);
-        const upgraded = upgradeIntegrityHashes(lockfile);
         
+        // Setup progress reporting
+        let lastProgress = null;
+        const onProgress = (progress) => {
+          // Only update if percentage changed to avoid flicker
+          if (!lastProgress || progress.percentage !== lastProgress.percentage) {
+            process.stdout.write(`\r${createProgressBar(progress)} ${progress.stage}`);
+            lastProgress = progress;
+          }
+        };
+        
+        const upgraded = upgradeIntegrityHashes(lockfile, { onProgress });
+        
+        // Clear progress line and show completion
+        process.stdout.write('\r' + ' '.repeat(80) + '\r');
         console.log('\n✅ Upgraded integrity hashes');
         
         if (hasWrite) {
@@ -162,9 +176,22 @@ async function main() {
 
         const lockfile = parseLockfile(filePath);
         const beforeCount = lockfile.packages ? Object.keys(lockfile.packages).length : 0;
-        const deduped = deduplicatePackages(lockfile);
+        
+        // Setup progress reporting
+        let lastProgress = null;
+        const onProgress = (progress) => {
+          // Only update if percentage changed to avoid flicker
+          if (!lastProgress || progress.percentage !== lastProgress.percentage) {
+            process.stdout.write(`\r${createProgressBar(progress)} ${progress.stage}`);
+            lastProgress = progress;
+          }
+        };
+        
+        const deduped = deduplicatePackages(lockfile, { onProgress });
         const afterCount = deduped.packages ? Object.keys(deduped.packages).length : 0;
 
+        // Clear progress line and show completion
+        process.stdout.write('\r' + ' '.repeat(80) + '\r');
         console.log(`\n✅ Deduplication complete`);
         console.log(`   Packages: ${beforeCount} → ${afterCount} (removed ${beforeCount - afterCount})`);
         

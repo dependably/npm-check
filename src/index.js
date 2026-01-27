@@ -23,3 +23,21 @@ export {
   estimateLockfileSize,
   isLargeLockfile
 } from './performance.js';
+export {
+  ProgressReporter,
+  createProgressReporter,
+  formatProgress,
+  createProgressBar
+} from './progress-reporter.js';
+export {
+  StreamingParser,
+  parseLockfileStream,
+  parseLockfileStreamSync
+} from './streaming-parser.js';
+export {
+  WorkerPool,
+  processInParallel,
+  parallelUpgradeIntegrityHashes,
+  parallelDeduplicatePackages,
+  parallelMigrate
+} from './parallel-processor.js';

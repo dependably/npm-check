@@ -10,8 +10,8 @@ This document provides detailed descriptions of all modules in `src/` for AI/LLM
 - [migrator.js](#migratorjs) - Version migration (v1 ↔ v2 ↔ v3)
 - [updater.js](#updaterjs) - Core package operations
 - [fixer.js](#fixerjs) - Automated fixing of common issues
-- [backup.js](#backupjs) - File backup and restore utilities
-- [integrity.js](#integrityjs) - Integrity hash generation and validation
+- [backup.js](#backupjs) - File backup and restore utilities (internal)
+- [integrity.js](#integrityjs) - Integrity hash generation and validation (internal)
 - [performance.js](#performancejs) - Memory optimization and batch processing
 
 ---
@@ -54,7 +54,7 @@ import { parseLockfile, validatePackageLock, fixPackageLock } from 'package-lock
   - `overwrite` (boolean): If false, throws error if file exists (default: false)
 - **Returns:** Undefined (writes to file)
 - **Throws:** `BackupError` if file exists and overwrite is false, or write fails
-- **Details:** Formats data as JSON with 2-space indentation and writes to disk
+- **Details:** Formats data as JSON with 2-space indentation and writes to disk. Uses `BackupError` for consistency with backup operations.
 
 ---
 
@@ -263,7 +263,7 @@ Wrapper class for batch migrations with metadata preservation.
   - Creates dedupeMap with key format: "package-name#version"
   - Removes duplicate package entries
   - Also deduplicates top-level dependencies tree
-  - `keepLatest` option (when implemented) would filter to latest versions only
+  - `keepLatest` option: When true, groups packages by name and keeps only the latest semver version for each package name
 
 ### Function: `findPackagesMatching(lockfileData, predicate)`
 - **Parameters:**
@@ -350,6 +350,8 @@ Extends Error with partial fix tracking.
 
 ## backup.js
 
+**Status:** ⚠️ **Internal utility** - Not exported from main API. Used internally by CLI and other modules.
+
 **Purpose:** File backup and restore utilities with timestamped naming and cleanup. Stores backups in `.backups/` directory.
 
 ### Class: `BackupError`
@@ -416,6 +418,8 @@ Extends Error for backup-specific failures.
 ---
 
 ## integrity.js
+
+**Status:** ⚠️ **Internal utility** - Not exported from main API. Used internally by fixer.js and other modules.
 
 **Purpose:** Integrity hash generation, validation, and placeholder handling. Supports multiple hash types and registry lookups.
 

@@ -31,21 +31,44 @@ export function shallowCopyLockfile(lockfile) {
  * Process packages in batches to reduce memory pressure
  * @param {object} packagesMap - The packages object to process
  * @param {Function} processor - Function to apply to each package (called as processor(path, pkg))
- * @param {number} batchSize - Number of packages to process before yielding control (default: 1000)
+ * @param {number|Object} batchSizeOrOptions - Batch size (number) or options object
+ * @param {number} batchSizeOrOptions.batchSize - Number of packages per batch (default: 1000)
+ * @param {Function} batchSizeOrOptions.onProgress - Progress callback function(progressInfo)
+ * @param {string} batchSizeOrOptions.stage - Stage name for progress reporting
  * @returns {Promise<void>}
  */
-export async function processBatchedPackages(packagesMap, processor, batchSize = 1000) {
+export async function processBatchedPackages(packagesMap, processor, batchSizeOrOptions = 1000) {
   if (!packagesMap || typeof packagesMap !== 'object') {
     return;
   }
 
+  // Handle both old signature (batchSize as number) and new signature (options object)
+  const options = typeof batchSizeOrOptions === 'object' ? batchSizeOrOptions : { batchSize: batchSizeOrOptions };
+  const batchSize = options.batchSize || 1000;
+  const onProgress = options.onProgress || null;
+  const stage = options.stage || 'Processing packages';
+
   const entries = Object.entries(packagesMap);
+  const total = entries.length;
+  let processed = 0;
 
   for (let i = 0; i < entries.length; i += batchSize) {
     const batch = entries.slice(i, i + batchSize);
 
     for (const [path, pkg] of batch) {
       processor(path, pkg);
+      processed++;
+    }
+
+    // Report progress if callback provided
+    if (onProgress) {
+      const percentage = total > 0 ? Math.round((processed / total) * 100) : 0;
+      onProgress({
+        current: processed,
+        total,
+        percentage,
+        stage
+      });
     }
 
     // Yield control to allow garbage collection
@@ -210,9 +233,23 @@ export function estimateLockfileSize(lockfile) {
  * @returns {boolean} True if lockfile size exceeds threshold
  */
 export function isLargeLockfile(lockfile, thresholdMB = 10) {
+  // Heuristics: use JSON size estimate, but also fallback to package count for very large maps
   const estimatedBytes = estimateLockfileSize(lockfile);
   const estimatedMB = estimatedBytes / 1024 / 1024;
-  return estimatedMB > thresholdMB;
+
+  if (estimatedMB > thresholdMB) return true;
+
+  // If packages map exists and is extremely large, consider it large regardless of JSON size estimate
+  try {
+    if (lockfile && lockfile.packages && typeof lockfile.packages === 'object') {
+      const pkgCount = Object.keys(lockfile.packages).length;
+      if (pkgCount > 10000) return true;
+    }
+  } catch (e) {
+    // ignore and fall through
+  }
+
+  return false;
 }
 
 export default {

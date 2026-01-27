@@ -4,6 +4,7 @@ export default {
   transform: {
     '^.+\\.js$': 'babel-jest'
   },
+  setupFilesAfterEnv: ['<rootDir>/tests/jest.setup.js'],
   moduleNameMapper: {
     '^src/(.*)$': '<rootDir>/src/$1'
   },
