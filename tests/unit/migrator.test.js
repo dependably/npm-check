@@ -1,6 +1,6 @@
 // tests/migrator.test.js
-import { migrateToVersion, PackageLockMigrator, MigrationError } from '../src/migrator.js';
-import { LOCKFILE_VERSIONS } from '../src/format-library.js';
+import { migrateToVersion, PackageLockMigrator, MigrationError } from '../../src/migrator.js';
+import { LOCKFILE_VERSIONS } from '../../src/format-library.js';
 
 describe('Package Lockfile Migrator', () => {
   describe('Migration Paths', () => {

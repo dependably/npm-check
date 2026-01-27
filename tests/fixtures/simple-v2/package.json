@@ -1,0 +1,13 @@
+{
+  "name": "simple-v2-fixture",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Minimal test fixture for integration tests",
+  "dependencies": {
+    "lodash": "4.17.21",
+    "chalk": "4.1.2",
+    "commander": "9.5.0",
+    "semver": "7.5.4",
+    "glob": "8.1.0"
+  }
+}

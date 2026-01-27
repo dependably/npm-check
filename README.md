@@ -231,15 +231,38 @@ duplicates.forEach((versions, packageName) => {
 console.log(`Total unique packages: ${countUniquePackages(lockfile)}`);
 ```
 
-## Development & Tests
+## Development & Testing
 
-Run the comprehensive test suite:
+### Unit Tests (Fast)
 
 ```bash
-npm test
+npm run test:unit
 ```
 
-The project includes 130 tests across 11 test suites covering:
+Runs fast unit tests with mocks. All tests complete in under 1 second.
+
+### Integration Tests (Docker Required)
+
+```bash
+# Build Docker images (one-time setup)
+npm run docker:build
+
+# Run integration tests with Node 18 and npm 10
+npm run docker:test:node18-npm10
+
+# Test multiple Node versions
+npm run docker:test:all
+```
+
+Integration tests validate that lockfile migration produces identical `node_modules` installations. See [TESTING.md](TESTING.md) for detailed testing guide.
+
+### All Tests
+
+```bash
+npm run test:all
+```
+
+The project includes 130+ tests across 11 test suites covering:
 - Format detection and validation
 - All migration paths (v1 ↔ v2 ↔ v3)
 - Updater operations with immutability
@@ -249,6 +272,7 @@ The project includes 130 tests across 11 test suites covering:
 - Streaming parser operations
 - Parallel processing operations
 - Progress reporting
+- npm ci migration validation (integration tests)
 
 ## Contributing
 

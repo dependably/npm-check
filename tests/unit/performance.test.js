@@ -9,7 +9,7 @@ import {
   mergeLockfileChunks,
   estimateLockfileSize,
   isLargeLockfile
-} from '../src/performance.js';
+} from '../../src/performance.js';
 
 describe('Performance Utilities', () => {
   const mockLockfile = {

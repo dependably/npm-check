@@ -1,12 +1,24 @@
 // jest.config.mjs
-export default {
+const config = {
   testEnvironment: 'node',
   transform: {
     '^.+\\.js$': 'babel-jest'
   },
-  setupFilesAfterEnv: ['<rootDir>/tests/jest.setup.js'],
+  setupFilesAfterEnv: ['<rootDir>/tests/unit/jest.setup.js'],
   moduleNameMapper: {
     '^src/(.*)$': '<rootDir>/src/$1'
   },
-  moduleFileExtensions: ['js', 'json', 'node']
+  moduleFileExtensions: ['js', 'json', 'node'],
+  testMatch: [
+    '<rootDir>/tests/unit/**/*.test.js',
+    '<rootDir>/tests/integration/**/*.test.js'
+  ],
+  testTimeout: 300000 // 5 minutes for integration tests
 };
+
+// Run integration tests serially
+if (process.env.CI || process.env.INTEGRATION_TESTS) {
+  config.maxWorkers = 1;
+}
+
+export default config;

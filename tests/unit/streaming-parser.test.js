@@ -5,8 +5,8 @@ import {
   StreamingParser,
   parseLockfileStream,
   parseLockfileStreamSync
-} from '../src/streaming-parser.js';
-import { parseLockfile } from '../src/parser.js';
+} from '../../src/streaming-parser.js';
+import { parseLockfile } from '../../src/parser.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);

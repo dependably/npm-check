@@ -1,7 +1,7 @@
 // tests/validator.test.js
 import fs from 'fs';
-import { validatePackageLock } from '../src/validator.js';
-import { LOCKFILE_VERSIONS } from '../src/format-library.js';
+import { validatePackageLock } from '../../src/validator.js';
+import { LOCKFILE_VERSIONS } from '../../src/format-library.js';
 
 describe('Package Lockfile Validator', () => {
   let testLockfilePath;

@@ -3,7 +3,7 @@ import {
   createProgressReporter,
   formatProgress,
   createProgressBar
-} from '../src/progress-reporter.js';
+} from '../../src/progress-reporter.js';
 
 describe('Progress Reporter', () => {
   describe('ProgressReporter class', () => {

@@ -3,9 +3,9 @@ import {
   processInParallel,
   parallelUpgradeIntegrityHashes,
   parallelDeduplicatePackages
-} from '../src/parallel-processor.js';
-import { upgradeIntegrityHashes } from '../src/updater.js';
-import { chunkLockfile } from '../src/performance.js';
+} from '../../src/parallel-processor.js';
+import { upgradeIntegrityHashes } from '../../src/updater.js';
+import { chunkLockfile } from '../../src/performance.js';
 
 describe('Parallel Processor', () => {
   // small helper fixture is available via factories if needed

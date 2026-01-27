@@ -4,7 +4,7 @@ import {
   generateIntegrityFromFile,
   isValidIntegrity,
   isPlaceholder
-} from '../src/integrity.js';
+} from '../../src/integrity.js';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';

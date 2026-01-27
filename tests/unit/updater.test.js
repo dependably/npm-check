@@ -4,7 +4,7 @@ import {
   findPackagesMatching,
   countUniquePackages,
   findDuplicatePackages
-} from '../src/updater.js';
+} from '../../src/updater.js';
 
 describe('Updater Functions', () => {
   const mockLockfileV3 = {

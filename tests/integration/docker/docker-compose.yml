@@ -1,0 +1,72 @@
+version: '3.8'
+
+services:
+  # Node 18 with npm 9
+  test-node18-npm9:
+    build:
+      context: ../../..
+      dockerfile: tests/integration/docker/Dockerfile
+      args:
+        NODE_VERSION: 18
+        NPM_VERSION: 9
+    volumes:
+      - ../../../src:/workspace/src:ro
+      - ../../../tests:/workspace/tests:ro
+      - test-cache-18-9:/root/.npm
+    environment:
+      - NODE_ENV=test
+      - CI=true
+
+  # Node 18 with npm 10
+  test-node18-npm10:
+    build:
+      context: ../../..
+      dockerfile: tests/integration/docker/Dockerfile
+      args:
+        NODE_VERSION: 18
+        NPM_VERSION: 10
+    volumes:
+      - ../../../src:/workspace/src:ro
+      - ../../../tests:/workspace/tests:ro
+      - test-cache-18-10:/root/.npm
+    environment:
+      - NODE_ENV=test
+      - CI=true
+
+  # Node 20 with npm 10
+  test-node20-npm10:
+    build:
+      context: ../../..
+      dockerfile: tests/integration/docker/Dockerfile
+      args:
+        NODE_VERSION: 20
+        NPM_VERSION: 10
+    volumes:
+      - ../../../src:/workspace/src:ro
+      - ../../../tests:/workspace/tests:ro
+      - test-cache-20-10:/root/.npm
+    environment:
+      - NODE_ENV=test
+      - CI=true
+
+  # Node 22 with npm 10
+  test-node22-npm10:
+    build:
+      context: ../../..
+      dockerfile: tests/integration/docker/Dockerfile
+      args:
+        NODE_VERSION: 22
+        NPM_VERSION: 10
+    volumes:
+      - ../../../src:/workspace/src:ro
+      - ../../../tests:/workspace/tests:ro
+      - test-cache-22-10:/root/.npm
+    environment:
+      - NODE_ENV=test
+      - CI=true
+
+volumes:
+  test-cache-18-9:
+  test-cache-18-10:
+  test-cache-20-10:
+  test-cache-22-10:

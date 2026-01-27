@@ -1,6 +1,6 @@
 // tests/fixer.test.js
-import { fixPackageLock } from '../src/fixer.js';
-import { LOCKFILE_VERSIONS } from '../src/format-library.js';
+import { fixPackageLock } from '../../src/fixer.js';
+import { LOCKFILE_VERSIONS } from '../../src/format-library.js';
 
 describe('Automated Fixer', () => {
   it('migrates v1 -> v2 when dependencies present', () => {
