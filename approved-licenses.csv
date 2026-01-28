@@ -1,0 +1,37 @@
+license,category,notes
+MIT,permissive,
+Apache-2.0,permissive,
+BSD-3-Clause,permissive,
+BSD-2-Clause,permissive,
+ISC,permissive,
+WTFPL,permissive,
+0BSD,permissive,
+Unlicense,permissive,
+Zlib,permissive,
+CC0-1.0,permissive,
+GPL-2.0,copyleft,Requires disclosure
+GPL-2.0-only,copyleft,Requires disclosure
+GPL-2.0-or-later,copyleft,Requires disclosure
+GPL-3.0,copyleft,Requires disclosure
+GPL-3.0-only,copyleft,Requires disclosure
+GPL-3.0-or-later,copyleft,Requires disclosure
+AGPL-3.0,copyleft,Requires disclosure
+AGPL-3.0-only,copyleft,Requires disclosure
+AGPL-3.0-or-later,copyleft,Requires disclosure
+LGPL-2.0,weak-copyleft,Library license with restrictions
+LGPL-2.0-only,weak-copyleft,Library license with restrictions
+LGPL-2.0-or-later,weak-copyleft,Library license with restrictions
+LGPL-2.1,weak-copyleft,Library license with restrictions
+LGPL-2.1-only,weak-copyleft,Library license with restrictions
+LGPL-2.1-or-later,weak-copyleft,Library license with restrictions
+LGPL-3.0,weak-copyleft,Library license with restrictions
+LGPL-3.0-only,weak-copyleft,Library license with restrictions
+LGPL-3.0-or-later,weak-copyleft,Library license with restrictions
+MPL-2.0,weak-copyleft,Module licensing
+CDDL-1.0,weak-copyleft,
+CDDL-1.1,weak-copyleft,
+EPL-1.0,weak-copyleft,
+EPL-2.0,weak-copyleft,
+Python-2.0,permissive,
+CC-BY-4.0,permissive,
+(MIT OR CC0-1.0),permissive,

@@ -153,9 +153,31 @@ const packageJson = JSON.parse(fs.readFileSync('package.json'));
 const result = validateWithPackageJson(lockfile, packageJson);
 ```
 
-## Planned Components
+### 4. Checker (`checker.js`)
 
-### 4. Fixer (Planned)
+Verification engine for package integrity and licenses:
+
+**Integrity Checking:**
+- Verify package hashes in `package-lock.json` match actual packages in `node_modules`
+- Detect corrupted or modified packages
+- Skip packages without integrity hashes gracefully
+- Report detailed hash mismatches
+
+**License Validation:**
+- Parse and validate SPDX license expressions (OR, AND operators)
+- Check licenses against approved CSV list
+- Distinguish between rejected, unknown, and approved licenses
+- Support strict mode for license enforcement
+
+**Key Functions:**
+- `checkIntegrity()` - Verify package hashes
+- `checkLicenses()` - Validate package licenses
+- `checkAll()` - Run both checks
+- `parseLicensesCsv()` - Parse approved licenses file
+
+## Completed Components
+
+### 5. Fixer (`fixer.js`)
 
 Automated repair functionality:
 
@@ -166,26 +188,38 @@ Automated repair functionality:
 - Repair broken dependency chains
 - Update outdated resolved URLs
 
-### 5. CLI Interface (Planned)
+### 6. CLI Interface (`bin/cli.js`)
 
 Command-line tool for easy usage:
 
 ```bash
-lockfix validate package-lock.json
-lockfix migrate --to=3 package-lock.json
-lockfix fix --auto package-lock.json
-lockfix dedupe package-lock.json
-lockfix check --against=package.json
+npfix validate package-lock.json
+npfix migrate 3 package-lock.json
+npfix fix --write package-lock.json
+npfix dedupe --write package-lock.json
+npfix check --check hash package-lock.json
+npfix check --check license package-lock.json
+npfix upgrade-hashes --write package-lock.json
 ```
 
-### 6. Updater (Planned)
+### 7. Updater (`updater.js`)
 
 Dependency update management:
 
-- Update specific packages while maintaining lockfile integrity
+- Upgrade integrity hashes from SHA1 to SHA512
+- Deduplicate redundant package entries
 - Batch updates with validation
-- Rollback capability
-- Change tracking and diff generation
+- Change tracking and reporting
+
+## Planned Components
+
+### Future: Advanced Features
+
+- Interactive conflict resolution UI
+- Performance optimizations for extremely large files (>100MB)
+- Plugin system for custom validators
+- Automated package update tool
+- Git integration for lockfile diffing
 
 ## Use Cases
 
@@ -291,18 +325,25 @@ const migrated = migrateToVersion(lockfileData, LOCKFILE_VERSIONS.V3);
 - Full validation engine with configurable options
 - Bidirectional migration between all versions
 - Path parsing and manipulation utilities
-
-**In Progress:**
 - Automated fixer with repair strategies
 - CLI interface with rich output
+- Backup and rollback system
+- Updater with hash upgrades and deduplication
+- Checker with integrity verification and license validation
+- Progress reporting with real-time feedback
+- Parallel processing for performance
+- Streaming parser for large files
+
+**In Progress:**
 - Documentation and examples
+- Advanced license validation features
 
 **Planned:**
-- Dependency updater
-- Backup and rollback system
-- Interactive conflict resolution
-- Performance optimizations for large files
+- Interactive conflict resolution UI
+- Performance optimizations for extremely large files (>100MB)
 - Plugin system for custom validators
+- Advanced package update tool
+- Git integration for lockfile diffing
 
 ## Contributing
 

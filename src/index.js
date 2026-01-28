@@ -41,3 +41,10 @@ export {
   parallelDeduplicatePackages,
   parallelMigrate
 } from './parallel-processor.js';
+export {
+  checkIntegrity,
+  checkLicenses,
+  checkAll,
+  parseLicensesCsv,
+  CheckError
+} from './checker.js';

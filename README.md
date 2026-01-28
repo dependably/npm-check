@@ -44,6 +44,21 @@ npfix upgrade-hashes --write
 # Deduplicate packages
 npfix dedupe --write
 
+# Check integrity hashes and licenses
+npfix check
+
+# Check only integrity hashes
+npfix check --check hash
+
+# Check only licenses against approved list
+npfix check --check license
+
+# Use custom approved licenses file
+npfix check --check license --licenses-csv ./my-approved.csv
+
+# Strict mode (treats unknown licenses as errors)
+npfix check --check license --strict
+
 # Specify a custom file path
 npfix validate ./path/to/package-lock.json
 
@@ -58,7 +73,54 @@ npfix restore
 - The file argument is optional and defaults to `./package-lock.json` in the current directory.
 - The migrate command defaults to version 3 (latest) when no target version is specified.
 - The `--write` flag creates automatic backups before modifying files.
+- The `check` command requires `node_modules` directory to exist for verification.
 - Aliases: `package-lock-fixer` and `npfix` both point to the same CLI.
+
+### Check Command
+
+The `check` command validates package integrity hashes and licenses:
+
+**Integrity Check** – Verifies that packages in `node_modules` match the integrity hashes recorded in `package-lock.json`:
+
+```bash
+npfix check --check hash
+```
+
+This is useful for detecting if packages have been modified or corrupted after installation.
+
+**License Check** – Verifies that all packages in `node_modules` have licenses that are in your approved list:
+
+```bash
+# Create approved-licenses.csv in your project root
+npfix check --check license
+
+# Or use a custom CSV file
+npfix check --check license --licenses-csv ./my-approved-licenses.csv
+```
+
+**Approved Licenses CSV Format:**
+
+```csv
+license,category,notes
+MIT,permissive,
+Apache-2.0,permissive,
+BSD-3-Clause,permissive,
+GPL-2.0,copyleft,Requires disclosure
+```
+
+The first column is the SPDX license identifier that must match exactly. Comments (lines starting with `#`) and empty lines are ignored.
+
+**Exit Codes:**
+- `0` – All checks passed
+- `1` – At least one check failed
+
+**Strict Mode:**
+
+Use `--strict` to treat unknown licenses (missing license field) as errors instead of warnings:
+
+```bash
+npfix check --check license --strict
+```
 
 ## API
 
@@ -72,7 +134,11 @@ import {
   migrateToVersion,
   fixPackageLock,
   upgradeIntegrityHashes,
-  deduplicatePackages
+  deduplicatePackages,
+  checkIntegrity,
+  checkLicenses,
+  checkAll,
+  parseLicensesCsv
 } from 'package-lock-fixer';
 
 // Parse and validate a lockfile
@@ -91,6 +157,48 @@ const { fixedLockfile, fixes } = fixPackageLock(lockfile, {
 // Write back to file
 serializeLockfile('package-lock.json', fixedLockfile, true);
 ```
+
+### Checking Integrity and Licenses
+
+```js
+// Check integrity hashes
+const { valid: hashesValid, passed, failed, errors } = await checkIntegrity(
+  lockfile,
+  {
+    nodeModulesPath: './node_modules',
+    onProgress: (progress) => console.log(progress.percentage + '%')
+  }
+);
+
+// Check licenses
+const approvedLicenses = await parseLicensesCsv('./approved-licenses.csv');
+const { valid: licensesValid, approved, rejected, warnings } = await checkLicenses(
+  lockfile,
+  {
+    nodeModulesPath: './node_modules',
+    csvPath: './approved-licenses.csv',
+    strict: false, // Unknown licenses are warnings, not errors
+    onProgress: (progress) => console.log(progress.percentage + '%')
+  }
+);
+
+// Or run both checks at once
+const { valid, integrity, licenses } = await checkAll(lockfile, {
+  nodeModulesPath: './node_modules',
+  csvPath: './approved-licenses.csv',
+  strict: false
+});
+```
+
+**Integrity Check Options:**
+- `nodeModulesPath` (string) – Path to node_modules directory (default: './node_modules')
+- `onProgress` (function) – Progress callback called with `{ current, total, percentage, stage }`
+
+**License Check Options:**
+- `csvPath` (string) – Path to approved licenses CSV file (default: './approved-licenses.csv')
+- `nodeModulesPath` (string) – Path to node_modules directory (default: './node_modules')
+- `strict` (boolean) – Treat unknown licenses as errors instead of warnings (default: false)
+- `onProgress` (function) – Progress callback
 
 ### Performance & Large Files
 

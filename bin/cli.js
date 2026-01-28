@@ -9,6 +9,7 @@ import { upgradeIntegrityHashes, deduplicatePackages } from '../src/updater.js';
 import { fixPackageLock } from '../src/fixer.js';
 import { createBackup, listBackups, restoreFromLatestBackup, BackupError } from '../src/backup.js';
 import { createProgressBar } from '../src/progress-reporter.js';
+import { checkIntegrity, checkLicenses } from '../src/checker.js';
 
 const argv = process.argv.slice(2);
 
@@ -25,10 +26,18 @@ Commands:
   upgrade-hashes [file]      Upgrade integrity hashes sha1→sha256
   dedupe [file]              Deduplicate packages in lockfile
   fix [file] [--write]       Run automated fixer with optional write
+  check [file]               Verify integrity hashes and licenses
   backups [file]             List all backups for a file
   restore [file]             Restore from latest backup
 
-Options:
+Check Options:
+  --check hash               Only verify integrity checksums
+  --check license            Only verify licenses against approved list
+  --check all                Run both checks (default)
+  --licenses-csv <path>      Path to approved licenses CSV
+  --strict                   Treat warnings as errors
+
+General Options:
   --write                    Write changes to file (creates backup)
   -h, --help                 Show this help
 
@@ -37,6 +46,10 @@ Examples:
   npfix validate ./custom-lock.json
   npfix migrate 3 --write
   npfix fix --write
+  npfix check                              # Run all checks
+  npfix check --check hash                 # Only verify integrity
+  npfix check --check license              # Only check licenses
+  npfix check --licenses-csv ./my-list.csv # Use custom CSV
   npfix restore
 
 Default file: ./package-lock.json
@@ -251,6 +264,116 @@ async function main() {
 
         restoreFromLatestBackup(filePath);
         console.log(`\n✅ File restored successfully`);
+        break;
+      }
+
+      case 'check': {
+        const filePath = getFilePath(argv[1]);
+        ensureFileExists(filePath);
+
+        // Parse flags
+        let checkType = 'all';  // Default to all checks
+        let licensesCsv = './approved-licenses.csv';
+        let strict = argv.includes('--strict');
+
+        // Parse --check flag
+        const checkIndex = argv.indexOf('--check');
+        if (checkIndex !== -1 && argv[checkIndex + 1]) {
+          checkType = argv[checkIndex + 1];
+          if (!['hash', 'license', 'all'].includes(checkType)) {
+            console.error('❌ Invalid check type. Use: hash, license, or all');
+            process.exit(1);
+          }
+        }
+
+        // Parse --licenses-csv flag
+        const csvIndex = argv.indexOf('--licenses-csv');
+        if (csvIndex !== -1 && argv[csvIndex + 1]) {
+          licensesCsv = argv[csvIndex + 1];
+        }
+
+        // Parse lockfile
+        const lockfile = parseLockfile(filePath);
+
+        // Setup progress reporting
+        let lastProgress = null;
+        const onProgress = (progress) => {
+          if (!lastProgress || progress.percentage !== lastProgress.percentage) {
+            process.stdout.write(`\r${createProgressBar(progress)} ${progress.stage}`);
+            lastProgress = progress;
+          }
+        };
+
+        const options = {
+          onProgress,
+          strict,
+          csvPath: licensesCsv
+        };
+
+        let allValid = true;
+
+        try {
+          // Run hash check
+          if (checkType === 'hash' || checkType === 'all') {
+            console.log('🔐 Checking integrity hashes...');
+            const hashResult = await checkIntegrity(lockfile, options);
+
+            process.stdout.write('\r' + ' '.repeat(80) + '\r');
+            console.log(`   Checked: ${hashResult.checked}`);
+            console.log(`   ✅ Passed: ${hashResult.passed}`);
+            console.log(`   ❌ Failed: ${hashResult.failed}`);
+            console.log(`   ⏭️  Skipped: ${hashResult.skipped}`);
+
+            if (hashResult.errors.length > 0) {
+              console.log('\n   Failed packages:');
+              hashResult.errors.forEach(err => {
+                console.log(`     • ${err.package}`);
+                if (err.expected && err.actual) {
+                  console.log(`       Expected: ${err.expected.slice(0, 50)}...`);
+                  console.log(`       Actual:   ${err.actual.slice(0, 50)}...`);
+                } else if (err.error) {
+                  console.log(`       Error: ${err.error}`);
+                }
+              });
+            }
+
+            allValid = allValid && hashResult.valid;
+          }
+
+          // Run license check
+          if (checkType === 'license' || checkType === 'all') {
+            console.log('\n📜 Checking licenses...');
+            const licenseResult = await checkLicenses(lockfile, options);
+
+            process.stdout.write('\r' + ' '.repeat(80) + '\r');
+            console.log(`   Checked: ${licenseResult.checked}`);
+            console.log(`   ✅ Approved: ${licenseResult.approved}`);
+            console.log(`   ❌ Rejected: ${licenseResult.rejected}`);
+            console.log(`   ⚠️  Unknown: ${licenseResult.unknown}`);
+
+            if (licenseResult.errors.length > 0) {
+              console.log('\n   Unapproved/Unknown licenses:');
+              licenseResult.errors.forEach(err => {
+                console.log(`     • ${err.package}: ${err.license || 'UNKNOWN'}`);
+              });
+            }
+
+            if (licenseResult.warnings.length > 0 && !strict) {
+              console.log('\n   Warnings (unknown licenses):');
+              licenseResult.warnings.forEach(warn => {
+                console.log(`     • ${warn.package}: ${warn.license || 'UNKNOWN'}`);
+              });
+            }
+
+            allValid = allValid && licenseResult.valid;
+          }
+
+          console.log(allValid ? '\n✅ All checks passed' : '\n❌ Some checks failed');
+          process.exit(allValid ? 0 : 1);
+
+        } catch (error) {
+          handleError(error, `${command} command failed`);
+        }
         break;
       }
 
