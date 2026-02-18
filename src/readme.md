@@ -698,13 +698,16 @@ const merged = mergeLockfileChunks(results);
 
 ---
 
+## Implemented Features
+
+1. **Streaming JSON Parser** - For lockfiles too large to load entirely in memory (streaming-parser.js)
+2. **Parallel Processing** - Distribute work across multiple processes/workers (parallel-processor.js)
+3. **Progress Reporting** - Callbacks for long-running operations (progress-reporter.js)
+
 ## Future Enhancement Opportunities
 
-1. **Streaming JSON Parser** - For lockfiles too large to load entirely in memory
-2. **Parallel Processing** - Distribute work across multiple processes/workers
-3. **Progress Reporting** - Callbacks for long-running operations
-4. **Advanced Deduplication** - Smart version resolution (semver matching)
-5. **Integrity Verification** - Actually validate hashes against downloaded packages
-6. **Compression** - Optional compression for backup storage
-7. **Diff Generation** - Show what changed between versions
-8. **Dependency Resolution** - Detect and report unresolved version conflicts
+1. **Advanced Deduplication** - Smart version resolution (semver matching)
+2. **Integrity Verification** - Actually validate hashes against downloaded packages
+3. **Compression** - Optional compression for backup storage
+4. **Diff Generation** - Show what changed between versions
+5. **Dependency Resolution** - Detect and report unresolved version conflicts

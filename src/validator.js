@@ -68,7 +68,7 @@ export function validatePackageLock(lockfile, packageJson = null, options = {}) 
     validateAgainstPackageJson(lockfile, packageJson, errors);
   }
 
-  const valid = errors.length === 0;
+  const valid = errors.length === 0 && !(options.strictMode && warnings.length > 0);
   return { valid, errors, warnings, info };
 }
 
@@ -144,6 +144,14 @@ function validatePackagesMap(packages, errors, warnings, options) {
       errors.push(new ValidationError(`Missing integrity hash for package at ${path}`, 'MISSING_INTEGRITY'));
       warnings.push({ code: 'MISSING_INTEGRITY', message: `Missing integrity hash for package at ${path}` });
     }
+    if (pkg.resolved) {
+      // Validate resolved URL format
+      const validSchemes = ['https://', 'http://', 'git+', 'git://', 'file:'];
+      const hasValidScheme = validSchemes.some(scheme => pkg.resolved.startsWith(scheme));
+      if (typeof pkg.resolved !== 'string' || !hasValidScheme) {
+        warnings.push({ code: 'INVALID_RESOLVED', message: `Invalid resolved URL for package at ${path}: ${pkg.resolved}` });
+      }
+    }
     if (pkg.dependencies) {
       validateDependenciesTree(pkg.dependencies, errors);
     }
@@ -161,10 +169,30 @@ function validatePackagesMap(packages, errors, warnings, options) {
 
 function validateAgainstPackageJson(lockfile, packageJson, errors) {
   const lockDeps = lockfile.packages && lockfile.packages[''] && lockfile.packages[''].dependencies;
+
+  // Check dependencies
   const pkgDeps = packageJson.dependencies || {};
   for (const [name] of Object.entries(pkgDeps)) {
     if (!lockDeps || !lockDeps[name]) {
       errors.push(new ValidationError(`Missing dependency ${name} in lockfile`, 'MISSING_IN_LOCKFILE'));
+    }
+  }
+
+  // Check devDependencies
+  const lockDevDeps = lockfile.packages && lockfile.packages[''] && lockfile.packages[''].devDependencies;
+  const pkgDevDeps = packageJson.devDependencies || {};
+  for (const [name] of Object.entries(pkgDevDeps)) {
+    if (!lockDevDeps || !lockDevDeps[name]) {
+      errors.push(new ValidationError(`Missing devDependency ${name} in lockfile`, 'MISSING_DEV_IN_LOCKFILE'));
+    }
+  }
+
+  // Check optionalDependencies
+  const lockOptDeps = lockfile.packages && lockfile.packages[''] && lockfile.packages[''].optionalDependencies;
+  const pkgOptDeps = packageJson.optionalDependencies || {};
+  for (const [name] of Object.entries(pkgOptDeps)) {
+    if (!lockOptDeps || !lockOptDeps[name]) {
+      errors.push(new ValidationError(`Missing optionalDependency ${name} in lockfile`, 'MISSING_OPT_IN_LOCKFILE'));
     }
   }
 }

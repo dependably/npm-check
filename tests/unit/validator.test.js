@@ -407,5 +407,105 @@ describe('Package Lockfile Validator', () => {
       const result = validatePackageLock(lockfile, { allowMissingIntegrity: true });
       expect(result.valid).toBe(true);
     });
+
+    it('should cause valid: false with strictMode when warnings present', () => {
+      const lockfile = {
+        name: 'test-project',
+        version: '1.0.0',
+        lockfileVersion: 2,
+        packages: {
+          '': { name: 'test-project', version: '1.0.0' },
+          'node_modules/pkg': {
+            name: 'pkg',
+            version: '1.0.0'
+            // Missing integrity - will generate warning
+          }
+        }
+      };
+
+      const result = validatePackageLock(lockfile, {
+        allowMissingIntegrity: false,
+        strictMode: true
+      });
+
+      expect(result.valid).toBe(false);
+      expect(result.warnings.length > 0).toBe(true);
+    });
+
+    it('should generate warning for invalid resolved URL', () => {
+      const lockfile = {
+        name: 'test-project',
+        version: '1.0.0',
+        lockfileVersion: 2,
+        packages: {
+          '': { name: 'test-project', version: '1.0.0' },
+          'node_modules/pkg': {
+            name: 'pkg',
+            version: '1.0.0',
+            resolved: 'not-a-valid-url'
+          }
+        }
+      };
+
+      const result = validatePackageLock(lockfile);
+
+      expect(result.warnings.some(w => w.code === 'INVALID_RESOLVED')).toBe(true);
+    });
+
+    it('should detect missing devDependencies in lockfile', () => {
+      const lockfile = {
+        name: 'test-project',
+        version: '1.0.0',
+        lockfileVersion: 2,
+        packages: {
+          '': {
+            name: 'test-project',
+            version: '1.0.0'
+            // Missing jest devDependency
+          }
+        }
+      };
+
+      const packageJson = {
+        name: 'test-project',
+        version: '1.0.0',
+        devDependencies: {
+          jest: '27.0.0'
+        }
+      };
+
+      const result = validatePackageLock(lockfile, packageJson, { validateAgainstPackageJson: true });
+
+      expect(result.valid).toBe(false);
+      expect(result.errors.some(e => e.code === 'MISSING_DEV_IN_LOCKFILE')).toBe(true);
+    });
+
+    it('should detect missing optionalDependencies in lockfile', () => {
+      const lockfile = {
+        name: 'test-project',
+        version: '1.0.0',
+        lockfileVersion: 2,
+        packages: {
+          '': {
+            name: 'test-project',
+            version: '1.0.0'
+            // Missing optional dependency
+          }
+        }
+      };
+
+      const packageJson = {
+        name: 'test-project',
+        version: '1.0.0',
+        optionalDependencies: {
+          'optional-pkg': '1.0.0'
+        }
+      };
+
+      const result = validatePackageLock(lockfile, packageJson, { validateAgainstPackageJson: true });
+
+      expect(result.valid).toBe(false);
+      expect(result.errors.some(e => e.code === 'MISSING_OPT_IN_LOCKFILE')).toBe(true);
+    });
   });
 });

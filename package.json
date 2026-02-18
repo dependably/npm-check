@@ -19,6 +19,7 @@
     "test:unit": "npm test -- --testPathPattern=tests/unit",
     "test:integration": "INTEGRATION_TESTS=1 npm test -- --testPathPattern=tests/integration --runInBand",
     "test:all": "npm run test:unit && npm run test:integration",
+    "test:coverage": "npm test -- --coverage",
     "docker:build": "docker-compose -f tests/integration/docker/docker-compose.yml build",
     "docker:test:node18-npm9": "docker-compose -f tests/integration/docker/docker-compose.yml run --rm test-node18-npm9",
     "docker:test:node18-npm10": "docker-compose -f tests/integration/docker/docker-compose.yml run --rm test-node18-npm10",

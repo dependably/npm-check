@@ -154,5 +154,60 @@ describe('Package Lockfile Migrator', () => {
 
       expect(result.packages).toBeDefined();
     });
+
+    it('should throw error when migrating v3 to v1', () => {
+      const v3Lockfile = {
+        name: 'test-project',
+        version: '1.0.0',
+        lockfileVersion: 3,
+        packages: {
+          '': { name: 'test-project', version: '1.0.0' }
+        }
+      };
+
+      expect(() => migrateToVersion(v3Lockfile, LOCKFILE_VERSIONS.V1)).toThrow(MigrationError);
+    });
+
+    it('should preserve package entry in packages map after v1 to v2 migration', () => {
+      const v1Lockfile = {
+        name: 'test-project',
+        version: '1.0.0',
+        lockfileVersion: 1,
+        dependencies: {
+          express: {
+            version: '4.18.0',
+            resolved: 'https://registry.npmjs.org/express/-/express-4.18.0.tgz',
+            integrity: 'sha512-abc123'
+          }
+        }
+      };
+
+      const result = migrateToVersion(v1Lockfile, LOCKFILE_VERSIONS.V2);
+
+      expect(result.packages).toBeDefined();
+      expect(result.packages['']).toBeDefined();
+      expect(result.packages[''].dependencies).toBeDefined();
+      expect(result.packages[''].dependencies.express).toBeDefined();
+      expect(result.packages[''].dependencies.express.version).toBe('4.18.0');
+    });
+
+    it('should preserve workspace entries during v2 to v3 migration', () => {
+      const v2Lockfile = {
+        name: 'monorepo',
+        version: '1.0.0',
+        lockfileVersion: 2,
+        packages: {
+          '': { name: 'monorepo', version: '1.0.0' },
+          'packages/app': { name: '@monorepo/app', version: '1.0.0', link: true },
+          'node_modules/lodash': { name: 'lodash', version: '4.17.21' }
+        }
+      };
+
+      const result = migrateToVersion(v2Lockfile, LOCKFILE_VERSIONS.V3);
+
+      expect(result.packages['packages/app']).toBeDefined();
+      expect(result.packages['packages/app'].link).toBe(true);
+      expect(result.packages['node_modules/lodash']).toBeDefined();
+    });
   });
 });

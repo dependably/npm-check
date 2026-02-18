@@ -13,7 +13,14 @@ const config = {
     '<rootDir>/tests/unit/**/*.test.js',
     '<rootDir>/tests/integration/**/*.test.js'
   ],
-  testTimeout: 300000 // 5 minutes for integration tests
+  testTimeout: 300000, // 5 minutes for integration tests
+  collectCoverageFrom: ['src/**/*.js'],
+  coverageThreshold: {
+    global: {
+      lines: 70,
+      functions: 70
+    }
+  }
 };
 
 // Run integration tests serially

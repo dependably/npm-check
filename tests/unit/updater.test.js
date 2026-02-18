@@ -30,18 +30,18 @@ describe('Updater Functions', () => {
   };
 
   describe('upgradeIntegrityHashes', () => {
-    it('upgrades sha1 hashes to sha256', () => {
+    it('upgrades sha1 hashes to sha512', () => {
       const result = upgradeIntegrityHashes(mockLockfileV3);
 
       const lodashPkg = result.packages['node_modules/lodash'];
-      expect(lodashPkg.integrity).toBe('sha256-abc123');
+      expect(lodashPkg.integrity).toBe('sha512-abc123');
     });
 
     it('upgrades nested dependency hashes', () => {
       const result = upgradeIntegrityHashes(mockLockfileV3);
 
       const lodashPkg = result.packages['node_modules/lodash'];
-      expect(lodashPkg.dependencies['sub-dep'].integrity).toBe('sha256-xyz789');
+      expect(lodashPkg.dependencies['sub-dep'].integrity).toBe('sha512-xyz789');
     });
 
     it('preserves non-sha1 hashes by default', () => {

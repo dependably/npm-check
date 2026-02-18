@@ -72,33 +72,51 @@ Completed:
   - `createProgressBar` - terminal progress bar support
 - Comprehensive test suites for all modules (`tests/performance.test.js`, `tests/streaming-parser.test.js`, `tests/parallel-processor.test.js`, `tests/progress-reporter.test.js`) with 130 total tests
 
-## CRITICAL FIXES APPLIED (this session):
+## CRITICAL FIXES APPLIED (previous session):
 1. **Data Mutation Issue FIXED**: `upgradeIntegrityHashes` now uses immutable shallow copies instead of mutating input objects
 2. **V2→V3 Migration Data Loss FIXED**: Now preserves all packages instead of losing nested packages
 3. **Error Handling STANDARDIZED**: Consistent fail-fast approach with explicit error types (BackupError, FixerError)
 4. **Code Duplication ELIMINATED**: `src/updater.js` now re-exports from `src/updater-optimized.js`, removing maintenance burden
 5. **CLI REFACTORED**: Removed complex manual argument parsing, improved UX and error handling
 
+## ITERATION & IMPROVEMENT PASS (current session - v1.1.0):
+### Bug Fixes ✅
+1. **Integrity Hash Upgrade**: Fixed `upgradeIntegrityHashes` incorrectly using SHA256 instead of SHA512
+2. **Root Package Integrity**: Fixed fixer adding integrity to root package entry `packages['']`
+3. **CSV Header Detection**: Fixed `parseLicensesCsv` always skipping first license entry
+4. **Workspace Package Licensing**: Fixed workspace paths being falsely rejected in checkLicenses
+5. **Missing package.json Handling**: Fixed treating missing package.json as rejection instead of unknown
+
+### Feature Implementation ✅
+1. **Strict Mode in Validator**: Implemented strictMode option to treat warnings as validation errors
+2. **Resolved URL Validation**: Added validation for resolved field URL schemes
+3. **Extended package.json Validation**: Added devDependencies and optionalDependencies checks
+4. **SPDX Parentheses Support**: Added support for parenthesized SPDX expressions
+5. **--version Flag**: Added CLI version flag (-v/--version)
+6. **clean-backups Command**: Added CLI command with --keep option
+7. **Public API Exports**: Exported backup, integrity, and format-library utilities from src/index.js
+
+### Test Coverage Expansion ✅
+1. **parser.test.js**: Expanded from 1 to 5 tests (nonexistent file, invalid JSON, overwrite protection, progress callback)
+2. **migrator.test.js**: Added V3→V1 rejection, content-correctness, workspace survival tests
+3. **fixer.test.js**: Added normalizeTo, throwOnError, empty fixes, root package exclusion tests
+4. **checker.test.js**: Added headerless CSV, workspace skip, missing package.json, parenthesized SPDX tests
+5. **validator.test.js**: Added strictMode, resolved URL, devDeps/optDeps detection tests
+6. **Coverage Config**: Added Jest coverage configuration with 70% threshold
+
+### Documentation ✅
+1. **src/readme.md**: Moved streaming/parallel/progress from "Future" to "Implemented"
+2. **CHANGELOG.md**: Released [Unreleased] as [1.1.0] with date 2026-02-17
+3. **project_plan.txt**: Updated with completed work (this section)
+
 In Progress:
 - (none currently)
 
 Planned (Priority Order):
-1. Update README.md to remove corruption and document streaming/parallel/progress features
-2. Advanced deduplication with smart version resolution (semver matching)
-3. Integrity verification - validate hashes against downloaded packages
-4. Diff generation - show what changed between lockfile versions
-5. Dependency conflict detection - identify and report unresolved version conflicts
-
-
-## DOCUMENTATION ISSUES TO FIX:
-- **README.md is corrupted**: Lines 44-137 have malformed markdown with duplicate content (````markdown fence, not closed properly)
-  - Missing documentation for streaming parser, parallel processing, and progress reporter features
-  - Should include examples of new capabilities
-- **src/readme.md lists "Future Enhancements"** that are already implemented:
-  - Streaming JSON Parser ✅ (already in src/streaming-parser.js)
-  - Parallel Processing ✅ (already in src/parallel-processor.js)
-  - Progress Reporting ✅ (already in src/progress-reporter.js)
-  - Should be updated to reflect completed work
+1. Advanced deduplication with smart version resolution (semver matching)
+2. Integrity verification - validate hashes against downloaded packages
+3. Diff generation - show what changed between lockfile versions
+4. Dependency conflict detection - identify and report unresolved version conflicts
 
 Notes:
 - Code locations: core logic in `src/`; CLI in `bin/`; tests in `tests/`; workers in `src/workers/`.

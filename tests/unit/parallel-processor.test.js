@@ -113,7 +113,7 @@ describe('Parallel Processor', () => {
       // Should return synchronously (not a Promise) when parallel is false
       const result = upgradeIntegrityHashes(lockfile, { parallel: false });
       expect(result).not.toBeInstanceOf(Promise);
-      expect(result.packages['node_modules/test'].integrity).toBe('sha256-test');
+      expect(result.packages['node_modules/test'].integrity).toBe('sha512-test');
     });
   });
 

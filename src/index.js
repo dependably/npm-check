@@ -2,15 +2,35 @@
 export { parseLockfile, serializeLockfile } from './parser.js';
 export { validatePackageLock, ValidationError } from './validator.js';
 export { migrateToVersion, PackageLockMigrator, MigrationError } from './migrator.js';
-export { 
-  upgradeIntegrityHashes, 
+export {
+  upgradeIntegrityHashes,
   deduplicatePackages,
   findPackagesMatching,
   countUniquePackages,
   findDuplicatePackages
 } from './updater.js';
 export { fixPackageLock, FixerError } from './fixer.js';
-export { LOCKFILE_VERSIONS } from './format-library.js';
+export {
+  LOCKFILE_VERSIONS,
+  detectLockfileVersion,
+  hasPackagesMap,
+  hasDependenciesTree
+} from './format-library.js';
+export {
+  createBackup,
+  listBackups,
+  restoreFromLatestBackup,
+  cleanOldBackups,
+  BackupError
+} from './backup.js';
+export {
+  generateIntegrityFromData,
+  generateIntegrityFromFile,
+  generateIntegrityFromRegistry,
+  generateOrPlaceholderIntegrity,
+  isValidIntegrity,
+  isPlaceholder
+} from './integrity.js';
 export {
   shallowCopyLockfile,
   processBatchedPackages,

@@ -58,6 +58,8 @@ export function fixPackageLock(lockfile, options = {}) {
   // Fill placeholder integrity hashes when missing
   if (fillMissingIntegrity && fixed.packages && typeof fixed.packages === 'object') {
     for (const [pkgPath, pkg] of Object.entries(fixed.packages)) {
+      // Skip root package - it should not have integrity field
+      if (pkgPath === '') continue;
       if (pkg && typeof pkg === 'object') {
         if (!pkg.integrity) {
           pkg.integrity = 'sha512-PLACEHOLDER';

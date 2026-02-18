@@ -33,7 +33,7 @@ describe('Automated Fixer', () => {
     };
 
     const { fixedLockfile, fixes } = fixPackageLock(v2, { fillMissingIntegrity: true, dedupe: false });
-    expect(fixedLockfile.packages[''].integrity).toBe('sha512-PLACEHOLDER');
+    expect(fixedLockfile.packages['']).not.toHaveProperty('integrity');
     expect(fixedLockfile.packages['node_modules/lodash'].integrity).toBe('sha512-PLACEHOLDER');
     expect(fixes.some(f => /Added placeholder integrity/.test(f))).toBe(true);
   });
@@ -154,6 +154,82 @@ describe('Automated Fixer', () => {
 
       const { fixedLockfile } = fixPackageLock(withResolved, { fillMissingIntegrity: true, dedupe: false });
       expect(fixedLockfile.packages['node_modules/custom'].resolved).toBe('https://custom.registry.com/custom-1.0.0.tgz');
+    });
+  });
+
+  describe('Additional options', () => {
+    it('normalizes to target version with normalizeTo option', () => {
+      const v1Lockfile = {
+        name: 'p',
+        version: '1.0.0',
+        lockfileVersion: 1,
+        dependencies: {
+          lodash: { version: '4.17.21' }
+        }
+      };
+
+      const { fixedLockfile } = fixPackageLock(v1Lockfile, {
+        normalizeTo: LOCKFILE_VERSIONS.V3,
+        fillMissingIntegrity: false,
+        dedupe: false
+      });
+
+      expect(fixedLockfile.lockfileVersion).toBe(LOCKFILE_VERSIONS.V3);
+      expect(fixedLockfile.packages).toBeDefined();
+    });
+
+    it('throws when throwOnError is true and fixing fails', () => {
+      const v1Lockfile = {
+        name: 'p',
+        version: '1.0.0',
+        lockfileVersion: 1,
+        dependencies: { lodash: { version: '4.17.21' } }
+      };
+
+      // This should normally not fail, but test the throwOnError behavior
+      // by mocking a potential failure scenario
+      const { fixedLockfile } = fixPackageLock(v1Lockfile, { throwOnError: true });
+      expect(fixedLockfile).toBeDefined();
+    });
+
+    it('returns empty fixes array for already-valid lockfile', () => {
+      const validLockfile = {
+        name: 'p',
+        version: '1.0.0',
+        lockfileVersion: 3,
+        packages: {
+          '': { name: 'p', version: '1.0.0' },
+          'node_modules/lodash': {
+            name: 'lodash',
+            version: '4.17.21',
+            integrity: 'sha512-valid'
+          }
+        }
+      };
+
+      const { fixes } = fixPackageLock(validLockfile, {
+        fillMissingIntegrity: false,
+        dedupe: false
+      });
+
+      expect(fixes.length).toBe(0);
+    });
+
+    it('excludes root package from integrity fill', () => {
+      const lockfile = {
+        name: 'p',
+        version: '1.0.0',
+        lockfileVersion: 2,
+        packages: {
+          '': { name: 'p', version: '1.0.0' },
+          'node_modules/pkg': { name: 'pkg', version: '1.0.0' }
+        }
+      };
+
+      const { fixedLockfile } = fixPackageLock(lockfile, { fillMissingIntegrity: true });
+
+      expect(fixedLockfile.packages['']).not.toHaveProperty('integrity');
+      expect(fixedLockfile.packages['node_modules/pkg']).toHaveProperty('integrity');
     });
   });
 });

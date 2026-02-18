@@ -7,7 +7,7 @@ import { validatePackageLock } from '../src/validator.js';
 import { migrateToVersion } from '../src/migrator.js';
 import { upgradeIntegrityHashes, deduplicatePackages } from '../src/updater.js';
 import { fixPackageLock } from '../src/fixer.js';
-import { createBackup, listBackups, restoreFromLatestBackup, BackupError } from '../src/backup.js';
+import { createBackup, listBackups, restoreFromLatestBackup, cleanOldBackups, BackupError } from '../src/backup.js';
 import { createProgressBar } from '../src/progress-reporter.js';
 import { checkIntegrity, checkLicenses } from '../src/checker.js';
 
@@ -23,12 +23,13 @@ Usage:
 Commands:
   validate [file]            Validate a package-lock.json file
   migrate [file] [target]    Migrate to target version (1, 2, or 3; default: 3)
-  upgrade-hashes [file]      Upgrade integrity hashes sha1→sha256
+  upgrade-hashes [file]      Upgrade integrity hashes sha1→sha512
   dedupe [file]              Deduplicate packages in lockfile
   fix [file] [--write]       Run automated fixer with optional write
   check [file]               Verify integrity hashes and licenses
   backups [file]             List all backups for a file
   restore [file]             Restore from latest backup
+  clean-backups [file]       Clean old backup files with optional --keep N
 
 Check Options:
   --check hash               Only verify integrity checksums
@@ -40,6 +41,7 @@ Check Options:
 General Options:
   --write                    Write changes to file (creates backup)
   -h, --help                 Show this help
+  -v, --version              Show version
 
 Examples:
   npfix validate
@@ -51,9 +53,20 @@ Examples:
   npfix check --check license              # Only check licenses
   npfix check --licenses-csv ./my-list.csv # Use custom CSV
   npfix restore
+  npfix clean-backups --keep 5
 
 Default file: ./package-lock.json
 `);
+}
+
+function getVersion() {
+  try {
+    const packageJsonPath = path.join(path.dirname(new URL(import.meta.url).pathname), '../package.json');
+    const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
+    return packageJson.version;
+  } catch (e) {
+    return 'unknown';
+  }
 }
 
 function getFilePath(arg1) {
@@ -97,6 +110,11 @@ function handleError(error, context = '') {
 async function main() {
   if (argv.length === 0 || argv.includes('-h') || argv.includes('--help')) {
     printHelp();
+    return;
+  }
+
+  if (argv.includes('-v') || argv.includes('--version')) {
+    console.log(`npfix version ${getVersion()}`);
     return;
   }
 
@@ -264,6 +282,32 @@ async function main() {
 
         restoreFromLatestBackup(filePath);
         console.log(`\n✅ File restored successfully`);
+        break;
+      }
+
+      case 'clean-backups': {
+        const filePath = getFilePath(argv[1]);
+        const fileName = path.basename(filePath);
+
+        // Parse --keep flag
+        let keepCount = 5;
+        const keepIndex = argv.indexOf('--keep');
+        if (keepIndex !== -1 && argv[keepIndex + 1]) {
+          const parsed = parseInt(argv[keepIndex + 1], 10);
+          if (!isNaN(parsed) && parsed > 0) {
+            keepCount = parsed;
+          } else {
+            console.error('❌ Invalid --keep value. Must be a positive number');
+            process.exit(1);
+          }
+        }
+
+        const deleted = cleanOldBackups(fileName, keepCount);
+        if (deleted === 0) {
+          console.log(`\n📦 No old backups to clean (keeping ${keepCount})`);
+        } else {
+          console.log(`\n✅ Cleaned ${deleted} old backup(s), keeping ${keepCount}`);
+        }
         break;
       }
 

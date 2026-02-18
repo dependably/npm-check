@@ -110,9 +110,11 @@ export function upgradeIntegrityHashes(lockfileData, options = {}) {
   const upgradeHash = (hash) => {
     if (!hash) return hash;
     if (hash.startsWith('sha1-')) {
-      return 'sha256-' + hash.slice(5);
+      return 'sha512-' + hash.slice(5);
     }
-    if (all) return hash;
+    if (all && !hash.startsWith('sha512-')) {
+      return 'sha512-' + hash.slice(hash.indexOf('-') + 1);
+    }
     return hash;
   };
 

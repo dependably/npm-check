@@ -165,22 +165,28 @@ function isLicenseApproved(licenseExpr, approvedSet) {
     return false;
   }
 
+  // Strip outer parentheses if present
+  let expr = licenseExpr.trim();
+  if (expr.startsWith('(') && expr.endsWith(')')) {
+    expr = expr.slice(1, -1).trim();
+  }
+
   // Handle SPDX OR expressions (at least one must be approved)
-  if (licenseExpr.includes(' OR ')) {
-    return licenseExpr.split(' OR ')
+  if (expr.includes(' OR ')) {
+    return expr.split(' OR ')
       .map(lic => lic.trim())
       .some(lic => approvedSet.has(lic));
   }
 
   // Handle SPDX AND expressions (all must be approved)
-  if (licenseExpr.includes(' AND ')) {
-    return licenseExpr.split(' AND ')
+  if (expr.includes(' AND ')) {
+    return expr.split(' AND ')
       .map(lic => lic.trim())
       .every(lic => approvedSet.has(lic));
   }
 
   // Simple license identifier
-  return approvedSet.has(licenseExpr.trim());
+  return approvedSet.has(expr);
 }
 
 /**
@@ -189,12 +195,18 @@ function isLicenseApproved(licenseExpr, approvedSet) {
  * @param {Set<string>} approvedLicenses - Set of approved license identifiers
  * @param {string} nodeModulesPath - Path to node_modules directory
  * @param {boolean} strict - Treat unknown licenses as errors
+ * @param {object} pkgData - Package data from lockfile (optional)
  * @returns {Promise<object>} Verification result
  */
-async function verifyPackageLicense(packagePath, approvedLicenses, nodeModulesPath, strict) {
+async function verifyPackageLicense(packagePath, approvedLicenses, nodeModulesPath, strict, pkgData) {
   // Skip root package
   if (packagePath === '') {
     return { valid: true, skipped: true, package: 'root' };
+  }
+
+  // Skip workspace packages (those not in node_modules or with link: true)
+  if (pkgData && (pkgData.link === true || (!packagePath.startsWith('node_modules/')))) {
+    return { valid: true, skipped: true, package: packagePath, reason: 'workspace-link' };
   }
 
   const pkgName = packagePath.replace(/^node_modules\//, '');
@@ -203,9 +215,11 @@ async function verifyPackageLicense(packagePath, approvedLicenses, nodeModulesPa
   // Check if package.json exists
   if (!fs.existsSync(pkgJsonPath)) {
     return {
-      valid: false,
-      error: 'package.json not found',
-      package: pkgName
+      valid: !strict,
+      license: 'UNKNOWN',
+      approved: false,
+      package: pkgName,
+      reason: 'package-json-not-found'
     };
   }
 
@@ -263,8 +277,19 @@ export async function parseLicensesCsv(csvPath) {
       .map(line => line.trim())
       .filter(line => line && !line.startsWith('#'));
 
-    // Skip header line if present
-    const dataLines = lines.slice(1);
+    // Detect if first line is a header by checking for common header names or pattern
+    const HEADER_PATTERN = /^(license|spdx|identifier|name)/i;
+    let dataLines = lines;
+    if (lines.length > 0) {
+      const firstLine = lines[0];
+      const firstToken = firstLine.split(',')[0].trim();
+      // It's a header if the first token matches common header names, or if line has multiple commas and contains "license"
+      const isHeader = HEADER_PATTERN.test(firstToken) || (firstLine.includes(',') && firstLine.includes('license'));
+      if (isHeader) {
+        dataLines = lines.slice(1);
+      }
+    }
+
     const approvedSet = new Set();
 
     for (const line of dataLines) {
@@ -407,8 +432,8 @@ export async function checkLicenses(lockfileData, options = {}) {
     stage: 'Checking licenses'
   }) : null;
 
-  for (const [pkgPath] of entries) {
-    const result = await verifyPackageLicense(pkgPath, approvedLicenses, nodeModulesPath, strict);
+  for (const [pkgPath, pkgData] of entries) {
+    const result = await verifyPackageLicense(pkgPath, approvedLicenses, nodeModulesPath, strict, pkgData);
 
     if (result.skipped) {
       // Skip root package

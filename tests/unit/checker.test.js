@@ -119,6 +119,21 @@ Apache-2.0,permissive,
     expect(result.size).toBe(2);
   });
 
+  it('should keep all licenses when headerless CSV provided', async () => {
+    const csvContent = `MIT,permissive,
+Apache-2.0,permissive,
+ISC,permissive,
+`;
+    fs.writeFileSync(CSV_PATH, csvContent);
+
+    const result = await parseLicensesCsv(CSV_PATH);
+
+    expect(result.size).toBe(3);
+    expect(result.has('MIT')).toBe(true);
+    expect(result.has('Apache-2.0')).toBe(true);
+    expect(result.has('ISC')).toBe(true);
+  });
+
   it('should throw error for missing file', async () => {
     await expect(parseLicensesCsv('/nonexistent/path.csv'))
       .rejects
@@ -479,6 +494,79 @@ describe('checkLicenses', () => {
 
     expect(result.valid).toBe(false);
     expect(result.rejected).toBe(1);
+  });
+
+  it('should skip workspace packages (link: true)', async () => {
+    fs.mkdirSync(NODE_MODULES_PATH, { recursive: true });
+    createLicensesCsv(CSV_PATH);
+
+    const lockfile = {
+      packages: {
+        'packages/app': {
+          name: '@monorepo/app',
+          version: '1.0.0',
+          link: true
+        }
+      }
+    };
+
+    const result = await checkLicenses(lockfile, {
+      nodeModulesPath: NODE_MODULES_PATH,
+      csvPath: CSV_PATH
+    });
+
+    expect(result.checked).toBe(1);
+    expect(result.valid).toBe(true);
+  });
+
+  it('should treat missing package.json as unknown license (not rejected)', async () => {
+    fs.mkdirSync(NODE_MODULES_PATH, { recursive: true });
+    // Create a package directory without package.json
+    fs.mkdirSync(path.join(NODE_MODULES_PATH, 'no-pkg-json'), { recursive: true });
+    createLicensesCsv(CSV_PATH);
+
+    const lockfile = {
+      packages: {
+        'node_modules/no-pkg-json': {
+          name: 'no-pkg-json',
+          version: '1.0.0'
+        }
+      }
+    };
+
+    const result = await checkLicenses(lockfile, {
+      nodeModulesPath: NODE_MODULES_PATH,
+      csvPath: CSV_PATH,
+      strict: false
+    });
+
+    expect(result.valid).toBe(true);
+    expect(result.unknown).toBe(1);
+    expect(result.warnings.length).toBe(1);
+    expect(result.warnings[0].reason).toBe('package-json-not-found');
+  });
+
+  it('should handle parenthesized SPDX expressions', async () => {
+    fs.mkdirSync(NODE_MODULES_PATH, { recursive: true });
+    createTestPackage(TEST_DIR, 'pkg', '(MIT OR Apache-2.0)');
+    createLicensesCsv(CSV_PATH, ['MIT', 'Apache-2.0']);
+
+    const lockfile = {
+      packages: {
+        'node_modules/pkg': {
+          name: 'pkg',
+          version: '1.0.0'
+        }
+      }
+    };
+
+    const result = await checkLicenses(lockfile, {
+      nodeModulesPath: NODE_MODULES_PATH,
+      csvPath: CSV_PATH
+    });
+
+    expect(result.valid).toBe(true);
+    expect(result.approved).toBe(1);
   });
 });
 

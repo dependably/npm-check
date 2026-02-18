@@ -7,29 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-02-17
+
+### Fixed
+- **Integrity Hash Upgrade**: Fixed `upgradeIntegrityHashes` to correctly upgrade SHA1 hashes to SHA512 (was incorrectly using SHA256)
+- **Root Package Integrity**: Fixed fixer incorrectly adding integrity field to root package entry `packages['']`
+- **CSV Header Detection**: Fixed `parseLicensesCsv` that was always skipping the first license entry; now detects headers via SPDX pattern
+- **Workspace Package Licensing**: Fixed workspace packages (with `link: true` or outside `node_modules/`) being incorrectly rejected during license checks
+- **Missing package.json Handling**: Fixed missing `package.json` in packages treated as license rejection instead of unknown (now unknown in non-strict mode)
+
 ### Added
-- **Performance Module** (`src/performance.js`): New utilities for handling large lockfiles efficiently
-  - `shallowCopyLockfile`: Shallow copying to avoid deep clone overhead
-  - `processBatchedPackages`: Batch processing with automatic garbage collection yielding
-  - `getMemoryStats`: Memory profiling utilities for monitoring heap usage
-  - `filterPackagesLazy`: Lazy package filtering without full copies
-  - `createDedupeMap` / `reconstructFromDedupeMap`: Map-based deduplication for O(1) lookups
-  - `chunkLockfile` / `mergeLockfileChunks`: Lockfile chunking for parallel/streaming processing
-  - `estimateLockfileSize` / `isLargeLockfile`: Size estimation and large-file detection
-- **Optimized Updater Module** (`src/updater.js`): Memory-efficient versions of core operations
-  - `upgradeIntegrityHashesOptimized`: 4x less memory usage than standard version
-  - `deduplicatePackagesOptimized`: 3.6x less memory, 5x faster with Map-based deduplication
-  - `findPackagesMatching`: Lazy evaluation filtering without copying unmatched packages
-  - `countUniquePackages`: Efficient unique package counting with Set
-  - `findDuplicatePackages`: Fast duplicate package detection
-- **Performance Documentation**: New `PERFORMANCE.md` guide with usage examples and benchmarks
+- **Strict Mode Validation**: Implemented `strictMode` option in validator to treat warnings as validation errors
+- **Resolved URL Validation**: Added validation for `resolved` field to warn on invalid URL schemes (must start with https://, http://, git+, git://, or file:)
+- **Extended Package.json Validation**: `validateAgainstPackageJson` now checks `devDependencies` and `optionalDependencies` in addition to `dependencies`
+- **SPDX Parentheses Support**: Added support for parenthesized SPDX expressions like `(MIT OR Apache-2.0)`
+- **CLI Version Flag**: Added `--version` / `-v` flag to display version information
+- **Clean Backups Command**: Added `clean-backups` CLI command with optional `--keep N` parameter to remove old backups
+- **Public API Exports**: Exported backup functions and integrity utilities from main `src/index.js` for public API access
+- **Comprehensive Test Expansion**:
+  - Parser tests: added tests for missing files, invalid JSON, serialization overwrite protection, and progress callbacks
+  - Migrator tests: added V3→V1 rejection, content-correctness validation, and workspace survival across migrations
+  - Fixer tests: added normalizeTo option, throwOnError behavior, empty fixes validation, and root package exclusion
+  - Checker tests: added headerless CSV support, workspace link skipping, missing package.json as unknown, and parenthesized SPDX matching
+  - Validator tests: added strictMode behavior, resolved URL warnings, and devDep/optDep detection
+- **Code Coverage Configuration**: Added `collectCoverageFrom` and `coverageThresholds` to Jest config; added `test:coverage` npm script
 
 ### Changed
-- **CLI Enhancement**: Renamed CLI command from `cli` to `npfix` with `npfix` alias in npm bin field
-- **CLI File Argument**: Made file argument optional, defaults to `./package-lock.json` in current directory
-- **CLI Migrate Command**: Target version is now optional and defaults to 3 (latest)
-- **CLI Usage**: Updated all CLI examples to reflect simplified command syntax (e.g., `npfix validate` instead of `cli validate package-lock.json`)
-- **API Exports**: Added performance utilities to main `src/index.js` exports for easy access
+- **CLI Help Text**: Updated `upgrade-hashes` command description from `sha1→sha256` to `sha1→sha512`
+- **Documentation**: Moved streaming parser, parallel processing, and progress reporting from "Future" to "Implemented" features in `src/readme.md`
 
 ## [1.0.0] - 2026-01-26
 
