@@ -26,7 +26,7 @@ export class CheckError extends Error {
  * @param {string} pkgDir - Path to package directory
  * @returns {Promise<string>} Integrity hash in sha512-<base64> format
  */
-async function hashPackageDirectory(pkgDir) {
+export async function hashPackageDirectory(pkgDir) {
   try {
     // Collect all files in the package (excluding node_modules, etc)
     const filesToHash = await collectPackageFiles(pkgDir);

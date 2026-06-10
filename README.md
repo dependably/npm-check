@@ -6,6 +6,9 @@ A comprehensive tool for validating, migrating, fixing, and updating npm `packag
 
 - **Validation** – Detects structural, semantic, and integrity issues.
 - **Migration** – Seamlessly convert between lockfile versions (v1 ↔ v2 ↔ v3).
+- **Audit** – Opinionated, configurable linter for lockfile best practices; non-zero exit for CI gating.
+- **Checksum Fixing** – Fill missing/placeholder/sha1 integrity hashes with real registry hashes.
+- **Version Pinning** – Remove `^`/`~` from package.json ranges, locking to resolved versions.
 - **Fixing** – Automated repair strategies for common issues.
 - **Updater** – Upgrade integrity hashes and deduplicate packages.
 - **Streaming** – Handle very large lockfiles without loading entire file into memory.
@@ -34,6 +37,18 @@ npfix migrate
 
 # Migrate to a specific version
 npfix migrate 2
+
+# Upgrade lockfile v2 → v3 (alias for migrate 3; no-op if already v3)
+npfix upgrade --write
+
+# Fill missing/placeholder/sha1 integrity hashes with real registry hashes
+npfix fix-checksums --write
+
+# Pin ^/~ ranges in package.json to the lockfile-resolved versions
+npfix pin --write
+
+# Lint the lockfile for best practices (exits non-zero on failure)
+npfix audit
 
 # Run automated fixer (adds placeholders for missing integrity, dedupes packages)
 npfix fix --write
@@ -121,6 +136,86 @@ Use `--strict` to treat unknown licenses (missing license field) as errors inste
 ```bash
 npfix check --check license --strict
 ```
+
+### Audit Command
+
+The `audit` command is an opinionated linter for `package-lock.json` best practices and supply-chain hygiene. It is designed for CI: it exits non-zero when the audit fails.
+
+```bash
+npfix audit                          # Lint ./package-lock.json with default rules
+npfix audit --strict                 # Treat any warning as failure
+npfix audit --format json            # Machine-readable output
+npfix audit --rule pinned-versions:error --rule secure-resolved:off
+npfix audit --config ./my-audit.json
+```
+
+**Default Rules:**
+
+| Rule | Default | What it checks |
+|---|---|---|
+| `lockfile-version` | error | `lockfileVersion` is at least 3 (configurable `minVersion`) |
+| `valid-structure` | error | Lockfile passes structural validation |
+| `integrity-hygiene` | error | No missing, placeholder, or sha1 integrity hashes (git/file/link/bundled deps exempt) |
+| `secure-resolved` | error | No `http://` resolved URLs; registry hosts limited to an allowlist (default: `registry.npmjs.org`) |
+| `pinned-versions` | warn | No `^`/`~` ranges in package.json dependency sections |
+
+**Configuration File:**
+
+The audit looks for `.npfixrc.json`, then `npfix.config.json`, in the current directory (or pass `--config <path>`). CLI flags override file settings. Rule entries are `"error"`, `"warn"`, `"off"`, or `[severity, options]`:
+
+```json
+{
+  "maxWarnings": -1,
+  "rules": {
+    "lockfile-version":  ["error", { "minVersion": 3 }],
+    "valid-structure":   "error",
+    "integrity-hygiene": ["error", { "allowSha1": false }],
+    "secure-resolved":   ["error", {
+      "allowedHosts": ["registry.npmjs.org", "npm.mycorp.example.com"],
+      "allowHttp": false,
+      "allowGit": true,
+      "allowFile": true
+    }],
+    "pinned-versions":   ["warn", {
+      "sections": ["dependencies", "devDependencies", "optionalDependencies"],
+      "ignore": []
+    }]
+  }
+}
+```
+
+**Audit Exit Codes:**
+- `0` – Audit passed
+- `1` – Findings failure (errors present, or warnings exceed `maxWarnings`)
+- `2` – Operational error (bad config, unknown rule, unreadable file)
+
+### Fix-Checksums Command
+
+Fills missing, placeholder (`sha512-PLACEHOLDER`), and weak (`sha1-`) integrity hashes with the authoritative `dist.integrity` from each package's registry. The registry is derived per-package from the entry's `resolved` URL, so scoped/private registries work without configuration.
+
+```bash
+npfix fix-checksums                  # Dry-run: show what would change
+npfix fix-checksums --write          # Apply (creates backups)
+npfix fix-checksums --concurrency 16 --timeout 5000
+npfix fix-checksums --local-fallback # Hash node_modules copies when registry fails
+```
+
+Exits `1` if any candidate hashes remain unresolved (CI-gateable). Git, file-directory, linked, workspace, and bundled dependencies are skipped — they legitimately lack registry hashes. v1 lockfiles are not supported; run `npfix migrate 3` first.
+
+> ⚠️ **Local fallback caveat:** hashes produced by `--local-fallback` are computed from `node_modules` directories and are **not** npm tarball hashes — `npm ci` will fail integrity verification against the registry for those entries. Use only for air-gapped/internal verification; such changes are tagged `local-directory` in the output.
+
+### Pin Command
+
+Rewrites caret (`^`) and tilde (`~`) ranges in `package.json` to the exact versions already resolved in the lockfile, and keeps the lockfile's root entry (`packages[""]`) in sync so `npm install` sees no mismatch.
+
+```bash
+npfix pin                            # Dry-run from the current directory
+npfix pin --write                    # Apply (backs up both files)
+npfix pin ./packages/app --write     # Operate on another directory
+npfix pin --include-peer             # Also pin peerDependencies (off by default)
+```
+
+Complex ranges (`>=`, `||`, `1.x`, `*`, dist-tags), git/file/workspace/alias specs, and dependencies missing from the lockfile are left untouched and reported with reasons.
 
 ## API
 

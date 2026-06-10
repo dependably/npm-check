@@ -126,10 +126,13 @@ function validatePackagesMap(packages, errors, warnings, options) {
       errors.push(new ValidationError(`Package at ${path} is not an object`, 'INVALID_PACKAGE'));
       continue;
     }
-    if (!pkg.name || typeof pkg.name !== 'string') {
+    // npm only writes `name` on the root entry (and aliased installs);
+    // requiring it elsewhere would reject every real lockfile
+    if (path === '' && (!pkg.name || typeof pkg.name !== 'string')) {
       errors.push(new ValidationError(`Missing or invalid name for package at ${path}`, 'INVALID_PACKAGE_NAME'));
     }
-    if (!pkg.version || typeof pkg.version !== 'string') {
+    // link entries (`link: true`) carry no version by design
+    if (!pkg.link && (!pkg.version || typeof pkg.version !== 'string')) {
       errors.push(new ValidationError(`Missing or invalid version for package at ${path}`, 'INVALID_PACKAGE_VERSION'));
     }
     if (pkg.integrity) {
@@ -152,17 +155,19 @@ function validatePackagesMap(packages, errors, warnings, options) {
         warnings.push({ code: 'INVALID_RESOLVED', message: `Invalid resolved URL for package at ${path}: ${pkg.resolved}` });
       }
     }
+    // packages-map dependency values are version-range strings (depth 1
+    // allows string/boolean leaves), unlike the v1 top-level tree
     if (pkg.dependencies) {
-      validateDependenciesTree(pkg.dependencies, errors);
+      validateDependenciesTree(pkg.dependencies, errors, 1);
     }
     if (pkg.devDependencies) {
-      validateDependenciesTree(pkg.devDependencies, errors);
+      validateDependenciesTree(pkg.devDependencies, errors, 1);
     }
     if (pkg.peerDependencies) {
-      validateDependenciesTree(pkg.peerDependencies, errors);
+      validateDependenciesTree(pkg.peerDependencies, errors, 1);
     }
     if (pkg.optionalDependencies) {
-      validateDependenciesTree(pkg.optionalDependencies, errors);
+      validateDependenciesTree(pkg.optionalDependencies, errors, 1);
     }
   }
 }

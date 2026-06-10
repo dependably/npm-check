@@ -22,7 +22,8 @@ export function generateIntegrityFromData(data) {
  */
 export function generateIntegrityFromFile(filePath) {
   try {
-    const data = fs.readFileSync(filePath, 'utf8');
+    // Read raw bytes — hashing decoded utf8 corrupts binary content (e.g. tarballs)
+    const data = fs.readFileSync(filePath);
     return generateIntegrityFromData(data);
   } catch (e) {
     console.error(`Failed to read file ${filePath}: ${e.message}`);
@@ -30,42 +31,83 @@ export function generateIntegrityFromFile(filePath) {
   }
 }
 
-/**
- * Fetch a package from npm registry and generate its integrity hash
- * @param {string} packageName - Name of the package
- * @param {string} version - Version of the package
- * @returns {Promise<string>} Integrity hash or null if fetch fails
- */
-export async function generateIntegrityFromRegistry(packageName, version) {
-  return new Promise((resolve) => {
-    const url = `https://registry.npmjs.org/${encodeURIComponent(packageName)}/${encodeURIComponent(version)}`;
+export const DEFAULT_REGISTRY = 'https://registry.npmjs.org';
 
-    https.get(url, (res) => {
+function getJson(url, timeoutMs, redirectsLeft = 1) {
+  return new Promise((resolve, reject) => {
+    const req = https.get(url, (res) => {
+      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location && redirectsLeft > 0) {
+        res.resume();
+        resolve(getJson(new URL(res.headers.location, url).toString(), timeoutMs, redirectsLeft - 1));
+        return;
+      }
+      if (res.statusCode === 404) {
+        res.resume();
+        resolve(null);
+        return;
+      }
+      if (res.statusCode !== 200) {
+        res.resume();
+        reject(new Error(`Registry responded with status ${res.statusCode} for ${url}`));
+        return;
+      }
       let data = '';
       res.on('data', (chunk) => {
         data += chunk;
       });
       res.on('end', () => {
         try {
-          const pkg = JSON.parse(data);
-          if (pkg.dist && pkg.dist.tarball) {
-            // Extract integrity from registry response
-            if (pkg.dist.integrity) {
-              resolve(pkg.dist.integrity);
-            } else {
-              resolve(null);
-            }
-          } else {
-            resolve(null);
-          }
+          resolve(JSON.parse(data));
         } catch (e) {
-          resolve(null);
+          reject(new Error(`Invalid JSON from registry for ${url}`));
         }
       });
-    }).on('error', () => {
-      resolve(null);
+    });
+    req.on('error', reject);
+    req.setTimeout(timeoutMs, () => {
+      req.destroy(new Error(`Registry request timed out after ${timeoutMs}ms: ${url}`));
     });
   });
+}
+
+/**
+ * Fetch a package version's integrity hash from a registry packument.
+ * Resolves null when the package/version is not found (404 or no dist.integrity);
+ * rejects on network errors/timeouts so callers can distinguish "offline" from "not on npm".
+ * @param {string} packageName - Name of the package
+ * @param {string} version - Exact version
+ * @param {object} options - { registryBase, timeoutMs, fetchJson (injectable transport for tests) }
+ * @returns {Promise<string|null>} Integrity hash or null
+ */
+export async function fetchPackumentIntegrity(packageName, version, options = {}) {
+  const { registryBase = DEFAULT_REGISTRY, timeoutMs = 10000, fetchJson = getJson } = options;
+  const base = registryBase.replace(/\/+$/, '');
+  // Scoped names keep the literal '/' encoded as %2f per registry convention
+  const namePath = packageName.startsWith('@')
+    ? packageName.replace('/', '%2f')
+    : encodeURIComponent(packageName);
+  const url = `${base}/${namePath}/${encodeURIComponent(version)}`;
+
+  const pkg = await fetchJson(url, timeoutMs);
+  if (pkg && pkg.dist && pkg.dist.integrity) {
+    return pkg.dist.integrity;
+  }
+  return null;
+}
+
+/**
+ * Fetch a package from npm registry and generate its integrity hash
+ * (back-compat wrapper around fetchPackumentIntegrity; swallows errors)
+ * @param {string} packageName - Name of the package
+ * @param {string} version - Version of the package
+ * @returns {Promise<string>} Integrity hash or null if fetch fails
+ */
+export async function generateIntegrityFromRegistry(packageName, version) {
+  try {
+    return await fetchPackumentIntegrity(packageName, version);
+  } catch (e) {
+    return null;
+  }
 }
 
 /**

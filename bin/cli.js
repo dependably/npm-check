@@ -10,6 +10,11 @@ import { fixPackageLock } from '../src/fixer.js';
 import { createBackup, listBackups, restoreFromLatestBackup, cleanOldBackups, BackupError } from '../src/backup.js';
 import { createProgressBar } from '../src/progress-reporter.js';
 import { checkIntegrity, checkLicenses } from '../src/checker.js';
+import { detectLockfileVersion } from '../src/format-library.js';
+import { fixChecksums } from '../src/checksum-fixer.js';
+import { pinVersions, detectIndent } from '../src/pinner.js';
+import { runAudit, formatAuditReport } from '../src/audit.js';
+import { loadAuditConfig, mergeConfig } from '../src/audit-config.js';
 
 const argv = process.argv.slice(2);
 
@@ -23,7 +28,11 @@ Usage:
 Commands:
   validate [file]            Validate a package-lock.json file
   migrate [file] [target]    Migrate to target version (1, 2, or 3; default: 3)
+  upgrade [file]             Upgrade lockfile to version 3 (alias for migrate 3)
   upgrade-hashes [file]      Upgrade integrity hashes sha1→sha512
+  fix-checksums [file]       Fill missing/placeholder/sha1 hashes from the registry
+  pin [dir]                  Pin ^/~ ranges in package.json to lockfile versions
+  audit [file]               Lint lockfile for best practices (non-zero exit on failure)
   dedupe [file]              Deduplicate packages in lockfile
   fix [file] [--write]       Run automated fixer with optional write
   check [file]               Verify integrity hashes and licenses
@@ -38,20 +47,43 @@ Check Options:
   --licenses-csv <path>      Path to approved licenses CSV
   --strict                   Treat warnings as errors
 
+Fix-Checksums Options:
+  --concurrency N            Parallel registry requests (default: 8)
+  --timeout MS               Per-request timeout in milliseconds (default: 10000)
+  --registry <url>           Default registry for entries without a resolved URL
+  --local-fallback           Hash node_modules copies when the registry fails
+                             (flagged: these are NOT npm tarball hashes)
+
+Pin Options:
+  --include-peer             Also pin peerDependencies (off by default)
+
+Audit Options:
+  --config <path>            Audit config file (default: discover .npfixrc.json
+                             or npfix.config.json in the current directory)
+  --rule <id>:<severity>     Override a rule severity (error|warn|off); repeatable
+  --max-warnings N           Fail when warnings exceed N (default: unlimited)
+  --strict                   Shorthand for --max-warnings 0
+  --format stylish|json      Report format (default: stylish)
+
 General Options:
   --write                    Write changes to file (creates backup)
   -h, --help                 Show this help
   -v, --version              Show version
 
+Exit Codes:
+  0  success / audit passed
+  1  failure / audit found problems
+  2  audit operational error (bad config, unknown rule, unreadable file)
+
 Examples:
   npfix validate
-  npfix validate ./custom-lock.json
-  npfix migrate 3 --write
-  npfix fix --write
-  npfix check                              # Run all checks
+  npfix upgrade --write                    # Lockfile v2 → v3
+  npfix fix-checksums --write              # Real integrity hashes from registry
+  npfix pin --write                        # Lock down ^/~ versions
+  npfix audit                              # Lint with default rules
+  npfix audit --strict --format json
+  npfix audit --rule pinned-versions:error
   npfix check --check hash                 # Only verify integrity
-  npfix check --check license              # Only check licenses
-  npfix check --licenses-csv ./my-list.csv # Use custom CSV
   npfix restore
   npfix clean-backups --keep 5
 
@@ -163,6 +195,260 @@ async function main() {
           console.log('\n⚠️  Use --write flag to save changes');
           console.log(JSON.stringify(migrated, null, 2));
         }
+        break;
+      }
+
+      case 'upgrade': {
+        const filePath = getFilePath(argv[1]);
+        ensureFileExists(filePath);
+        const hasWrite = argv.includes('--write');
+
+        const lockfile = parseLockfile(filePath);
+        const sourceVersion = detectLockfileVersion(lockfile);
+
+        if (sourceVersion === 3) {
+          console.log('\n✅ Already at version 3, nothing to do');
+          break;
+        }
+
+        const migrated = migrateToVersion(lockfile, 3);
+        console.log(`\n✅ Migrated lockfile v${sourceVersion} → v3`);
+
+        if (hasWrite) {
+          createBackup(filePath);
+          fs.writeFileSync(filePath, JSON.stringify(migrated, null, 2) + '\n', 'utf8');
+          console.log(`📝 Changes written to ${filePath}`);
+        } else {
+          console.log('\n⚠️  Use --write flag to save changes');
+        }
+        break;
+      }
+
+      case 'fix-checksums': {
+        const filePath = getFilePath(argv[1]);
+        ensureFileExists(filePath);
+        const hasWrite = argv.includes('--write');
+        const localFallback = argv.includes('--local-fallback');
+
+        let concurrency = 8;
+        const concurrencyIndex = argv.indexOf('--concurrency');
+        if (concurrencyIndex !== -1 && argv[concurrencyIndex + 1]) {
+          const parsed = parseInt(argv[concurrencyIndex + 1], 10);
+          if (isNaN(parsed) || parsed < 1) {
+            console.error('❌ Invalid --concurrency value. Must be a positive number');
+            process.exit(1);
+          }
+          concurrency = parsed;
+        }
+
+        let timeoutMs = 10000;
+        const timeoutIndex = argv.indexOf('--timeout');
+        if (timeoutIndex !== -1 && argv[timeoutIndex + 1]) {
+          const parsed = parseInt(argv[timeoutIndex + 1], 10);
+          if (isNaN(parsed) || parsed < 1) {
+            console.error('❌ Invalid --timeout value. Must be a positive number');
+            process.exit(1);
+          }
+          timeoutMs = parsed;
+        }
+
+        let defaultRegistry;
+        const registryIndex = argv.indexOf('--registry');
+        if (registryIndex !== -1 && argv[registryIndex + 1]) {
+          defaultRegistry = argv[registryIndex + 1];
+        }
+
+        const lockfile = parseLockfile(filePath);
+
+        let lastProgress = null;
+        const onProgress = (progress) => {
+          if (!lastProgress || progress.percentage !== lastProgress.percentage) {
+            process.stdout.write(`\r${createProgressBar(progress)} ${progress.stage}`);
+            lastProgress = progress;
+          }
+        };
+
+        console.log('🔐 Fixing integrity checksums...');
+        const lockfileDir = path.dirname(filePath);
+        const result = await fixChecksums(lockfile, {
+          onProgress,
+          concurrency,
+          timeoutMs,
+          localFallback,
+          baseDir: lockfileDir,
+          nodeModulesPath: path.join(lockfileDir, 'node_modules'),
+          ...(defaultRegistry ? { defaultRegistry } : {})
+        });
+
+        process.stdout.write('\r' + ' '.repeat(80) + '\r');
+        console.log('\n✅ Checksum fix complete');
+        console.log(`   Candidates:          ${result.summary.candidates}`);
+        console.log(`   Fixed from registry: ${result.summary.fixedFromRegistry}`);
+        console.log(`   Fixed locally:       ${result.summary.fixedFromLocal}${result.summary.fixedFromLocal > 0 ? ' ⚠️  (flagged)' : ''}`);
+        console.log(`   Unresolved:          ${result.summary.unresolved}`);
+        console.log(`   Skipped:             ${result.summary.skipped}`);
+
+        if (result.changes.length > 0 && !hasWrite) {
+          console.log('\n   Changes:');
+          result.changes.forEach((change) => {
+            console.log(`     • ${change.packagePath}: ${change.from || '(missing)'} → ${change.to.slice(0, 40)}... [${change.source}]`);
+          });
+        }
+
+        if (result.unresolved.length > 0) {
+          console.log('\n   Unresolved packages:');
+          result.unresolved.forEach((item) => {
+            console.log(`     • ${item.packagePath}: ${item.reason}`);
+          });
+        }
+
+        result.warnings.forEach((warning) => {
+          console.log(`\n⚠️  ${warning}`);
+        });
+
+        if (hasWrite && result.changes.length > 0) {
+          createBackup(filePath);
+          fs.writeFileSync(filePath, JSON.stringify(result.lockfile, null, 2) + '\n', 'utf8');
+          console.log(`\n📝 Changes written to ${filePath}`);
+        } else if (result.changes.length > 0) {
+          console.log('\n⚠️  Use --write flag to save changes');
+        }
+
+        process.exit(result.unresolved.length > 0 ? 1 : 0);
+        break;
+      }
+
+      case 'pin': {
+        // pin operates on a directory containing both package.json and the lockfile
+        let dir = process.cwd();
+        if (argv[1] && !argv[1].startsWith('-')) {
+          dir = path.resolve(argv[1]);
+        }
+        const hasWrite = argv.includes('--write');
+        const includePeer = argv.includes('--include-peer');
+
+        const packageJsonPath = path.join(dir, 'package.json');
+        const lockfilePath = path.join(dir, 'package-lock.json');
+        ensureFileExists(packageJsonPath);
+        ensureFileExists(lockfilePath);
+
+        const packageJsonRaw = fs.readFileSync(packageJsonPath, 'utf8');
+        const packageJson = JSON.parse(packageJsonRaw);
+        const lockfile = parseLockfile(lockfilePath);
+
+        const result = pinVersions(packageJson, lockfile, { includePeer });
+
+        console.log('\n📌 Pin Results:');
+        if (result.changes.length === 0) {
+          console.log('   Nothing to pin — all ranges already exact (or skipped)');
+        } else {
+          result.changes.forEach((change) => {
+            console.log(`   • ${change.section}/${change.name}  ${change.from} → ${change.to}`);
+          });
+        }
+
+        if (result.skipped.length > 0) {
+          console.log('\n   Skipped:');
+          result.skipped.forEach((skip) => {
+            console.log(`     • ${skip.section}/${skip.name} (${skip.range}): ${skip.reason}`);
+          });
+        }
+
+        result.warnings.forEach((warning) => {
+          console.log(`\n⚠️  ${warning}`);
+        });
+
+        if (hasWrite && result.changes.length > 0) {
+          const indent = detectIndent(packageJsonRaw);
+          createBackup(packageJsonPath);
+          createBackup(lockfilePath);
+          fs.writeFileSync(packageJsonPath, JSON.stringify(result.packageJson, null, indent) + '\n', 'utf8');
+          fs.writeFileSync(lockfilePath, JSON.stringify(result.lockfile, null, 2) + '\n', 'utf8');
+          console.log(`\n📝 Changes written to ${packageJsonPath} and ${lockfilePath}`);
+        } else if (result.changes.length > 0) {
+          console.log('\n⚠️  Use --write flag to save changes');
+        }
+        break;
+      }
+
+      case 'audit': {
+        const filePath = getFilePath(argv[1]);
+
+        let report;
+        try {
+          if (!fs.existsSync(filePath)) {
+            throw new Error(`File not found: ${filePath}`);
+          }
+
+          // Resolve config: file (discovered or --config) + CLI overrides
+          let configPath = null;
+          const configIndex = argv.indexOf('--config');
+          if (configIndex !== -1 && argv[configIndex + 1]) {
+            configPath = argv[configIndex + 1];
+          }
+          const config = loadAuditConfig(process.cwd(), configPath);
+
+          // --rule <id>:<severity> overrides (repeatable)
+          const ruleOverrides = {};
+          argv.forEach((arg, i) => {
+            if (arg === '--rule' && argv[i + 1]) {
+              const [ruleId, severity] = argv[i + 1].split(':');
+              ruleOverrides[ruleId] = severity;
+            }
+          });
+          if (Object.keys(ruleOverrides).length > 0) {
+            const merged = mergeConfig({
+              maxWarnings: config.maxWarnings,
+              rules: ruleOverrides
+            });
+            for (const ruleId of Object.keys(ruleOverrides)) {
+              config.rules[ruleId] = {
+                severity: merged.rules[ruleId].severity,
+                options: { ...config.rules[ruleId].options }
+              };
+            }
+          }
+
+          if (argv.includes('--strict')) {
+            config.maxWarnings = 0;
+          }
+          const maxWarningsIndex = argv.indexOf('--max-warnings');
+          if (maxWarningsIndex !== -1 && argv[maxWarningsIndex + 1]) {
+            const parsed = parseInt(argv[maxWarningsIndex + 1], 10);
+            if (isNaN(parsed)) {
+              console.error('❌ Invalid --max-warnings value. Must be a number');
+              process.exit(2);
+            }
+            config.maxWarnings = parsed;
+          }
+
+          let format = 'stylish';
+          const formatIndex = argv.indexOf('--format');
+          if (formatIndex !== -1 && argv[formatIndex + 1]) {
+            format = argv[formatIndex + 1];
+            if (!['stylish', 'json'].includes(format)) {
+              console.error('❌ Invalid --format value. Use: stylish or json');
+              process.exit(2);
+            }
+          }
+
+          const lockfile = parseLockfile(filePath);
+
+          // package.json is optional; the pinned-versions rule degrades gracefully
+          let packageJson = null;
+          const packageJsonPath = path.join(path.dirname(filePath), 'package.json');
+          if (fs.existsSync(packageJsonPath)) {
+            packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
+          }
+
+          report = runAudit({ lockfile, packageJson, filePath: path.relative(process.cwd(), filePath) || filePath }, config);
+          console.log('\n' + formatAuditReport(report, { format }));
+        } catch (error) {
+          console.error(`\n❌ Audit error: ${error.message}`);
+          process.exit(2);
+        }
+
+        process.exit(report.pass ? 0 : 1);
         break;
       }
 

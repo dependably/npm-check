@@ -24,7 +24,7 @@ refer to project_plan.txt for project outline and todo items. Keep tproject_plan
 
 ## Core Components
 
-### 1. Format Library (`formats.js`)
+### 1. Format Library (`format-library.js`)
 
 Defines comprehensive schemas and specifications for all three lockfile versions:
 
@@ -50,6 +50,8 @@ Defines comprehensive schemas and specifications for all three lockfile versions
 - `detectLockfileVersion()` - Identifies lockfile format
 - `getSchemaForVersion()` - Returns validation schema
 - `parsePackagePath()` / `buildPackagePath()` - Path manipulation utilities
+- `forEachPackageEntry()` - Iterates the packages map, classifying each entry (root, workspace, link, bundled, git, file)
+- `resolvePackageName()` - Real package name for an entry (handles npm: aliases and scopes)
 
 ### 2. Validator (`validator.js`)
 
@@ -195,7 +197,11 @@ Command-line tool for easy usage:
 ```bash
 npfix validate package-lock.json
 npfix migrate 3 package-lock.json
+npfix upgrade --write package-lock.json
 npfix fix --write package-lock.json
+npfix fix-checksums --write package-lock.json
+npfix pin --write
+npfix audit --strict
 npfix dedupe --write package-lock.json
 npfix check --check hash package-lock.json
 npfix check --check license package-lock.json
@@ -210,6 +216,49 @@ Dependency update management:
 - Deduplicate redundant package entries
 - Batch updates with validation
 - Change tracking and reporting
+
+### 8. Checksum Fixer (`checksum-fixer.js`)
+
+Fills missing, placeholder, and sha1 integrity hashes with real ones:
+
+- Fetches authoritative `dist.integrity` from each package's registry
+- Derives registry base per-package from `resolved` URLs (private registries work)
+- Concurrent fetching with configurable pool and timeouts
+- Opt-in local node_modules fallback, loudly flagged (directory hashes ≠ npm tarball hashes)
+- Skips git/file-dir/link/workspace/bundled deps with reasons; rejects v1 lockfiles
+
+**Key Functions:**
+- `fixChecksums()` - Main entry point, returns `{lockfile, changes, unresolved, skipped, warnings, summary}`
+- `deriveRegistryBase()` - Registry base from a resolved tarball URL
+
+### 9. Pinner (`pinner.js`)
+
+Removes `^`/`~` from package.json, locking versions down:
+
+- Rewrites caret/tilde ranges to the lockfile-resolved exact versions
+- Syncs the lockfile root entry (`packages['']`) so npm sees no drift
+- Skips complex/git/file/workspace/alias ranges with reasons
+- peerDependencies excluded by default (`includePeer` opt-in)
+
+**Key Functions:**
+- `pinVersions()` - Returns `{packageJson, lockfile, changes, skipped, warnings}`
+- `classifyRange()` - Classifies a range: exact/caret/tilde/complex/git/file/link/workspace/alias/url
+
+### 10. Audit Engine (`audit.js`, `audit-config.js`)
+
+Opinionated, configurable lockfile linter for CI (non-zero exit on failure):
+
+- Five rules: `lockfile-version`, `valid-structure`, `integrity-hygiene`, `secure-resolved`, `pinned-versions`
+- Each rule is `{id, description, defaultSeverity, check(context)}` — extensible
+- Severities error/warn/off with per-rule options; `maxWarnings` budget
+- Config file discovery (`.npfixrc.json`, `npfix.config.json`) with CLI overrides
+- Stylish (ESLint-like) and JSON report formats
+- CLI exit codes: 0 pass, 1 findings failure, 2 operational error
+
+**Key Functions:**
+- `runAudit()` - Returns `{findings, summary, pass}`
+- `formatAuditReport()` - Stylish or JSON rendering
+- `loadAuditConfig()` / `mergeConfig()` - Config resolution and validation
 
 ## Planned Components
 

@@ -2,6 +2,7 @@
 import {
   generateIntegrityFromData,
   generateIntegrityFromFile,
+  fetchPackumentIntegrity,
   isValidIntegrity,
   isPlaceholder
 } from '../../src/integrity.js';
@@ -86,6 +87,18 @@ describe('Integrity Hash Generation', () => {
     expect(hash).toBeNull();
   });
 
+  it('hashes binary files as raw bytes (not utf8-decoded)', () => {
+    // Bytes that are invalid utf8 — a utf8 round-trip would corrupt them
+    const binary = Buffer.from([0x1f, 0x8b, 0x08, 0x00, 0xff, 0xfe, 0x80, 0x81]);
+    fs.writeFileSync(TEST_FILE, binary);
+
+    const fileHash = generateIntegrityFromFile(TEST_FILE);
+    const dataHash = generateIntegrityFromData(binary);
+
+    expect(fileHash).toBe(dataHash);
+    expect(fileHash).not.toBe(generateIntegrityFromData(binary.toString('utf8')));
+  });
+
   describe('Edge cases', () => {
     it('handles empty file', () => {
       fs.writeFileSync(TEST_FILE, '', 'utf8');
@@ -110,5 +123,57 @@ describe('Integrity Hash Generation', () => {
       const hash = generateIntegrityFromData(multilineContent);
       expect(hash).toMatch(/^sha512-/);
     });
+  });
+});
+
+describe('fetchPackumentIntegrity', () => {
+  // Injectable transport that records the requested URL and replies with a packument
+  function fakeTransport(reply) {
+    const calls = [];
+    const fetchJson = async (url, timeoutMs) => {
+      calls.push({ url, timeoutMs });
+      if (reply instanceof Error) throw reply;
+      return reply;
+    };
+    return { fetchJson, calls };
+  }
+
+  it('returns dist.integrity from the packument', async () => {
+    const { fetchJson, calls } = fakeTransport({ dist: { integrity: 'sha512-REAL==' } });
+    const hash = await fetchPackumentIntegrity('lodash', '4.17.21', { fetchJson });
+    expect(hash).toBe('sha512-REAL==');
+    expect(calls[0].url).toBe('https://registry.npmjs.org/lodash/4.17.21');
+    expect(calls[0].timeoutMs).toBe(10000);
+  });
+
+  it('encodes scoped names with %2f and respects registryBase', async () => {
+    const { fetchJson, calls } = fakeTransport({ dist: { integrity: 'sha512-SCOPED==' } });
+    const hash = await fetchPackumentIntegrity('@babel/core', '7.0.0', {
+      registryBase: 'https://npm.example.com/registry/',
+      fetchJson
+    });
+    expect(hash).toBe('sha512-SCOPED==');
+    expect(calls[0].url).toBe('https://npm.example.com/registry/@babel%2fcore/7.0.0');
+  });
+
+  it('passes a custom timeout to the transport', async () => {
+    const { fetchJson, calls } = fakeTransport({ dist: { integrity: 'sha512-X==' } });
+    await fetchPackumentIntegrity('pkg', '1.0.0', { timeoutMs: 250, fetchJson });
+    expect(calls[0].timeoutMs).toBe(250);
+  });
+
+  it('resolves null when the transport returns null (404)', async () => {
+    const { fetchJson } = fakeTransport(null);
+    await expect(fetchPackumentIntegrity('not-a-pkg', '1.0.0', { fetchJson })).resolves.toBeNull();
+  });
+
+  it('resolves null when dist.integrity is absent', async () => {
+    const { fetchJson } = fakeTransport({ dist: { shasum: 'abc' } });
+    await expect(fetchPackumentIntegrity('old-pkg', '0.0.1', { fetchJson })).resolves.toBeNull();
+  });
+
+  it('propagates transport errors (network failure)', async () => {
+    const { fetchJson } = fakeTransport(new Error('ECONNREFUSED'));
+    await expect(fetchPackumentIntegrity('pkg', '1.0.0', { fetchJson })).rejects.toThrow('ECONNREFUSED');
   });
 });

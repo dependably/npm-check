@@ -109,14 +109,33 @@ Completed:
 2. **CHANGELOG.md**: Released [Unreleased] as [1.1.0] with date 2026-02-17
 3. **project_plan.txt**: Updated with completed work (this section)
 
+## LOCKFILE LINTER PASS (v1.2.0 - 2026-06-10):
+### Feature Implementation ✅
+1. **Audit Command**: `npfix audit` — configurable, opinionated lockfile linter with non-zero exit for CI.
+   - Rule engine in src/audit.js (5 rules: lockfile-version, valid-structure, integrity-hygiene, secure-resolved, pinned-versions)
+   - Config discovery (.npfixrc.json / npfix.config.json) + CLI overrides in src/audit-config.js
+   - Stylish + JSON report formats; exit codes 0/1/2 (pass/findings/operational)
+2. **Fix-Checksums Command**: `npfix fix-checksums` — fills missing/placeholder/sha1 integrity with real registry hashes (src/checksum-fixer.js).
+   - Per-package registry derivation from resolved URLs (private registries work)
+   - Concurrency pool, timeouts, opt-in flagged local fallback, exit 1 on unresolved
+3. **Pin Command**: `npfix pin` — removes ^/~ from package.json, pins to lockfile-resolved versions, syncs packages[''] (src/pinner.js).
+4. **Upgrade Command**: `npfix upgrade` — alias for migrate 3 with no-op detection.
+5. **Registry Client Hardening**: fetchPackumentIntegrity with status/timeout/registryBase handling (src/integrity.js).
+6. **Shared Iteration**: forEachPackageEntry entry classifier in src/format-library.js.
+
+### Bug Fixes ✅
+1. **Binary Hashing**: generateIntegrityFromFile hashed utf8-decoded text; now raw bytes.
+2. **Validator Realism**: validatePackageLock now matches real npm output (no name required on non-root entries, link entries exempt from version, string deps allowed in packages-map entries).
+
 In Progress:
 - (none currently)
 
 Planned (Priority Order):
 1. Advanced deduplication with smart version resolution (semver matching)
-2. Integrity verification - validate hashes against downloaded packages
-3. Diff generation - show what changed between lockfile versions
-4. Dependency conflict detection - identify and report unresolved version conflicts
+2. Diff generation - show what changed between lockfile versions
+3. Dependency conflict detection - identify and report unresolved version conflicts
+4. Pin support for npm: alias inner ranges
+5. fix-checksums: optional tarball download + sha512 for registries that only publish shasum
 
 Notes:
 - Code locations: core logic in `src/`; CLI in `bin/`; tests in `tests/`; workers in `src/workers/`.

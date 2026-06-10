@@ -1,3 +1,20 @@
+# Release Notes - package-lock-fixer v1.2.0
+
+## Lockfile Linter Release
+
+v1.2.0 turns package-lock-fixer into a linter/checker for package-lock.json best practices and supply-chain hygiene:
+
+- 🛡️ **`npfix audit`** — opinionated, configurable lockfile linter with CI-friendly exit codes (0 pass / 1 findings / 2 operational error). Five rules covering lockfile version, structure, integrity hygiene, resolved-URL security, and version pinning; configured via `.npfixrc.json` / `npfix.config.json` with CLI overrides.
+- 🔐 **`npfix fix-checksums`** — fills missing, placeholder, and sha1 integrity hashes with real `dist.integrity` values fetched from each package's registry (private registries derived from resolved URLs). Opt-in, clearly flagged local fallback for air-gapped use.
+- 📌 **`npfix pin`** — removes `^`/`~` from package.json ranges, pinning to the lockfile-resolved versions and keeping the lockfile root entry in sync.
+- ⬆️ **`npfix upgrade`** — one-word lockfile upgrade to v3 with no-op detection.
+
+Also fixes binary-file hashing (raw bytes instead of utf8) and aligns the validator with what npm actually writes (no `name` on non-root entries, `link:` entries without versions, string ranges in packages-map dependencies).
+
+See CHANGELOG.md for the complete list.
+
+---
+
 # Release Notes - package-lock-fixer v1.0.0
 
 ## Welcome to package-lock-fixer!

@@ -13,6 +13,10 @@ This document provides detailed descriptions of all modules in `src/` for AI/LLM
 - [backup.js](#backupjs) - File backup and restore utilities (internal)
 - [integrity.js](#integrityjs) - Integrity hash generation and validation (internal)
 - [performance.js](#performancejs) - Memory optimization and batch processing
+- [checksum-fixer.js](#checksum-fixerjs) - Real integrity hash filling from registries
+- [pinner.js](#pinnerjs) - Version pinning (^/~ removal) with lockfile sync
+- [audit.js](#auditjs) - Rule-based lockfile linter engine
+- [audit-config.js](#audit-configjs) - Audit config discovery, defaults, and validation
 
 ---
 
@@ -698,16 +702,78 @@ const merged = mergeLockfileChunks(results);
 
 ---
 
+## checksum-fixer.js
+
+**Purpose:** Fill missing, placeholder (`sha512-PLACEHOLDER`), and weak (`sha1-`) integrity hashes with real values.
+
+### Function: `fixChecksums(lockfile, options)`
+- **Options:** `onProgress`, `concurrency` (default 8), `timeoutMs` (default 10000), `localFallback` (default false), `nodeModulesPath`, `defaultRegistry`, `fetchIntegrity` (injectable transport for tests)
+- **Returns:** `Promise<{lockfile, changes, unresolved, skipped, warnings, summary}>` — immutable, input untouched
+- **Details:** Fetches `dist.integrity` from each package's registry, derived per-package from the entry's `resolved` URL via `deriveRegistryBase()` (scoped `@scope/name` and `%2f` encodings handled). Skips root/workspace/link/git/bundled/file-directory entries with reasons. `file:` tarballs are hashed from raw bytes on disk. Local-directory fallback is opt-in and flagged (`source: 'local-directory'` + warning) because directory hashes are not npm tarball hashes. v1 lockfiles throw `ChecksumFixError('UNSUPPORTED_VERSION')`.
+
+### Function: `deriveRegistryBase(resolvedUrl, packageName)`
+- **Returns:** Registry base URL string, or `null` for git/unparseable URLs
+
+## pinner.js
+
+**Purpose:** Remove `^`/`~` from package.json ranges, pinning to lockfile-resolved versions.
+
+### Function: `classifyRange(range)`
+- **Returns:** `'exact' | 'caret' | 'tilde' | 'complex' | 'git' | 'file' | 'link' | 'workspace' | 'alias' | 'url'`
+- Shared with the audit `pinned-versions` rule.
+
+### Function: `pinVersions(packageJson, lockfile, options)`
+- **Options:** `sections` (default dependencies/devDependencies/optionalDependencies), `includePeer` (default false)
+- **Returns:** `{packageJson, lockfile, changes, skipped, warnings}` — immutable
+- **Details:** Only caret/tilde ranges are rewritten; everything else lands in `skipped` with a reason. The lockfile root entry (`packages['']`) is kept in sync for v2/v3; v1 pins package.json only with a warning.
+
+### Function: `detectIndent(rawText)`
+- **Returns:** Indentation string detected from raw JSON text (default two spaces); used by the CLI to preserve package.json formatting.
+
+## audit.js
+
+**Purpose:** Rule-based lockfile linter. Five rules, each `{id, description, defaultSeverity, check(context)}` where `context = {lockfile, packageJson|null, options, filePath}`.
+
+| Rule | Default | Checks |
+|---|---|---|
+| `lockfile-version` | error | `lockfileVersion >= minVersion` (default 3) |
+| `valid-structure` | error | Wraps `validatePackageLock()` |
+| `integrity-hygiene` | error | Missing/placeholder/sha1 hashes (git/file/link/bundled/workspace exempt) |
+| `secure-resolved` | error | http:// URLs, registry host allowlist, optional git/file bans |
+| `pinned-versions` | warn | caret/tilde ranges in package.json sections |
+
+### Function: `runAudit({lockfile, packageJson, filePath}, config)`
+- **Returns:** `{findings: [{ruleId, severity, packagePath, message}], summary: {errors, warnings, total, byRule}, pass}`
+- `pass` = no errors AND (maxWarnings < 0 OR warnings <= maxWarnings)
+
+### Function: `formatAuditReport(report, {format})`
+- **Formats:** `'stylish'` (ESLint-like) or `'json'`
+
+## audit-config.js
+
+**Purpose:** Audit configuration discovery and validation.
+
+- `CONFIG_FILENAMES`: `['.npfixrc.json', 'npfix.config.json']` (discovery order in cwd)
+- `loadAuditConfig(cwd, explicitPath)`: explicit path wins; merges over `DEFAULT_CONFIG`; throws `AuditConfigError` with codes `CONFIG_NOT_FOUND`, `CONFIG_PARSE`, `UNKNOWN_RULE`, `INVALID_SEVERITY`, `INVALID_MAX_WARNINGS`
+- `normalizeRuleEntry(entry)`: `'error' | 'warn' | 'off' | [severity, options]` → `{severity, options}`
+- `mergeConfig(userConfig, configPath)`: validates rule ids/severities, merges rule options over defaults
+
+---
+
 ## Implemented Features
 
 1. **Streaming JSON Parser** - For lockfiles too large to load entirely in memory (streaming-parser.js)
 2. **Parallel Processing** - Distribute work across multiple processes/workers (parallel-processor.js)
 3. **Progress Reporting** - Callbacks for long-running operations (progress-reporter.js)
+4. **Lockfile Linter** - `audit` command with configurable rules and CI exit codes (audit.js, audit-config.js)
+5. **Real Checksum Filling** - `fix-checksums` command fetching registry integrity (checksum-fixer.js)
+6. **Version Pinning** - `pin` command removing ^/~ with lockfile sync (pinner.js)
 
 ## Future Enhancement Opportunities
 
 1. **Advanced Deduplication** - Smart version resolution (semver matching)
-2. **Integrity Verification** - Actually validate hashes against downloaded packages
-3. **Compression** - Optional compression for backup storage
-4. **Diff Generation** - Show what changed between versions
-5. **Dependency Resolution** - Detect and report unresolved version conflicts
+2. **Compression** - Optional compression for backup storage
+3. **Diff Generation** - Show what changed between versions
+4. **Dependency Resolution** - Detect and report unresolved version conflicts
+5. **Alias Pinning** - Rewrite inner ranges of `npm:` alias specs in pin command
+6. **Tarball Hashing** - fix-checksums fallback that downloads the tarball and computes sha512 for registries that only publish shasum

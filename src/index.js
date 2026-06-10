@@ -14,7 +14,9 @@ export {
   LOCKFILE_VERSIONS,
   detectLockfileVersion,
   hasPackagesMap,
-  hasDependenciesTree
+  hasDependenciesTree,
+  forEachPackageEntry,
+  resolvePackageName
 } from './format-library.js';
 export {
   createBackup,
@@ -28,9 +30,36 @@ export {
   generateIntegrityFromFile,
   generateIntegrityFromRegistry,
   generateOrPlaceholderIntegrity,
+  fetchPackumentIntegrity,
   isValidIntegrity,
-  isPlaceholder
+  isPlaceholder,
+  DEFAULT_REGISTRY
 } from './integrity.js';
+export {
+  fixChecksums,
+  deriveRegistryBase,
+  ChecksumFixError
+} from './checksum-fixer.js';
+export {
+  pinVersions,
+  classifyRange,
+  detectIndent,
+  PinnerError
+} from './pinner.js';
+export {
+  runAudit,
+  formatAuditReport,
+  rules as auditRules,
+  AuditError
+} from './audit.js';
+export {
+  loadAuditConfig,
+  mergeConfig,
+  normalizeRuleEntry,
+  DEFAULT_CONFIG as DEFAULT_AUDIT_CONFIG,
+  CONFIG_FILENAMES as AUDIT_CONFIG_FILENAMES,
+  AuditConfigError
+} from './audit-config.js';
 export {
   shallowCopyLockfile,
   processBatchedPackages,
@@ -66,5 +95,6 @@ export {
   checkLicenses,
   checkAll,
   parseLicensesCsv,
+  hashPackageDirectory,
   CheckError
 } from './checker.js';

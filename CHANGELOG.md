@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-06-10
+
+### Added
+- **Audit Command**: New `npfix audit` — an opinionated, configurable linter for package-lock best practices that exits non-zero on failure (for CI gating). Five rules: `lockfile-version`, `valid-structure`, `integrity-hygiene`, `secure-resolved`, `pinned-versions`, each settable to error/warn/off with per-rule options. Config discovered from `.npfixrc.json` / `npfix.config.json` with CLI overrides (`--rule`, `--max-warnings`, `--strict`, `--config`). Stylish and JSON report formats. Exit codes: 0 pass, 1 findings failure, 2 operational error.
+- **Fix-Checksums Command**: New `npfix fix-checksums` — fills missing, placeholder, and sha1 integrity hashes with real `dist.integrity` values fetched from each package's registry (derived per-package from its `resolved` URL, so private registries work). Concurrent fetching with `--concurrency`/`--timeout`, opt-in `--local-fallback` (loudly flagged: directory hashes are not npm tarball hashes). Exits 1 if any hashes remain unresolved.
+- **Pin Command**: New `npfix pin` — rewrites `^`/`~` ranges in package.json to the lockfile-resolved exact versions and syncs the lockfile root entry. Skips complex/git/file/alias ranges with reasons; `--include-peer` opt-in.
+- **Upgrade Command**: New `npfix upgrade` — convenience alias for `migrate 3` with no-op detection when already at v3.
+- **API**: Exported `fixChecksums`, `deriveRegistryBase`, `pinVersions`, `classifyRange`, `runAudit`, `formatAuditReport`, `auditRules`, `loadAuditConfig`, `mergeConfig`, `fetchPackumentIntegrity`, `forEachPackageEntry`, `hashPackageDirectory`, and related error classes.
+- **Registry Client Hardening**: `fetchPackumentIntegrity` checks HTTP status, supports timeouts, custom registry bases, scoped-name encoding, and distinguishes 404 (resolves null) from network failure (rejects).
+
+### Fixed
+- **Binary File Hashing**: `generateIntegrityFromFile` now hashes raw bytes instead of utf8-decoded text, which corrupted hashes of binary files (e.g. tarballs).
+- **Validator vs Real Lockfiles**: `validatePackageLock` no longer requires `name` on non-root packages-map entries, no longer requires `version` on `link: true` entries, and accepts version-range strings in packages-map dependency fields — matching what npm actually writes.
+
 ## [1.1.0] - 2026-02-17
 
 ### Fixed
