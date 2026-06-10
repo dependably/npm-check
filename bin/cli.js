@@ -15,6 +15,8 @@ import { fixChecksums } from '../src/checksum-fixer.js';
 import { pinVersions, detectIndent } from '../src/pinner.js';
 import { runAudit, formatAuditReport } from '../src/audit.js';
 import { loadAuditConfig, mergeConfig } from '../src/audit-config.js';
+import { prunePackages } from '../src/pruner.js';
+import { findUnusedDependencies } from '../src/usage-scanner.js';
 
 const argv = process.argv.slice(2);
 
@@ -32,6 +34,8 @@ Commands:
   upgrade-hashes [file]      Upgrade integrity hashes sha1→sha512
   fix-checksums [file]       Fill missing/placeholder/sha1 hashes from the registry
   pin [dir]                  Pin ^/~ ranges in package.json to lockfile versions
+  prune [file]               Remove orphaned packages unreachable from the dependency graph
+  unused [dir]               Flag declared dependencies the application never imports
   audit [file]               Lint lockfile for best practices (non-zero exit on failure)
   dedupe [file]              Deduplicate packages in lockfile
   fix [file] [--write]       Run automated fixer with optional write
@@ -57,6 +61,10 @@ Fix-Checksums Options:
 Pin Options:
   --include-peer             Also pin peerDependencies (off by default)
 
+Unused Options:
+  --include-dev              Also check devDependencies (off by default)
+  --json                     Machine-readable output
+
 Audit Options:
   --config <path>            Audit config file (default: discover .npfixrc.json
                              or npfix.config.json in the current directory)
@@ -80,6 +88,8 @@ Examples:
   npfix upgrade --write                    # Lockfile v2 → v3
   npfix fix-checksums --write              # Real integrity hashes from registry
   npfix pin --write                        # Lock down ^/~ versions
+  npfix prune --write                      # Remove orphaned lockfile entries
+  npfix unused                             # Flag never-imported dependencies
   npfix audit                              # Lint with default rules
   npfix audit --strict --format json
   npfix audit --rule pinned-versions:error
@@ -367,6 +377,77 @@ async function main() {
           console.log(`\n📝 Changes written to ${packageJsonPath} and ${lockfilePath}`);
         } else if (result.changes.length > 0) {
           console.log('\n⚠️  Use --write flag to save changes');
+        }
+        break;
+      }
+
+      case 'prune': {
+        const filePath = getFilePath(argv[1]);
+        ensureFileExists(filePath);
+        const hasWrite = argv.includes('--write');
+
+        const lockfile = parseLockfile(filePath);
+        const result = prunePackages(lockfile);
+
+        console.log('\n🧹 Prune Results:');
+        if (result.removed.length === 0) {
+          console.log('   No orphaned packages found — lockfile is fully connected');
+        } else {
+          console.log(`   Removed ${result.removed.length} orphaned package(s):`);
+          result.removed.forEach((orphan) => {
+            console.log(`     • ${orphan.key}${orphan.version ? ` (${orphan.name}@${orphan.version})` : ''}`);
+          });
+        }
+
+        result.warnings.forEach((warning) => {
+          console.log(`\n⚠️  ${warning}`);
+        });
+
+        if (hasWrite && result.removed.length > 0) {
+          createBackup(filePath);
+          fs.writeFileSync(filePath, JSON.stringify(result.lockfile, null, 2) + '\n', 'utf8');
+          console.log(`\n📝 Changes written to ${filePath}`);
+        } else if (result.removed.length > 0) {
+          console.log('\n⚠️  Use --write flag to save changes');
+        }
+        break;
+      }
+
+      case 'unused': {
+        let dir = process.cwd();
+        if (argv[1] && !argv[1].startsWith('-')) {
+          dir = path.resolve(argv[1]);
+        }
+        const includeDev = argv.includes('--include-dev');
+        const asJson = argv.includes('--json');
+
+        const packageJsonPath = path.join(dir, 'package.json');
+        ensureFileExists(packageJsonPath);
+
+        const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
+        const result = findUnusedDependencies(packageJson, dir, { includeDev });
+
+        if (asJson) {
+          console.log(JSON.stringify({
+            scannedFiles: result.scannedFiles,
+            sectionsChecked: result.sectionsChecked,
+            unused: result.unused
+          }, null, 2));
+        } else {
+          console.log(`\n🔎 Scanned ${result.scannedFiles} source file(s) (${result.sectionsChecked.join(', ')})`);
+          if (result.unused.length === 0) {
+            console.log('   All declared dependencies are imported by the application');
+          } else {
+            console.log(`   ${result.unused.length} package(s) flagged for removal (never imported):`);
+            result.unused.forEach((dep) => {
+              console.log(`     • ${dep.name} (${dep.section}: ${dep.version})`);
+            });
+            console.log('\n   Heuristic results — packages loaded via config files or CLI-only');
+            console.log('   tools can be false positives. Verify before removing, e.g.:');
+            result.unused.forEach((dep) => {
+              console.log(`     npm uninstall ${dep.name}`);
+            });
+          }
         }
         break;
       }

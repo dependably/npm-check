@@ -69,7 +69,8 @@ describe('Integration: npfix audit', () => {
         '--rule', 'lockfile-version:off',
         '--rule', 'integrity-hygiene:off',
         '--rule', 'secure-resolved:off',
-        '--rule', 'valid-structure:off'
+        '--rule', 'valid-structure:off',
+        '--rule', 'lockfile-sync:off'
       ], { cwd: workspace.dir });
       expect(result.code).toBe(0);
     } finally {
@@ -101,7 +102,10 @@ describe('Integration: npfix audit', () => {
           'valid-structure': 'off',
           'integrity-hygiene': 'off',
           'secure-resolved': 'off',
-          'pinned-versions': 'off'
+          'pinned-versions': 'off',
+          'lockfile-sync': 'off',
+          'no-orphan-packages': 'off',
+          'unused-dependencies': 'off'
         }
       }));
       const ok = await runCli(['audit', workspace.lockfilePath], { cwd: workspace.dir });

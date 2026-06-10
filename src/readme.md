@@ -17,6 +17,8 @@ This document provides detailed descriptions of all modules in `src/` for AI/LLM
 - [pinner.js](#pinnerjs) - Version pinning (^/~ removal) with lockfile sync
 - [audit.js](#auditjs) - Rule-based lockfile linter engine
 - [audit-config.js](#audit-configjs) - Audit config discovery, defaults, and validation
+- [pruner.js](#prunerjs) - Orphaned-package detection and removal
+- [usage-scanner.js](#usage-scannerjs) - Unused-dependency detection (heuristic source scan)
 
 ---
 
@@ -741,6 +743,9 @@ const merged = mergeLockfileChunks(results);
 | `integrity-hygiene` | error | Missing/placeholder/sha1 hashes (git/file/link/bundled/workspace exempt) |
 | `secure-resolved` | error | http:// URLs, registry host allowlist, optional git/file bans |
 | `pinned-versions` | warn | caret/tilde ranges in package.json sections |
+| `lockfile-sync` | error | package.json ↔ lockfile agreement (name/version, declared deps present, no leftovers) |
+| `no-orphan-packages` | warn | entries unreachable from the dependency graph |
+| `unused-dependencies` | warn | declared deps never imported by application source |
 
 ### Function: `runAudit({lockfile, packageJson, filePath}, config)`
 - **Returns:** `{findings: [{ruleId, severity, packagePath, message}], summary: {errors, warnings, total, byRule}, pass}`
@@ -760,6 +765,32 @@ const merged = mergeLockfileChunks(results);
 
 ---
 
+## pruner.js
+
+**Purpose:** Detect and remove orphaned lockfile entries — packages unreachable from the root or any workspace.
+
+### Function: `findOrphanedPackages(lockfile)`
+- **Returns:** `{reachable: Set<string>, orphans: [{key, name, version}]}`
+- **Details:** BFS from the root entry and workspace sources following dependency edges with npm's node_modules resolution (the package's own node_modules, then ancestors, nearest-first). Follows dependencies/optionalDependencies/peerDependencies for all packages, devDependencies for roots, and `link: true` targets. Throws `PrunerError('UNSUPPORTED_VERSION')` for v1.
+
+### Function: `prunePackages(lockfile)`
+- **Returns:** `{lockfile, removed, warnings}` — immutable; returns the input object unchanged when nothing to prune. v2 legacy `dependencies` tree is left untouched (warning recommends migrating to v3).
+
+## usage-scanner.js
+
+**Purpose:** Heuristic detection of declared-but-never-imported dependencies ("flag for removal").
+
+### Function: `scanUsedPackages(dir, options)`
+- **Returns:** `{used: Set<string>, scannedFiles}`
+- **Details:** Walks source files (default extensions .js/.mjs/.cjs/.jsx/.ts/.tsx/.vue/.svelte, skipping node_modules/dist/build/etc.) matching require/import/dynamic-import/re-export specifiers; `specifierToPackageName()` reduces specifiers to package names (subpaths, scopes; relative/node:/URL excluded).
+
+### Function: `findUnusedDependencies(packageJson, dir, options)`
+- **Options:** `includeDev` (default false), `ignore`, plus scan options
+- **Returns:** `{unused: [{name, section, version}], used, scannedFiles, sectionsChecked}`
+- **Details:** npm-script mentions count as used; `@types/foo` used when `foo` is. Report-only — callers must not auto-remove.
+
+---
+
 ## Implemented Features
 
 1. **Streaming JSON Parser** - For lockfiles too large to load entirely in memory (streaming-parser.js)
@@ -768,6 +799,8 @@ const merged = mergeLockfileChunks(results);
 4. **Lockfile Linter** - `audit` command with configurable rules and CI exit codes (audit.js, audit-config.js)
 5. **Real Checksum Filling** - `fix-checksums` command fetching registry integrity (checksum-fixer.js)
 6. **Version Pinning** - `pin` command removing ^/~ with lockfile sync (pinner.js)
+7. **Orphan Pruning** - `prune` command removing unreachable lockfile entries (pruner.js)
+8. **Unused Detection** - `unused` command flagging never-imported dependencies (usage-scanner.js)
 
 ## Future Enhancement Opportunities
 

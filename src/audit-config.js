@@ -30,7 +30,10 @@ export const DEFAULT_CONFIG = {
     'pinned-versions': ['warn', {
       sections: ['dependencies', 'devDependencies', 'optionalDependencies'],
       ignore: []
-    }]
+    }],
+    'lockfile-sync': 'error',
+    'no-orphan-packages': 'warn',
+    'unused-dependencies': ['warn', { includeDev: false, ignore: [] }]
   }
 };
 

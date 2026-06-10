@@ -1,7 +1,25 @@
 // tests/unit/audit.test.js
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
 import { runAudit, formatAuditReport, rules, AuditError } from '../../src/audit.js';
 
 const GOOD_HASH = 'sha512-' + 'A'.repeat(86) + '==';
+
+// Project dir on disk so filesystem-backed rules (unused-dependencies) see a
+// source file importing the fixture's dependency
+let projDir;
+let projLockfilePath;
+
+beforeAll(() => {
+  projDir = fs.mkdtempSync(path.join(os.tmpdir(), 'npfix-audit-proj-'));
+  fs.writeFileSync(path.join(projDir, 'app.js'), `import goodPkg from 'good-pkg';\n`);
+  projLockfilePath = path.join(projDir, 'package-lock.json');
+});
+
+afterAll(() => {
+  fs.rmSync(projDir, { recursive: true, force: true });
+});
 
 function cleanLockfile() {
   return {
@@ -30,7 +48,11 @@ function cleanPackageJson() {
 
 describe('runAudit', () => {
   it('passes a clean lockfile with no findings', () => {
-    const report = runAudit({ lockfile: cleanLockfile(), packageJson: cleanPackageJson() });
+    const report = runAudit({
+      lockfile: cleanLockfile(),
+      packageJson: cleanPackageJson(),
+      filePath: projLockfilePath
+    });
     expect(report.findings).toEqual([]);
     expect(report.pass).toBe(true);
     expect(report.summary).toEqual({ errors: 0, warnings: 0, total: 0, byRule: {} });
@@ -204,6 +226,103 @@ describe('runAudit', () => {
     });
   });
 
+  describe('lockfile-sync rule', () => {
+    it('passes when package.json and the lockfile agree', () => {
+      const report = runAudit({
+        lockfile: cleanLockfile(),
+        packageJson: cleanPackageJson(),
+        filePath: projLockfilePath
+      });
+      expect(report.findings.filter((f) => f.ruleId === 'lockfile-sync')).toEqual([]);
+    });
+
+    it('flags deps declared in package.json but missing from the lockfile', () => {
+      const packageJson = cleanPackageJson();
+      packageJson.dependencies['brand-new-pkg'] = '^1.0.0';
+
+      const report = runAudit({ lockfile: cleanLockfile(), packageJson, filePath: projLockfilePath });
+      const sync = report.findings.filter((f) => f.ruleId === 'lockfile-sync');
+      expect(sync.some((f) => f.packagePath === 'package.json#dependencies/brand-new-pkg' && /missing from the lockfile root/.test(f.message))).toBe(true);
+      expect(sync.some((f) => /not installed in the lockfile packages map/.test(f.message))).toBe(true);
+      expect(report.pass).toBe(false);
+    });
+
+    it('flags range mismatches and lockfile-only leftovers', () => {
+      const lockfile = cleanLockfile();
+      lockfile.packages[''].dependencies['good-pkg'] = '^0.9.0'; // drifted range
+      lockfile.packages[''].dependencies['removed-pkg'] = '2.0.0'; // no longer declared
+      lockfile.packages['node_modules/removed-pkg'] = {
+        version: '2.0.0',
+        resolved: 'https://registry.npmjs.org/removed-pkg/-/removed-pkg-2.0.0.tgz',
+        integrity: GOOD_HASH
+      };
+
+      const report = runAudit({ lockfile, packageJson: cleanPackageJson(), filePath: projLockfilePath });
+      const sync = report.findings.filter((f) => f.ruleId === 'lockfile-sync');
+      expect(sync.some((f) => /range mismatch/.test(f.message))).toBe(true);
+      expect(sync.some((f) => f.packagePath === 'package-lock.json#dependencies/removed-pkg' && /not declared in package.json/.test(f.message))).toBe(true);
+    });
+
+    it('flags name/version mismatches', () => {
+      const packageJson = { ...cleanPackageJson(), version: '2.0.0' };
+      const report = runAudit({ lockfile: cleanLockfile(), packageJson, filePath: projLockfilePath });
+      const sync = report.findings.filter((f) => f.ruleId === 'lockfile-sync');
+      expect(sync.some((f) => /version mismatch/.test(f.message))).toBe(true);
+    });
+  });
+
+  describe('no-orphan-packages rule', () => {
+    it('flags unreachable lockfile entries with a prune hint', () => {
+      const lockfile = cleanLockfile();
+      lockfile.packages['node_modules/orphan'] = {
+        version: '9.9.9',
+        resolved: 'https://registry.npmjs.org/orphan/-/orphan-9.9.9.tgz',
+        integrity: GOOD_HASH
+      };
+
+      const report = runAudit({ lockfile, packageJson: cleanPackageJson(), filePath: projLockfilePath });
+      const orphans = report.findings.filter((f) => f.ruleId === 'no-orphan-packages');
+      expect(orphans).toHaveLength(1);
+      expect(orphans[0].severity).toBe('warn');
+      expect(orphans[0].packagePath).toBe('node_modules/orphan');
+      expect(orphans[0].message).toMatch(/npfix prune/);
+    });
+  });
+
+  describe('unused-dependencies rule', () => {
+    it('flags declared deps that are never imported', () => {
+      const packageJson = cleanPackageJson();
+      packageJson.dependencies['never-imported'] = '^1.0.0';
+      const lockfile = cleanLockfile();
+      lockfile.packages[''].dependencies['never-imported'] = '^1.0.0';
+      lockfile.packages['node_modules/never-imported'] = {
+        version: '1.0.0',
+        resolved: 'https://registry.npmjs.org/never-imported/-/never-imported-1.0.0.tgz',
+        integrity: GOOD_HASH
+      };
+
+      const report = runAudit({ lockfile, packageJson, filePath: projLockfilePath });
+      const unused = report.findings.filter((f) => f.ruleId === 'unused-dependencies');
+      expect(unused).toHaveLength(1);
+      expect(unused[0].severity).toBe('warn');
+      expect(unused[0].packagePath).toBe('package.json#dependencies/never-imported');
+      expect(unused[0].message).toMatch(/flagged for removal/);
+      // imported dep is not flagged
+      expect(unused.some((f) => f.packagePath.includes('good-pkg'))).toBe(false);
+    });
+
+    it('honors the ignore option', () => {
+      const packageJson = cleanPackageJson();
+      packageJson.dependencies['config-plugin'] = '^1.0.0';
+
+      const report = runAudit(
+        { lockfile: cleanLockfile(), packageJson, filePath: projLockfilePath },
+        { rules: { 'unused-dependencies': ['warn', { ignore: ['config-plugin'] }], 'lockfile-sync': 'off' } }
+      );
+      expect(report.findings.filter((f) => f.ruleId === 'unused-dependencies')).toEqual([]);
+    });
+  });
+
   describe('severity and pass semantics', () => {
     it('skips rules set to off', () => {
       const lockfile = { ...cleanLockfile(), lockfileVersion: 2 };
@@ -218,7 +337,7 @@ describe('runAudit', () => {
     it('downgraded rules produce warnings that pass by default', () => {
       const lockfile = { ...cleanLockfile(), lockfileVersion: 2 };
       const report = runAudit(
-        { lockfile, packageJson: cleanPackageJson() },
+        { lockfile, packageJson: cleanPackageJson(), filePath: projLockfilePath },
         { rules: { 'lockfile-version': 'warn' } }
       );
       expect(report.summary.errors).toBe(0);
@@ -245,7 +364,11 @@ describe('runAudit', () => {
 
 describe('formatAuditReport', () => {
   it('formats a clean report', () => {
-    const report = runAudit({ lockfile: cleanLockfile(), packageJson: cleanPackageJson() });
+    const report = runAudit({
+      lockfile: cleanLockfile(),
+      packageJson: cleanPackageJson(),
+      filePath: projLockfilePath
+    });
     const output = formatAuditReport(report);
     expect(output).toContain('package-lock.json');
     expect(output).toContain('no problems found');
@@ -282,13 +405,16 @@ describe('formatAuditReport', () => {
 });
 
 describe('rules registry', () => {
-  it('exposes all five rules with ids and check functions', () => {
+  it('exposes all eight rules with ids and check functions', () => {
     expect(rules.map((r) => r.id)).toEqual([
       'lockfile-version',
       'valid-structure',
       'integrity-hygiene',
       'secure-resolved',
-      'pinned-versions'
+      'pinned-versions',
+      'lockfile-sync',
+      'no-orphan-packages',
+      'unused-dependencies'
     ]);
     rules.forEach((rule) => expect(typeof rule.check).toBe('function'));
   });

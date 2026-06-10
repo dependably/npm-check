@@ -1,8 +1,11 @@
 // src/audit.js
+import path from 'path';
 import { forEachPackageEntry } from './format-library.js';
 import { validatePackageLock } from './validator.js';
 import { isPlaceholder } from './integrity.js';
 import { classifyRange } from './pinner.js';
+import { findOrphanedPackages } from './pruner.js';
+import { findUnusedDependencies } from './usage-scanner.js';
 import { mergeConfig } from './audit-config.js';
 
 export class AuditError extends Error {
@@ -177,12 +180,136 @@ const pinnedVersionsRule = {
   }
 };
 
+const SYNC_SECTIONS = ['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies'];
+
+const lockfileSyncRule = {
+  id: 'lockfile-sync',
+  description: 'package.json and the lockfile must agree',
+  defaultSeverity: 'error',
+  check({ lockfile, packageJson }) {
+    if (!packageJson) {
+      return [{
+        packagePath: 'package.json',
+        message: 'package.json not found next to lockfile; lockfile-sync rule skipped',
+        data: { forcedSeverity: 'warn' }
+      }];
+    }
+
+    const findings = [];
+
+    if (packageJson.name && lockfile.name && packageJson.name !== lockfile.name) {
+      findings.push({ packagePath: '', message: `name mismatch: package.json says "${packageJson.name}", lockfile says "${lockfile.name}"` });
+    }
+    if (packageJson.version && lockfile.version && packageJson.version !== lockfile.version) {
+      findings.push({ packagePath: '', message: `version mismatch: package.json says "${packageJson.version}", lockfile says "${lockfile.version}" (run \`npm install\`)` });
+    }
+
+    const root = lockfile.packages && lockfile.packages[''];
+    if (!root) return findings;
+
+    for (const section of SYNC_SECTIONS) {
+      const declared = packageJson[section] || {};
+      const locked = root[section] || {};
+
+      for (const [name, range] of Object.entries(declared)) {
+        if (locked[name] === undefined) {
+          findings.push({
+            packagePath: `package.json#${section}/${name}`,
+            message: `declared in package.json but missing from the lockfile root entry (run \`npm install\`)`
+          });
+        } else if (locked[name] !== range) {
+          findings.push({
+            packagePath: `package.json#${section}/${name}`,
+            message: `range mismatch: package.json has "${range}", lockfile root has "${locked[name]}" (run \`npm install\`)`
+          });
+        }
+        // peers aren't necessarily installed as their own entries
+        if (section !== 'peerDependencies' && lockfile.packages[`node_modules/${name}`] === undefined) {
+          findings.push({
+            packagePath: `package.json#${section}/${name}`,
+            message: `declared in package.json but not installed in the lockfile packages map (run \`npm install\`)`
+          });
+        }
+      }
+
+      for (const name of Object.keys(locked)) {
+        if (declared[name] === undefined) {
+          findings.push({
+            packagePath: `package-lock.json#${section}/${name}`,
+            message: `present in the lockfile root entry but not declared in package.json (run \`npm install\`)`
+          });
+        }
+      }
+    }
+
+    return findings;
+  }
+};
+
+const noOrphanPackagesRule = {
+  id: 'no-orphan-packages',
+  description: 'Lockfile must not contain packages unreachable from the dependency graph',
+  defaultSeverity: 'warn',
+  check({ lockfile }) {
+    if (!lockfile.packages) return [];
+    let orphans;
+    try {
+      orphans = findOrphanedPackages(lockfile).orphans;
+    } catch (e) {
+      // v1 lockfiles: lockfile-version rule already covers this
+      return [];
+    }
+    return orphans.map((orphan) => ({
+      packagePath: orphan.key,
+      message: `orphaned package${orphan.version ? ` (${orphan.name}@${orphan.version})` : ''} unreachable from the dependency graph (run \`npfix prune\`)`
+    }));
+  }
+};
+
+const unusedDependenciesRule = {
+  id: 'unused-dependencies',
+  description: 'Dependencies declared in package.json should be imported by the application',
+  defaultSeverity: 'warn',
+  check({ packageJson, options, filePath }) {
+    if (!packageJson) {
+      return [{
+        packagePath: 'package.json',
+        message: 'package.json not found next to lockfile; unused-dependencies rule skipped',
+        data: { forcedSeverity: 'warn' }
+      }];
+    }
+
+    const dir = path.dirname(path.resolve(filePath));
+    let result;
+    try {
+      result = findUnusedDependencies(packageJson, dir, {
+        includeDev: Boolean(options.includeDev),
+        ignore: options.ignore || []
+      });
+    } catch (e) {
+      return [{
+        packagePath: 'package.json',
+        message: `unused-dependencies rule skipped: ${e.message}`,
+        data: { forcedSeverity: 'warn' }
+      }];
+    }
+
+    return result.unused.map((dep) => ({
+      packagePath: `package.json#${dep.section}/${dep.name}`,
+      message: `"${dep.name}" is never imported by the application — flagged for removal (heuristic; add to the rule's ignore list if loaded indirectly)`
+    }));
+  }
+};
+
 export const rules = [
   lockfileVersionRule,
   validStructureRule,
   integrityHygieneRule,
   secureResolvedRule,
-  pinnedVersionsRule
+  pinnedVersionsRule,
+  lockfileSyncRule,
+  noOrphanPackagesRule,
+  unusedDependenciesRule
 ];
 
 /**

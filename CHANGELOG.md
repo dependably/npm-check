@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-06-10
+
+### Added
+- **Prune Command**: New `npfix prune` — removes orphaned packages from the lockfile, i.e. entries unreachable from the root package or any workspace by following dependency edges with npm's node_modules resolution rules (nested shadowing nearest-first, workspace `link:` targets, peer/optional deps included). Dry-run by default, `--write` with backup.
+- **Unused Command**: New `npfix unused` — flags dependencies declared in package.json that the application's source never imports (heuristic scan of require/import/dynamic-import/re-export specifiers across .js/.ts/etc., skipping node_modules and build output). npm-script mentions and `@types/*` of used packages count as used. Report-only; `--include-dev` and `--json` flags.
+- **Audit Rules**: Three new rules (8 total):
+  - `lockfile-sync` (error): package.json and the lockfile agree — name/version match, every declared dep present in the root entry with the same range and installed in the packages map, no lockfile-only leftovers.
+  - `no-orphan-packages` (warn): no unreachable lockfile entries; suggests `npfix prune`.
+  - `unused-dependencies` (warn): every declared dependency is imported by the application; `includeDev`/`ignore` options.
+- **API**: Exported `findOrphanedPackages`, `prunePackages`, `scanUsedPackages`, `findUnusedDependencies`, `specifierToPackageName`, and related error classes.
+
 ## [1.2.0] - 2026-06-10
 
 ### Added

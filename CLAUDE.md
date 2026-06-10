@@ -201,6 +201,8 @@ npfix upgrade --write package-lock.json
 npfix fix --write package-lock.json
 npfix fix-checksums --write package-lock.json
 npfix pin --write
+npfix prune --write package-lock.json
+npfix unused
 npfix audit --strict
 npfix dedupe --write package-lock.json
 npfix check --check hash package-lock.json
@@ -259,6 +261,30 @@ Opinionated, configurable lockfile linter for CI (non-zero exit on failure):
 - `runAudit()` - Returns `{findings, summary, pass}`
 - `formatAuditReport()` - Stylish or JSON rendering
 - `loadAuditConfig()` / `mergeConfig()` - Config resolution and validation
+
+### 11. Pruner (`pruner.js`)
+
+Removes orphaned packages — lockfile entries unreachable from the dependency graph:
+
+- Reachability walk from the root package and workspaces using npm's node_modules resolution (nearest-first shadowing)
+- Follows dependencies/optionalDependencies/peerDependencies everywhere, devDependencies at roots, and workspace `link:` targets
+- v1 unsupported (migrate first); v2 legacy tree left untouched with a warning
+
+**Key Functions:**
+- `findOrphanedPackages()` - Returns `{reachable, orphans}`
+- `prunePackages()` - Returns `{lockfile, removed, warnings}`
+
+### 12. Usage Scanner (`usage-scanner.js`)
+
+Flags declared dependencies the application never imports (candidates for removal):
+
+- Scans source files for require/import/dynamic-import/re-export specifiers
+- npm-script mentions count as used (CLI tools); `@types/foo` used when `foo` is
+- Heuristic, report-only — never auto-removes
+
+**Key Functions:**
+- `scanUsedPackages()` - Returns `{used: Set, scannedFiles}`
+- `findUnusedDependencies()` - Returns `{unused, used, scannedFiles, sectionsChecked}`
 
 ## Planned Components
 

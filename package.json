@@ -1,6 +1,6 @@
 {
   "name": "package-lock-fixer",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "description": "A comprehensive tool for validating, migrating, and updating npm package-lock.json files across versions 1, 2, and 3.",
   "main": "src/index.js",
   "type": "module",

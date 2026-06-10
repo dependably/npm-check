@@ -9,6 +9,8 @@ A comprehensive tool for validating, migrating, fixing, and updating npm `packag
 - **Audit** – Opinionated, configurable linter for lockfile best practices; non-zero exit for CI gating.
 - **Checksum Fixing** – Fill missing/placeholder/sha1 integrity hashes with real registry hashes.
 - **Version Pinning** – Remove `^`/`~` from package.json ranges, locking to resolved versions.
+- **Pruning** – Remove orphaned lockfile entries unreachable from the dependency graph.
+- **Unused Detection** – Flag declared dependencies the application never imports.
 - **Fixing** – Automated repair strategies for common issues.
 - **Updater** – Upgrade integrity hashes and deduplicate packages.
 - **Streaming** – Handle very large lockfiles without loading entire file into memory.
@@ -49,6 +51,12 @@ npfix pin --write
 
 # Lint the lockfile for best practices (exits non-zero on failure)
 npfix audit
+
+# Remove orphaned packages unreachable from the dependency graph
+npfix prune --write
+
+# Flag declared dependencies the application never imports
+npfix unused
 
 # Run automated fixer (adds placeholders for missing integrity, dedupes packages)
 npfix fix --write
@@ -158,6 +166,9 @@ npfix audit --config ./my-audit.json
 | `integrity-hygiene` | error | No missing, placeholder, or sha1 integrity hashes (git/file/link/bundled deps exempt) |
 | `secure-resolved` | error | No `http://` resolved URLs; registry hosts limited to an allowlist (default: `registry.npmjs.org`) |
 | `pinned-versions` | warn | No `^`/`~` ranges in package.json dependency sections |
+| `lockfile-sync` | error | package.json and the lockfile agree (name/version, every declared dep present with matching range, no lockfile-only leftovers) |
+| `no-orphan-packages` | warn | No lockfile entries unreachable from the dependency graph (fix with `npfix prune`) |
+| `unused-dependencies` | warn | Every declared dependency is imported by the application source (heuristic; `includeDev`/`ignore` options) |
 
 **Configuration File:**
 
@@ -179,7 +190,10 @@ The audit looks for `.npfixrc.json`, then `npfix.config.json`, in the current di
     "pinned-versions":   ["warn", {
       "sections": ["dependencies", "devDependencies", "optionalDependencies"],
       "ignore": []
-    }]
+    }],
+    "lockfile-sync":     "error",
+    "no-orphan-packages": "warn",
+    "unused-dependencies": ["warn", { "includeDev": false, "ignore": [] }]
   }
 }
 ```
@@ -216,6 +230,29 @@ npfix pin --include-peer             # Also pin peerDependencies (off by default
 ```
 
 Complex ranges (`>=`, `||`, `1.x`, `*`, dist-tags), git/file/workspace/alias specs, and dependencies missing from the lockfile are left untouched and reported with reasons.
+
+### Prune Command
+
+Removes orphaned packages from the lockfile — entries unreachable from the root package (or any workspace) by following dependency edges with npm's node_modules resolution rules. Orphans typically accumulate after bad merges or hand-edits.
+
+```bash
+npfix prune                          # Dry-run: list orphaned entries
+npfix prune --write                  # Remove them (creates a backup)
+```
+
+Reachability follows `dependencies`, `optionalDependencies`, and `peerDependencies` of every installed package (plus `devDependencies` of the root and workspaces), resolves nested `node_modules` shadowing nearest-first, and follows workspace `link:` entries. v1 lockfiles are not supported; run `npfix migrate 3` first. On v2 lockfiles the legacy `dependencies` tree is left untouched (npm regenerates it) with a recommendation to migrate to v3.
+
+### Unused Command
+
+Flags dependencies declared in `package.json` that the application never imports — candidates for removal.
+
+```bash
+npfix unused                         # Scan the current directory
+npfix unused ./my-app --include-dev  # Also check devDependencies
+npfix unused --json                  # Machine-readable output
+```
+
+The scan walks source files (`.js`, `.mjs`, `.cjs`, `.jsx`, `.ts`, `.tsx`, `.vue`, `.svelte`, skipping `node_modules`, `dist`, etc.) for `require()`, `import`, dynamic `import()`, and re-export specifiers. Packages mentioned in npm scripts count as used (CLI tools), and `@types/foo` counts as used when `foo` is. Results are **heuristic and report-only** — packages loaded via config files or runtime magic can be false positives, so nothing is removed automatically.
 
 ## API
 

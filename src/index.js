@@ -53,6 +53,17 @@ export {
   AuditError
 } from './audit.js';
 export {
+  findOrphanedPackages,
+  prunePackages,
+  PrunerError
+} from './pruner.js';
+export {
+  scanUsedPackages,
+  findUnusedDependencies,
+  specifierToPackageName,
+  UsageScannerError
+} from './usage-scanner.js';
+export {
   loadAuditConfig,
   mergeConfig,
   normalizeRuleEntry,

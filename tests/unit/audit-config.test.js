@@ -133,6 +133,6 @@ describe('loadAuditConfig', () => {
 describe('constants', () => {
   it('exposes the documented filenames and defaults', () => {
     expect(CONFIG_FILENAMES).toEqual(['.npfixrc.json', 'npfix.config.json']);
-    expect(Object.keys(DEFAULT_CONFIG.rules)).toHaveLength(5);
+    expect(Object.keys(DEFAULT_CONFIG.rules)).toHaveLength(8);
   });
 });

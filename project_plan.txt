@@ -127,6 +127,15 @@ Completed:
 1. **Binary Hashing**: generateIntegrityFromFile hashed utf8-decoded text; now raw bytes.
 2. **Validator Realism**: validatePackageLock now matches real npm output (no name required on non-root entries, link entries exempt from version, string deps allowed in packages-map entries).
 
+## ORPHAN & SYNC PASS (v1.3.0 - 2026-06-10):
+### Feature Implementation ✅
+1. **Prune Command**: `npfix prune` — removes lockfile entries unreachable from the dependency graph (src/pruner.js).
+   - npm node_modules resolution (nearest-first shadowing), workspace link targets, peer/optional edges
+2. **Unused Command**: `npfix unused` — flags declared deps never imported by application source (src/usage-scanner.js).
+   - require/import/dynamic-import/re-export scan; npm-script and @types/* awareness; report-only heuristic
+3. **Audit Rules** (now 8): lockfile-sync (error, package.json↔lockfile agreement), no-orphan-packages (warn),
+   unused-dependencies (warn, includeDev/ignore options)
+
 In Progress:
 - (none currently)
 
@@ -136,6 +145,7 @@ Planned (Priority Order):
 3. Dependency conflict detection - identify and report unresolved version conflicts
 4. Pin support for npm: alias inner ranges
 5. fix-checksums: optional tarball download + sha512 for registries that only publish shasum
+6. prune: optionally regenerate the v2 legacy dependencies tree after pruning
 
 Notes:
 - Code locations: core logic in `src/`; CLI in `bin/`; tests in `tests/`; workers in `src/workers/`.
