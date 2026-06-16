@@ -151,8 +151,8 @@ console.log('Applied fixes:', fixes);
 
 ## Technical Requirements
 
-- **Node.js**: 14.0.0 or higher
-- **npm**: 6.0.0 or higher
+- **Node.js**: 18.0.0 or higher
+- **npm**: 9.0.0 or higher
 - No production dependencies (minimal footprint)
 
 ## Configuration

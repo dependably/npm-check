@@ -7,7 +7,7 @@ This document provides step-by-step instructions for publishing `package-lock-fi
 1. **npm Account**: Create an account at https://www.npmjs.com
 2. **Credentials**: Log in locally using `npm login`
 3. **Repository Access**: Ensure you have write access to the GitHub repository
-4. **Node.js**: Version 14.0.0 or higher
+4. **Node.js**: Version 18.0.0 or higher
 
 ## Pre-Publication Checklist
 
