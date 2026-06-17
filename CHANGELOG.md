@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Unified `report` command** (now the default — bare `npm-check` runs it). Runs every check in one pass — the 9 audit rules + registry integrity verification + license validation — and prints one clean, grouped report: a section summary table (Structure, Integrity, Resolved URLs, Licenses, Install scripts, Pinned versions, Orphans, Unused), then per-section detail, then a totals line. `--format json` for CI. Network/filesystem checks degrade gracefully (`--offline`/`--no-integrity`; licenses auto-skip without `node_modules`/approved-list). New API: `runReport()` / `formatReport()`.
+
 ### Changed
 - **`check --check hash` now verifies against the registry** instead of hashing the installed `node_modules` directory. The old approach compared a directory hash to npm's tarball integrity — two incompatible things — producing false-positive mismatches for every package. It now compares each locked `integrity` to the authoritative `dist.integrity` from the registry (base derived per-package from `resolved`, so private registries work), needs no `node_modules`, and reports unreachable/missing entries as `unresolved` (non-failing by default; `--fail-on-unresolved` to fail closed). New flags: `--concurrency`, `--timeout`, `--registry`, `--fail-on-unresolved`. `deriveRegistryBase` moved to `integrity.js` (re-exported from `checksum-fixer.js` for back-compat).
 

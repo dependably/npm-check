@@ -109,3 +109,8 @@ export {
   hashPackageDirectory,
   CheckError
 } from './checker.js';
+export {
+  runReport,
+  formatReport,
+  ReportError
+} from './report.js';

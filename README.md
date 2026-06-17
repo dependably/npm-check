@@ -32,6 +32,12 @@ npm install -g npm-check
 The repository includes a lightweight CLI exposed as the `npm-check` binary:
 
 ```bash
+# Run ALL checks and print one grouped report (the default command)
+npm-check                       # ./package-lock.json
+npm-check report web/package-lock.json
+npm-check --offline             # skip the registry integrity check
+npm-check --format json         # machine-readable, for CI
+
 # Validate a lockfile (defaults to ./package-lock.json)
 npm-check validate
 

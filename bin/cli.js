@@ -15,6 +15,7 @@ import { fixChecksums } from '../src/checksum-fixer.js';
 import { pinVersions, detectIndent } from '../src/pinner.js';
 import { runAudit, formatAuditReport } from '../src/audit.js';
 import { loadAuditConfig, mergeConfig } from '../src/audit-config.js';
+import { runReport, formatReport } from '../src/report.js';
 import { prunePackages } from '../src/pruner.js';
 import { findUnusedDependencies } from '../src/usage-scanner.js';
 
@@ -25,9 +26,12 @@ function printHelp() {
 npm-check — npm lockfile toolkit
 
 Usage:
-  npm-check <command> [file] [options]
+  npm-check [command] [file] [options]
+
+  With no command, npm-check runs the full report (all checks) on ./package-lock.json.
 
 Commands:
+  report [file]              Run ALL checks and print one grouped report (default)
   validate [file]            Validate a package-lock.json file
   migrate [file] [target]    Migrate to target version (1, 2, or 3; default: 3)
   upgrade [file]             Upgrade lockfile to version 3 (alias for migrate 3)
@@ -43,6 +47,16 @@ Commands:
   backups [file]             List all backups for a file
   restore [file]             Restore from latest backup
   clean-backups [file]       Clean old backup files with optional --keep N
+
+Report Options:
+  --offline                  Skip the registry integrity check (offline rules only)
+  --no-integrity             Skip the integrity check
+  --no-license               Skip the license check
+  --format pretty|json       Output format (default: pretty)
+  --strict                   Treat warnings as failures
+  --max-warnings N           Fail if warnings exceed N (-1 = unlimited)
+  --fail-on-unresolved       Fail when integrity can't be verified (registry down/missing)
+  --concurrency / --timeout / --registry / --licenses-csv   (as in Check Options)
 
 Check Options:
   --check hash               Verify locked integrity hashes against the registry
@@ -154,7 +168,7 @@ function handleError(error, context = '') {
 }
 
 async function main() {
-  if (argv.length === 0 || argv.includes('-h') || argv.includes('--help')) {
+  if (argv.includes('-h') || argv.includes('--help')) {
     printHelp();
     return;
   }
@@ -164,10 +178,119 @@ async function main() {
     return;
   }
 
-  const command = argv[0];
+  // Bare `npm-check` (no command, or only flags) runs the full report.
+  const command = (!argv[0] || argv[0].startsWith('-')) ? 'report' : argv[0];
 
   try {
     switch (command) {
+      case 'report': {
+        // `report` takes its file from argv[1] only when invoked explicitly.
+        const fileArg = argv[0] === 'report' ? argv[1] : undefined;
+        const filePath = getFilePath(fileArg);
+        if (!fs.existsSync(filePath)) {
+          console.error(`❌ No lockfile found at ${filePath}`);
+          console.error('   Run `npm-check report <path>` or `npm-check --help`.');
+          process.exit(2);
+        }
+
+        let report;
+        try {
+          // Audit config: discovered/--config file + --rule/--strict/--max-warnings overrides.
+          let configPath = null;
+          const configIndex = argv.indexOf('--config');
+          if (configIndex !== -1 && argv[configIndex + 1]) configPath = argv[configIndex + 1];
+          const config = loadAuditConfig(process.cwd(), configPath);
+
+          argv.forEach((arg, i) => {
+            if (arg === '--rule' && argv[i + 1]) {
+              const [ruleId, severity] = argv[i + 1].split(':');
+              const merged = mergeConfig({ rules: { [ruleId]: severity } });
+              if (merged.rules[ruleId]) {
+                config.rules[ruleId] = { severity: merged.rules[ruleId].severity, options: { ...config.rules[ruleId].options } };
+              }
+            }
+          });
+
+          const strict = argv.includes('--strict');
+          let maxWarnings = strict ? 0 : config.maxWarnings;
+          const maxWarningsIndex = argv.indexOf('--max-warnings');
+          if (maxWarningsIndex !== -1 && argv[maxWarningsIndex + 1]) {
+            const parsed = parseInt(argv[maxWarningsIndex + 1], 10);
+            if (isNaN(parsed)) { console.error('❌ Invalid --max-warnings value. Must be a number'); process.exit(2); }
+            maxWarnings = parsed;
+          }
+
+          let format = 'pretty';
+          const formatIndex = argv.indexOf('--format');
+          if (formatIndex !== -1 && argv[formatIndex + 1]) {
+            format = argv[formatIndex + 1];
+            if (!['pretty', 'json'].includes(format)) { console.error('❌ Invalid --format value. Use: pretty or json'); process.exit(2); }
+          }
+
+          // Network/integrity + license toggles.
+          const integrity = !argv.includes('--offline') && !argv.includes('--no-integrity');
+          const license = !argv.includes('--no-license');
+          const failOnUnresolved = argv.includes('--fail-on-unresolved');
+
+          let concurrency = 8;
+          const concurrencyIndex = argv.indexOf('--concurrency');
+          if (concurrencyIndex !== -1 && argv[concurrencyIndex + 1]) {
+            const parsed = parseInt(argv[concurrencyIndex + 1], 10);
+            if (isNaN(parsed) || parsed < 1) { console.error('❌ Invalid --concurrency value. Must be a positive number'); process.exit(2); }
+            concurrency = parsed;
+          }
+          let timeoutMs = 10000;
+          const timeoutIndex = argv.indexOf('--timeout');
+          if (timeoutIndex !== -1 && argv[timeoutIndex + 1]) {
+            const parsed = parseInt(argv[timeoutIndex + 1], 10);
+            if (isNaN(parsed) || parsed < 1) { console.error('❌ Invalid --timeout value. Must be a positive number'); process.exit(2); }
+            timeoutMs = parsed;
+          }
+          let defaultRegistry;
+          const registryIndex = argv.indexOf('--registry');
+          if (registryIndex !== -1 && argv[registryIndex + 1]) defaultRegistry = argv[registryIndex + 1];
+
+          let licensesCsv;
+          const csvIndex = argv.indexOf('--licenses-csv');
+          if (csvIndex !== -1 && argv[csvIndex + 1]) licensesCsv = argv[csvIndex + 1];
+
+          const dir = path.dirname(filePath);
+          const lockfile = parseLockfile(filePath);
+          let packageJson = null;
+          const packageJsonPath = path.join(dir, 'package.json');
+          if (fs.existsSync(packageJsonPath)) packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
+
+          if (integrity && format === 'pretty') console.log('🔎 Running all checks (verifying integrity against the registry)…');
+
+          let lastProgress = null;
+          const onProgress = format === 'pretty' ? (progress) => {
+            if (!lastProgress || progress.percentage !== lastProgress.percentage) {
+              process.stdout.write(`\r${createProgressBar(progress)} ${progress.stage}`);
+              lastProgress = progress;
+            }
+          } : null;
+
+          report = await runReport(
+            { lockfile, packageJson, filePath: path.relative(process.cwd(), filePath) || filePath, dir },
+            {
+              auditConfig: config, integrity, license, strict, maxWarnings,
+              concurrency, timeoutMs, failOnUnresolved, onProgress,
+              ...(defaultRegistry ? { defaultRegistry } : {}),
+              ...(licensesCsv ? { licensesCsv } : {})
+            }
+          );
+
+          if (onProgress) process.stdout.write('\r' + ' '.repeat(80) + '\r');
+          console.log(format === 'pretty' ? '\n' + formatReport(report, { format }) : formatReport(report, { format }));
+        } catch (error) {
+          console.error(`\n❌ Report error: ${error.message}`);
+          process.exit(2);
+        }
+
+        process.exit(report.summary.pass ? 0 : 1);
+        break;
+      }
+
       case 'validate': {
         const filePath = getFilePath(argv[1]);
         ensureFileExists(filePath);

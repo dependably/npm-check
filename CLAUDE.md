@@ -195,6 +195,10 @@ Automated repair functionality:
 Command-line tool for easy usage:
 
 ```bash
+npm-check                                # full report (all checks) on ./package-lock.json
+npm-check report web/package-lock.json   # explicit target
+npm-check --offline                      # skip the registry integrity check
+npm-check --format json                  # machine-readable report
 npm-check validate package-lock.json
 npm-check migrate 3 package-lock.json
 npm-check upgrade --write package-lock.json
@@ -209,6 +213,15 @@ npm-check check --check hash package-lock.json
 npm-check check --check license package-lock.json
 npm-check upgrade-hashes --write package-lock.json
 ```
+
+### 6a. Unified Report (`report.js`)
+
+The default command (bare `npm-check`, or `npm-check report [file]`). Runs **every** check in one pass — the 9 audit rules + registry integrity verification + license validation — and renders one grouped, sectioned report (section summary table, then per-section detail, then a totals line). `--format json` for CI/tooling.
+
+- Sections: Structure & format, Integrity (registry), Resolved URLs, Licenses, Install scripts, Pinned versions, Orphaned packages, Unused dependencies
+- Network/filesystem checks degrade gracefully: integrity → `--offline`/`--no-integrity` to skip; licenses auto-skip when there's no `node_modules` or no approved-licenses CSV
+- Exit 0 unless an error-severity finding exists (or `--strict`/`--max-warnings` budget is exceeded)
+- **Key Functions:** `runReport()` returns `{filePath, sections, summary}`; `formatReport()` renders pretty or JSON
 
 ### 7. Updater (`updater.js`)
 
