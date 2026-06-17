@@ -8,6 +8,7 @@ A comprehensive tool for validating, migrating, fixing, and updating npm `packag
 - **Migration** – Seamlessly convert between lockfile versions (v1 ↔ v2 ↔ v3).
 - **Audit** – Opinionated, configurable linter for lockfile best practices; non-zero exit for CI gating.
 - **Checksum Fixing** – Fill missing/placeholder/sha1 integrity hashes with real registry hashes.
+- **Integrity Verification** – Verify locked integrity hashes against the registry's authoritative hashes (no `node_modules` needed); plus SPDX license checks.
 - **Version Pinning** – Remove `^`/`~` from package.json ranges, locking to resolved versions.
 - **Pruning** – Remove orphaned lockfile entries unreachable from the dependency graph.
 - **Unused Detection** – Flag declared dependencies the application never imports.
@@ -28,7 +29,7 @@ npm install -g npm-check
 
 ### CLI Usage
 
-The repository includes a lightweight CLI exposed as the `npm-check` binary (also aliased as `npm-check`):
+The repository includes a lightweight CLI exposed as the `npm-check` binary:
 
 ```bash
 # Validate a lockfile (defaults to ./package-lock.json)
@@ -70,8 +71,11 @@ npm-check dedupe --write
 # Check integrity hashes and licenses
 npm-check check
 
-# Check only integrity hashes
+# Verify locked integrity hashes against the registry (no node_modules needed)
 npm-check check --check hash
+
+# Fail the run when an entry can't be verified (registry down / missing)
+npm-check check --check hash --fail-on-unresolved
 
 # Check only licenses against approved list
 npm-check check --check license

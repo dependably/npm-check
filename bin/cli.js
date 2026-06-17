@@ -45,11 +45,15 @@ Commands:
   clean-backups [file]       Clean old backup files with optional --keep N
 
 Check Options:
-  --check hash               Only verify integrity checksums
+  --check hash               Verify locked integrity hashes against the registry
   --check license            Only verify licenses against approved list
   --check all                Run both checks (default)
   --licenses-csv <path>      Path to approved licenses CSV
   --strict                   Treat warnings as errors
+  --concurrency N            Parallel registry requests for hash check (default: 8)
+  --timeout MS               Per-request timeout in milliseconds (default: 10000)
+  --registry <url>           Registry for entries without a derivable base
+  --fail-on-unresolved       Fail when an entry can't be verified (registry down/missing)
 
 Fix-Checksums Options:
   --concurrency N            Parallel registry requests (default: 8)
@@ -703,6 +707,37 @@ async function main() {
           licensesCsv = argv[csvIndex + 1];
         }
 
+        // Registry-verification flags (hash check)
+        let concurrency = 8;
+        const concurrencyIndex = argv.indexOf('--concurrency');
+        if (concurrencyIndex !== -1 && argv[concurrencyIndex + 1]) {
+          const parsed = parseInt(argv[concurrencyIndex + 1], 10);
+          if (isNaN(parsed) || parsed < 1) {
+            console.error('❌ Invalid --concurrency value. Must be a positive number');
+            process.exit(1);
+          }
+          concurrency = parsed;
+        }
+
+        let timeoutMs = 10000;
+        const timeoutIndex = argv.indexOf('--timeout');
+        if (timeoutIndex !== -1 && argv[timeoutIndex + 1]) {
+          const parsed = parseInt(argv[timeoutIndex + 1], 10);
+          if (isNaN(parsed) || parsed < 1) {
+            console.error('❌ Invalid --timeout value. Must be a positive number');
+            process.exit(1);
+          }
+          timeoutMs = parsed;
+        }
+
+        let defaultRegistry;
+        const registryIndex = argv.indexOf('--registry');
+        if (registryIndex !== -1 && argv[registryIndex + 1]) {
+          defaultRegistry = argv[registryIndex + 1];
+        }
+
+        const failOnUnresolved = argv.includes('--fail-on-unresolved');
+
         // Parse lockfile
         const lockfile = parseLockfile(filePath);
 
@@ -724,28 +759,42 @@ async function main() {
         let allValid = true;
 
         try {
-          // Run hash check
+          // Run hash check (verifies locked integrity against the registry)
           if (checkType === 'hash' || checkType === 'all') {
-            console.log('🔐 Checking integrity hashes...');
-            const hashResult = await checkIntegrity(lockfile, options);
+            console.log('🔐 Verifying integrity against the registry...');
+            const hashResult = await checkIntegrity(lockfile, {
+              ...options,
+              concurrency,
+              timeoutMs,
+              failOnUnresolved,
+              ...(defaultRegistry ? { defaultRegistry } : {})
+            });
 
             process.stdout.write('\r' + ' '.repeat(80) + '\r');
             console.log(`   Checked: ${hashResult.checked}`);
             console.log(`   ✅ Passed: ${hashResult.passed}`);
             console.log(`   ❌ Failed: ${hashResult.failed}`);
             console.log(`   ⏭️  Skipped: ${hashResult.skipped}`);
+            console.log(`   ❔ Unresolved: ${hashResult.unresolved}`);
 
-            if (hashResult.errors.length > 0) {
-              console.log('\n   Failed packages:');
-              hashResult.errors.forEach(err => {
+            const mismatches = hashResult.errors.filter(e => e.expected && e.actual);
+            if (mismatches.length > 0) {
+              console.log('\n   Hash mismatches (lockfile differs from registry):');
+              mismatches.forEach(err => {
                 console.log(`     • ${err.package}`);
-                if (err.expected && err.actual) {
-                  console.log(`       Expected: ${err.expected.slice(0, 50)}...`);
-                  console.log(`       Actual:   ${err.actual.slice(0, 50)}...`);
-                } else if (err.error) {
-                  console.log(`       Error: ${err.error}`);
-                }
+                console.log(`       Registry: ${err.expected.slice(0, 50)}...`);
+                console.log(`       Lockfile: ${err.actual.slice(0, 50)}...`);
               });
+            }
+
+            if (hashResult.unresolvedItems.length > 0) {
+              console.log('\n   Unresolved (could not verify against the registry):');
+              hashResult.unresolvedItems.forEach(item => {
+                console.log(`     • ${item.package}@${item.version}: ${item.reason}`);
+              });
+              if (!failOnUnresolved) {
+                console.log('   (unresolved entries do not fail the check; pass --fail-on-unresolved to fail closed)');
+              }
             }
 
             allValid = allValid && hashResult.valid;

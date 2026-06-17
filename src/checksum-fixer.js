@@ -5,9 +5,13 @@ import {
   fetchPackumentIntegrity,
   generateIntegrityFromFile,
   isPlaceholder,
+  deriveRegistryBase,
   DEFAULT_REGISTRY
 } from './integrity.js';
 import { hashPackageDirectory } from './checker.js';
+
+// Re-exported for back-compat; the canonical definition now lives in integrity.js
+export { deriveRegistryBase } from './integrity.js';
 
 export class ChecksumFixError extends Error {
   constructor(message, code, context = {}) {
@@ -16,39 +20,6 @@ export class ChecksumFixError extends Error {
     this.code = code;
     this.context = context;
   }
-}
-
-/**
- * Derive the registry base URL from a package's resolved tarball URL.
- * npm tarball URLs follow <registryBase>/<name>/-/<file>.tgz, where scoped
- * names may appear as '@scope/name' or '@scope%2fname' in the path.
- * @param {string} resolvedUrl - The entry's resolved URL
- * @param {string} packageName - The real package name
- * @returns {string|null} Registry base or null if not derivable
- */
-export function deriveRegistryBase(resolvedUrl, packageName) {
-  if (!resolvedUrl || !packageName) return null;
-  let url;
-  try {
-    url = new URL(resolvedUrl);
-  } catch (e) {
-    return null;
-  }
-  if (url.protocol !== 'https:' && url.protocol !== 'http:') return null;
-
-  const markerIdx = url.pathname.indexOf('/-/');
-  if (markerIdx === -1) return null;
-
-  let beforeMarker = url.pathname.slice(0, markerIdx);
-  // Strip the package name (possibly %2f-encoded for scopes) off the tail
-  const encodedName = packageName.replace('/', '%2f');
-  for (const candidate of [`/${packageName}`, `/${encodedName}`]) {
-    if (beforeMarker.toLowerCase().endsWith(candidate.toLowerCase())) {
-      beforeMarker = beforeMarker.slice(0, beforeMarker.length - candidate.length);
-      return `${url.origin}${beforeMarker}`;
-    }
-  }
-  return null;
 }
 
 /**

@@ -159,114 +159,131 @@ describe('checkIntegrity', () => {
     cleanupTestEnvironment();
   });
 
-  it('should throw error when node_modules does not exist', async () => {
-    const lockfile = { packages: {} };
+  const HASH_A = 'sha512-' + 'A'.repeat(86) + '==';
+  const HASH_B = 'sha512-' + 'B'.repeat(86) + '==';
 
-    await expect(checkIntegrity(lockfile, {
-      nodeModulesPath: '/nonexistent/node_modules'
-    })).rejects.toThrow(CheckError);
+  // Injectable registry transport: resolves each package to a hash from `table`
+  const fakeRegistry = (table) => (name) => Promise.resolve(table[name] || null);
+
+  it('throws on a v1 lockfile', async () => {
+    await expect(checkIntegrity({ lockfileVersion: 1, packages: {} }))
+      .rejects.toThrow(CheckError);
   });
 
-  it('should skip root package', async () => {
-    fs.mkdirSync(NODE_MODULES_PATH, { recursive: true });
-
+  it('skips root, workspace, link, git, file, and integrity-less entries (no network)', async () => {
+    let calls = 0;
     const lockfile = {
+      lockfileVersion: 3,
       packages: {
-        '': {
-          name: 'root-package',
-          version: '1.0.0'
-        }
+        '': { name: 'root', version: '1.0.0' },
+        'packages/app': { name: 'app', version: '1.0.0' }, // workspace source
+        'node_modules/linked': { link: true, resolved: 'packages/app' },
+        'node_modules/no-integ': { version: '1.0.0' }, // nothing locked
+        'node_modules/from-git': { version: '1.0.0', integrity: HASH_A, resolved: 'git+https://github.com/x/y.git' },
+        'node_modules/from-file': { version: '1.0.0', integrity: HASH_A, resolved: 'file:../local' }
       }
     };
-
-    const result = await checkIntegrity(lockfile, {
-      nodeModulesPath: NODE_MODULES_PATH
-    });
-
-    expect(result.skipped).toBe(1);
-    expect(result.checked).toBe(1);
+    const result = await checkIntegrity(lockfile, { fetchIntegrity: () => { calls++; return Promise.resolve(HASH_A); } });
+    expect(calls).toBe(0);
+    expect(result.skipped).toBe(6);
+    expect(result.checked).toBe(0);
     expect(result.valid).toBe(true);
   });
 
-  it('should skip packages without integrity field', async () => {
-    fs.mkdirSync(NODE_MODULES_PATH, { recursive: true });
-    createTestPackage(TEST_DIR, 'lodash');
-
+  it('skips legacy sha1 hashes (cannot compare to registry sha512)', async () => {
     const lockfile = {
+      lockfileVersion: 3,
+      packages: {
+        'node_modules/old': {
+          name: 'old', version: '1.0.0', integrity: 'sha1-abcdef',
+          resolved: 'https://registry.npmjs.org/old/-/old-1.0.0.tgz'
+        }
+      }
+    };
+    const result = await checkIntegrity(lockfile, { fetchIntegrity: fakeRegistry({ old: HASH_A }) });
+    expect(result.skipped).toBe(1);
+    expect(result.checked).toBe(0);
+  });
+
+  it('passes when the locked hash matches the registry', async () => {
+    const lockfile = {
+      lockfileVersion: 3,
       packages: {
         'node_modules/lodash': {
-          name: 'lodash',
-          version: '4.17.21'
-          // no integrity field
+          name: 'lodash', version: '4.17.21', integrity: HASH_A,
+          resolved: 'https://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz'
         }
       }
     };
-
-    const result = await checkIntegrity(lockfile, {
-      nodeModulesPath: NODE_MODULES_PATH
-    });
-
-    expect(result.skipped).toBe(1);
-    expect(result.checked).toBe(1);
-    expect(result.valid).toBe(true);
-  });
-
-  it('should detect missing package in node_modules', async () => {
-    fs.mkdirSync(NODE_MODULES_PATH, { recursive: true });
-
-    const lockfile = {
-      packages: {
-        'node_modules/missing-package': {
-          name: 'missing-package',
-          version: '1.0.0',
-          integrity: 'sha512-test'
-        }
-      }
-    };
-
-    const result = await checkIntegrity(lockfile, {
-      nodeModulesPath: NODE_MODULES_PATH
-    });
-
-    expect(result.valid).toBe(false);
-    expect(result.failed).toBe(1);
-    expect(result.errors.length).toBe(1);
-    expect(result.errors[0].error).toContain('not found');
-  });
-
-  it('should verify package integrity', async () => {
-    fs.mkdirSync(NODE_MODULES_PATH, { recursive: true });
-    const pkgDir = createTestPackage(TEST_DIR, 'test-pkg');
-
-    // Generate actual hash by reading files (matching checker algorithm)
-    const crypto = await import('crypto');
-    const files = ['index.js', 'package.json'].sort();
-    const hash = crypto.createHash('sha512');
-
-    for (const file of files) {
-      const content = fs.readFileSync(path.join(pkgDir, file));
-      hash.update(file);
-      hash.update(content);
-    }
-
-    const expectedIntegrity = `sha512-${hash.digest('base64')}`;
-
-    const lockfile = {
-      packages: {
-        'node_modules/test-pkg': {
-          name: 'test-pkg',
-          version: '1.0.0',
-          integrity: expectedIntegrity
-        }
-      }
-    };
-
-    const result = await checkIntegrity(lockfile, {
-      nodeModulesPath: NODE_MODULES_PATH
-    });
-
+    const result = await checkIntegrity(lockfile, { fetchIntegrity: fakeRegistry({ lodash: HASH_A }) });
     expect(result.valid).toBe(true);
     expect(result.passed).toBe(1);
+    expect(result.checked).toBe(1);
+  });
+
+  it('fails when the locked hash differs from the registry', async () => {
+    const lockfile = {
+      lockfileVersion: 3,
+      packages: {
+        'node_modules/lodash': {
+          name: 'lodash', version: '4.17.21', integrity: HASH_A,
+          resolved: 'https://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz'
+        }
+      }
+    };
+    const result = await checkIntegrity(lockfile, { fetchIntegrity: fakeRegistry({ lodash: HASH_B }) });
+    expect(result.valid).toBe(false);
+    expect(result.failed).toBe(1);
+    expect(result.errors[0].expected).toBe(HASH_B); // registry
+    expect(result.errors[0].actual).toBe(HASH_A);   // lockfile
+  });
+
+  it('marks unresolved (not failed) when the registry has no hash', async () => {
+    const lockfile = {
+      lockfileVersion: 3,
+      packages: {
+        'node_modules/ghost': {
+          name: 'ghost', version: '9.9.9', integrity: HASH_A,
+          resolved: 'https://registry.npmjs.org/ghost/-/ghost-9.9.9.tgz'
+        }
+      }
+    };
+    const result = await checkIntegrity(lockfile, { fetchIntegrity: fakeRegistry({}) });
+    expect(result.valid).toBe(true);
+    expect(result.unresolved).toBe(1);
+    expect(result.failed).toBe(0);
+    expect(result.unresolvedItems[0].package).toBe('ghost');
+  });
+
+  it('fails closed on unresolved when failOnUnresolved is set', async () => {
+    const lockfile = {
+      lockfileVersion: 3,
+      packages: {
+        'node_modules/ghost': {
+          name: 'ghost', version: '9.9.9', integrity: HASH_A,
+          resolved: 'https://registry.npmjs.org/ghost/-/ghost-9.9.9.tgz'
+        }
+      }
+    };
+    const result = await checkIntegrity(lockfile, { fetchIntegrity: fakeRegistry({}), failOnUnresolved: true });
+    expect(result.valid).toBe(false);
+    expect(result.failed).toBe(1);
+  });
+
+  it('treats a registry network error as unresolved by default', async () => {
+    const lockfile = {
+      lockfileVersion: 3,
+      packages: {
+        'node_modules/lodash': {
+          name: 'lodash', version: '4.17.21', integrity: HASH_A,
+          resolved: 'https://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz'
+        }
+      }
+    };
+    const result = await checkIntegrity(lockfile, { fetchIntegrity: () => Promise.reject(new Error('ETIMEDOUT')) });
+    expect(result.valid).toBe(true);
+    expect(result.unresolved).toBe(1);
+    expect(result.unresolvedItems[0].reason).toMatch(/unreachable/);
   });
 });
 

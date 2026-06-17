@@ -7,6 +7,8 @@ import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import { createProgressReporter } from './progress-reporter.js';
+import { forEachPackageEntry } from './format-library.js';
+import { fetchPackumentIntegrity, deriveRegistryBase, DEFAULT_REGISTRY } from './integrity.js';
 
 /**
  * Custom error class for checker operations
@@ -99,58 +101,19 @@ async function collectPackageFiles(pkgDir) {
 }
 
 /**
- * Verify integrity hash for a single package
- * @param {string} packagePath - Package path from lockfile (e.g., 'node_modules/lodash')
- * @param {object} packageData - Package data from lockfile
- * @param {string} nodeModulesPath - Path to node_modules directory
- * @returns {Promise<object>} Verification result
+ * Map items through an async fn with a concurrency cap, preserving input order.
  */
-async function verifyPackageIntegrity(packagePath, packageData, nodeModulesPath) {
-  // Skip root package (empty path)
-  if (packagePath === '') {
-    return { valid: true, skipped: true, package: 'root' };
-  }
-
-  // Skip if no integrity in lockfile
-  if (!packageData.integrity) {
-    return { valid: true, skipped: true, package: packagePath, reason: 'no-integrity' };
-  }
-
-  // Extract package name from node_modules path
-  // Handle scoped packages like @org/package
-  let pkgName = packagePath.replace(/^node_modules\//, '');
-  let pkgDir = path.join(nodeModulesPath, pkgName);
-
-  // Check if package exists in node_modules
-  if (!fs.existsSync(pkgDir)) {
-    return {
-      valid: false,
-      error: 'Package not found in node_modules',
-      package: pkgName,
-      path: pkgDir
-    };
-  }
-
-  // Hash the package directory
-  try {
-    const actualHash = await hashPackageDirectory(pkgDir);
-    const expectedHash = packageData.integrity;
-    const matches = actualHash === expectedHash;
-
-    return {
-      valid: matches,
-      package: pkgName,
-      expected: expectedHash,
-      actual: actualHash
-    };
-  } catch (e) {
-    return {
-      valid: false,
-      error: e.message,
-      package: pkgName,
-      path: pkgDir
-    };
-  }
+async function mapWithConcurrency(items, limit, fn) {
+  const results = new Array(items.length);
+  let next = 0;
+  const workers = Array.from({ length: Math.max(1, Math.min(limit, items.length || 1)) }, async () => {
+    while (next < items.length) {
+      const index = next++;
+      results[index] = await fn(items[index], index);
+    }
+  });
+  await Promise.all(workers);
+  return results;
 }
 
 /**
@@ -311,31 +274,55 @@ export async function parseLicensesCsv(csvPath) {
 }
 
 /**
- * Check integrity hashes for all packages in lockfile
- * @param {object} lockfileData - Parsed lockfile data
- * @param {object} options - Options
- * @param {string} options.nodeModulesPath - Path to node_modules (default: ./node_modules)
+ * Verify lockfile integrity hashes against the authoritative registry.
+ *
+ * For each registry-resolved package entry, the locked `integrity` is compared
+ * to the `dist.integrity` published by the registry (the registry base is
+ * derived per-package from the entry's `resolved` URL, so private registries
+ * work). This detects a tampered or drifted lockfile WITHOUT needing
+ * node_modules — and, unlike a directory hash, it actually matches npm's
+ * tarball integrity.
+ *
+ * Outcomes per entry:
+ *   - passed:     locked hash matches the registry hash
+ *   - failed:     locked hash differs from the registry hash (the real tamper signal)
+ *   - skipped:    not verifiable this way (root/workspace/link/git/file/bundled,
+ *                 missing integrity, or a legacy sha1 hash)
+ *   - unresolved: registry unreachable or has no sha512 for that version
+ *
+ * `valid` is false only when there are mismatches (failed > 0). Unresolved
+ * entries are surfaced loudly but do not fail the run, so a flaky registry
+ * doesn't break CI; pass `failOnUnresolved: true` to fail closed instead.
+ *
+ * @param {object} lockfileData - Parsed lockfile data (v2/v3)
+ * @param {object} options
+ * @param {number} options.concurrency - Parallel registry requests (default: 8)
+ * @param {number} options.timeoutMs - Per-request timeout (default: 10000)
+ * @param {string} options.defaultRegistry - Registry for entries without a derivable base
+ * @param {boolean} options.failOnUnresolved - Treat unresolved entries as failures
+ * @param {Function} options.fetchIntegrity - Injectable (name, version, registryBase) => Promise<string|null>
  * @param {Function} options.onProgress - Progress callback
  * @returns {Promise<object>} Results object with summary and details
  */
 export async function checkIntegrity(lockfileData, options = {}) {
   const {
-    nodeModulesPath = './node_modules',
+    concurrency = 8,
+    timeoutMs = 10000,
+    defaultRegistry = DEFAULT_REGISTRY,
+    failOnUnresolved = false,
+    fetchIntegrity = null,
     onProgress = null
   } = options;
 
-  // Check if node_modules exists
-  if (!fs.existsSync(nodeModulesPath)) {
+  if (lockfileData && lockfileData.lockfileVersion === 1) {
     throw new CheckError(
-      `node_modules directory not found: ${nodeModulesPath}`,
-      'NO_NODE_MODULES',
-      { nodeModulesPath }
+      'v1 lockfiles have no integrity to verify; run `npm-check migrate 3` first',
+      'UNSUPPORTED_VERSION'
     );
   }
 
-  const packages = lockfileData.packages || {};
-  const entries = Object.entries(packages);
-  const total = entries.length;
+  const fetcher = fetchIntegrity ||
+    ((name, ver, registryBase) => fetchPackumentIntegrity(name, ver, { registryBase, timeoutMs }));
 
   const results = {
     valid: true,
@@ -343,40 +330,77 @@ export async function checkIntegrity(lockfileData, options = {}) {
     passed: 0,
     failed: 0,
     skipped: 0,
+    unresolved: 0,
     errors: [],
+    unresolvedItems: [],
     details: []
   };
 
-  // Create progress reporter
+  const candidates = [];
+
+  forEachPackageEntry(lockfileData, (info) => {
+    const { key, entry, name, isRoot, isWorkspaceSource, isLink, isBundled, isGitDep, isFileDep } = info;
+    if (isRoot) return results.skipped++;
+    if (isWorkspaceSource) return results.skipped++;
+    if (isLink) return results.skipped++;
+    if (!entry.integrity) return results.skipped++; // nothing locked to verify (integrity-hygiene flags this)
+    if (isBundled || isGitDep || isFileDep) return results.skipped++; // no registry tarball integrity
+    if (typeof entry.integrity === 'string' && entry.integrity.startsWith('sha1-')) {
+      // legacy sha1 can't be compared to the registry's sha512 — upgrade first
+      results.skipped++;
+      return;
+    }
+    if (!entry.version) return results.skipped++;
+    candidates.push({ key, entry, name });
+  });
+
+  const total = candidates.length;
   const reporter = onProgress ? createProgressReporter(total, {
     onProgress,
-    stage: 'Verifying integrity hashes'
+    stage: 'Verifying integrity against registry'
   }) : null;
 
-  for (const [pkgPath, pkgData] of entries) {
-    const result = await verifyPackageIntegrity(pkgPath, pkgData, nodeModulesPath);
+  let completed = 0;
 
-    if (result.skipped) {
-      results.skipped++;
-    } else if (result.valid) {
+  await mapWithConcurrency(candidates, concurrency, async ({ key, entry, name }) => {
+    const registryBase = deriveRegistryBase(entry.resolved, name) || defaultRegistry;
+    let registryHash = null;
+    let networkError = null;
+    try {
+      registryHash = await fetcher(name, entry.version, registryBase);
+    } catch (e) {
+      networkError = e;
+    }
+
+    if (networkError) {
+      const item = { package: name, version: entry.version, packagePath: key, reason: `registry unreachable (${networkError.message})` };
+      results.unresolved++;
+      results.unresolvedItems.push(item);
+      results.details.push({ valid: failOnUnresolved ? false : true, unresolved: true, ...item });
+      if (failOnUnresolved) { results.failed++; results.valid = false; results.errors.push(item); }
+    } else if (!registryHash) {
+      const item = { package: name, version: entry.version, packagePath: key, reason: `registry has no sha512 integrity for ${name}@${entry.version}` };
+      results.unresolved++;
+      results.unresolvedItems.push(item);
+      results.details.push({ valid: failOnUnresolved ? false : true, unresolved: true, ...item });
+      if (failOnUnresolved) { results.failed++; results.valid = false; results.errors.push(item); }
+    } else if (registryHash === entry.integrity) {
       results.passed++;
+      results.details.push({ valid: true, package: name, packagePath: key, expected: registryHash, actual: entry.integrity });
     } else {
+      const item = { valid: false, package: name, packagePath: key, expected: registryHash, actual: entry.integrity };
       results.failed++;
       results.valid = false;
-      results.errors.push(result);
+      results.errors.push(item);
+      results.details.push(item);
     }
 
-    results.details.push(result);
-    results.checked++;
+    completed++;
+    results.checked = completed;
+    if (reporter) reporter.update(completed);
+  });
 
-    if (reporter) {
-      reporter.update(results.checked);
-    }
-  }
-
-  if (reporter) {
-    reporter.finish();
-  }
+  if (reporter) reporter.finish();
 
   return results;
 }

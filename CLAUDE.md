@@ -160,10 +160,10 @@ const result = validateWithPackageJson(lockfile, packageJson);
 Verification engine for package integrity and licenses:
 
 **Integrity Checking:**
-- Verify package hashes in `package-lock.json` match actual packages in `node_modules`
-- Detect corrupted or modified packages
-- Skip packages without integrity hashes gracefully
-- Report detailed hash mismatches
+- Verify each locked `integrity` against the authoritative `dist.integrity` published by the registry (registry base derived per-package from `resolved`, so private registries work) — detects a tampered/drifted lockfile, and unlike a directory hash this actually matches npm's tarball integrity
+- No `node_modules` required; concurrent fetching with configurable pool/timeout
+- Skips entries that can't be verified this way (root/workspace/link/git/file/bundled, missing integrity, legacy sha1)
+- Registry-unreachable / no-registry-hash entries are reported as `unresolved` and do not fail the run by default (`failOnUnresolved` to fail closed)
 
 **License Validation:**
 - Parse and validate SPDX license expressions (OR, AND operators)
