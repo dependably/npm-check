@@ -31,7 +31,7 @@ const lockfileVersionRule = {
     if (typeof actual !== 'number' || actual < minVersion) {
       return [{
         packagePath: '',
-        message: `lockfileVersion is ${actual === undefined ? 'missing' : actual}, minimum required is ${minVersion} (run \`npfix migrate ${minVersion}\`)`
+        message: `lockfileVersion is ${actual === undefined ? 'missing' : actual}, minimum required is ${minVersion} (run \`npm-check migrate ${minVersion}\`)`
       }];
     }
     return [];
@@ -73,15 +73,15 @@ const integrityHygieneRule = {
       const integrity = entry.integrity;
       if (!integrity) {
         if (isGitDep || isFileDep) return; // legitimately absent
-        findings.push({ packagePath: key, message: 'missing integrity hash (run `npfix fix-checksums`)' });
+        findings.push({ packagePath: key, message: 'missing integrity hash (run `npm-check fix-checksums`)' });
         return;
       }
       if (isPlaceholder(integrity)) {
-        findings.push({ packagePath: key, message: 'placeholder integrity hash (run `npfix fix-checksums`)' });
+        findings.push({ packagePath: key, message: 'placeholder integrity hash (run `npm-check fix-checksums`)' });
         return;
       }
       if (!allowSha1 && integrity.startsWith('sha1-')) {
-        findings.push({ packagePath: key, message: 'integrity uses deprecated sha1 (run `npfix fix-checksums`)' });
+        findings.push({ packagePath: key, message: 'integrity uses deprecated sha1 (run `npm-check fix-checksums`)' });
       }
     });
     return findings;
@@ -140,6 +140,28 @@ const secureResolvedRule = {
   }
 };
 
+const installScriptsRule = {
+  id: 'install-scripts',
+  description: 'Packages with lifecycle install scripts must be reviewed and allowlisted',
+  defaultSeverity: 'warn',
+  check({ lockfile, options }) {
+    const { allow = [] } = options;
+    const findings = [];
+    if (!lockfile.packages) return findings;
+
+    forEachPackageEntry(lockfile, ({ key, entry, name, isRoot, isWorkspaceSource, isLink }) => {
+      if (isRoot || isWorkspaceSource || isLink) return;
+      if (!entry || entry.hasInstallScript !== true) return;
+      if (name && allow.includes(name)) return;
+      findings.push({
+        packagePath: key,
+        message: `${name || key} runs a lifecycle install script (preinstall/install/postinstall) — review and add to this rule's "allow" list if trusted, or install with \`--ignore-scripts\``
+      });
+    });
+    return findings;
+  }
+};
+
 const pinnedVersionsRule = {
   id: 'pinned-versions',
   description: 'package.json dependency ranges must be exact versions',
@@ -172,7 +194,7 @@ const pinnedVersionsRule = {
         const resolvedNote = entry && entry.version ? ` (resolved: ${entry.version})` : '';
         findings.push({
           packagePath: `package.json#${section}/${name}`,
-          message: `range "${range}" is not pinned${resolvedNote} (run \`npfix pin\`)`
+          message: `range "${range}" is not pinned${resolvedNote} (run \`npm-check pin\`)`
         });
       }
     }
@@ -261,7 +283,7 @@ const noOrphanPackagesRule = {
     }
     return orphans.map((orphan) => ({
       packagePath: orphan.key,
-      message: `orphaned package${orphan.version ? ` (${orphan.name}@${orphan.version})` : ''} unreachable from the dependency graph (run \`npfix prune\`)`
+      message: `orphaned package${orphan.version ? ` (${orphan.name}@${orphan.version})` : ''} unreachable from the dependency graph (run \`npm-check prune\`)`
     }));
   }
 };
@@ -306,6 +328,7 @@ export const rules = [
   validStructureRule,
   integrityHygieneRule,
   secureResolvedRule,
+  installScriptsRule,
   pinnedVersionsRule,
   lockfileSyncRule,
   noOrphanPackagesRule,

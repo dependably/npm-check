@@ -74,7 +74,7 @@ export function pinVersions(packageJson, lockfile, options = {}) {
   const warnings = [];
 
   if (!hasPackages) {
-    warnings.push('v1 lockfile has no packages map; pinned package.json only — consider `npfix migrate 3`');
+    warnings.push('v1 lockfile has no packages map; pinned package.json only — consider `npm-check migrate 3`');
   }
 
   for (const section of activeSections) {

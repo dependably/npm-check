@@ -48,7 +48,7 @@ export function findOrphanedPackages(lockfile) {
   const version = detectLockfileVersion(lockfile);
   if (version === LOCKFILE_VERSIONS.V1) {
     throw new PrunerError(
-      'v1 lockfiles are not supported; run `npfix migrate 3` first',
+      'v1 lockfiles are not supported; run `npm-check migrate 3` first',
       'UNSUPPORTED_VERSION'
     );
   }
@@ -139,7 +139,7 @@ export function prunePackages(lockfile) {
   if (detectLockfileVersion(lockfile) === LOCKFILE_VERSIONS.V2 && lockfile.dependencies) {
     warnings.push(
       'v2 legacy dependencies tree was left untouched (npm regenerates it on install); ' +
-      'consider `npfix migrate 3` to drop it entirely'
+      'consider `npm-check migrate 3` to drop it entirely'
     );
   }
 

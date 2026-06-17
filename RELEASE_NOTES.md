@@ -1,13 +1,13 @@
-# Release Notes - package-lock-fixer v1.2.0
+# Release Notes - npm-check v1.2.0
 
 ## Lockfile Linter Release
 
-v1.2.0 turns package-lock-fixer into a linter/checker for package-lock.json best practices and supply-chain hygiene:
+v1.2.0 turns npm-check into a linter/checker for package-lock.json best practices and supply-chain hygiene:
 
-- 🛡️ **`npfix audit`** — opinionated, configurable lockfile linter with CI-friendly exit codes (0 pass / 1 findings / 2 operational error). Five rules covering lockfile version, structure, integrity hygiene, resolved-URL security, and version pinning; configured via `.npfixrc.json` / `npfix.config.json` with CLI overrides.
-- 🔐 **`npfix fix-checksums`** — fills missing, placeholder, and sha1 integrity hashes with real `dist.integrity` values fetched from each package's registry (private registries derived from resolved URLs). Opt-in, clearly flagged local fallback for air-gapped use.
-- 📌 **`npfix pin`** — removes `^`/`~` from package.json ranges, pinning to the lockfile-resolved versions and keeping the lockfile root entry in sync.
-- ⬆️ **`npfix upgrade`** — one-word lockfile upgrade to v3 with no-op detection.
+- 🛡️ **`npm-check audit`** — opinionated, configurable lockfile linter with CI-friendly exit codes (0 pass / 1 findings / 2 operational error). Five rules covering lockfile version, structure, integrity hygiene, resolved-URL security, and version pinning; configured via `.npm-checkrc.json` / `npm-check.config.json` with CLI overrides.
+- 🔐 **`npm-check fix-checksums`** — fills missing, placeholder, and sha1 integrity hashes with real `dist.integrity` values fetched from each package's registry (private registries derived from resolved URLs). Opt-in, clearly flagged local fallback for air-gapped use.
+- 📌 **`npm-check pin`** — removes `^`/`~` from package.json ranges, pinning to the lockfile-resolved versions and keeping the lockfile root entry in sync.
+- ⬆️ **`npm-check upgrade`** — one-word lockfile upgrade to v3 with no-op detection.
 
 Also fixes binary-file hashing (raw bytes instead of utf8) and aligns the validator with what npm actually writes (no `name` on non-root entries, `link:` entries without versions, string ranges in packages-map dependencies).
 
@@ -15,15 +15,15 @@ See CHANGELOG.md for the complete list.
 
 ---
 
-# Release Notes - package-lock-fixer v1.0.0
+# Release Notes - npm-check v1.0.0
 
-## Welcome to package-lock-fixer!
+## Welcome to npm-check!
 
-We're excited to announce the first stable release of **package-lock-fixer**, a comprehensive tool for validating, migrating, and updating npm package-lock.json files.
+We're excited to announce the first stable release of **npm-check**, a comprehensive tool for validating, migrating, and updating npm package-lock.json files.
 
-## What is package-lock-fixer?
+## What is npm-check?
 
-`package-lock-fixer` is a powerful utility designed to help Node.js/npm developers:
+`npm-check` is a powerful utility designed to help Node.js/npm developers:
 - ✅ **Validate** package-lock.json files for structural and consistency issues
 - 🔄 **Migrate** lockfiles between npm versions (v1 ↔ v2 ↔ v3)
 - 🔐 **Upgrade** integrity hashes to modern SHA512 standards
@@ -64,9 +64,9 @@ We're excited to announce the first stable release of **package-lock-fixer**, a 
 ## Installation
 
 ```bash
-npm install -g package-lock-fixer
+npm install -g npm-check
 # or use with npx
-npx package-lock-fixer --help
+npx npm-check --help
 ```
 
 ## Quick Start
@@ -75,23 +75,23 @@ npx package-lock-fixer --help
 
 ```bash
 # Validate a lockfile
-package-lock-fixer validate package-lock.json
+npm-check validate package-lock.json
 
 # Migrate to a newer version
-package-lock-fixer migrate package-lock.json 3
+npm-check migrate package-lock.json 3
 
 # Upgrade all integrity hashes to SHA512
-package-lock-fixer upgrade-hashes package-lock.json
+npm-check upgrade-hashes package-lock.json
 
 # Deduplicate packages
-package-lock-fixer dedupe package-lock.json
+npm-check dedupe package-lock.json
 
 # Apply all automatic fixes (with safe --write flag)
-package-lock-fixer fix --write package-lock.json
+npm-check fix --write package-lock.json
 
 # Manage backups
-package-lock-fixer backups                    # List backups
-package-lock-fixer restore package-lock.json  # Restore from latest backup
+npm-check backups                    # List backups
+npm-check restore package-lock.json  # Restore from latest backup
 ```
 
 ### Programmatic API
@@ -103,7 +103,7 @@ import {
   migrateToVersion,
   fixPackageLock,
   LOCKFILE_VERSIONS
-} from 'package-lock-fixer';
+} from 'npm-check';
 
 // Parse and validate
 const lockfile = parseLockfile('./package-lock.json');
@@ -198,9 +198,9 @@ Testing via `jest.config.mjs` with ES module support
 ### From Previous Versions
 If you're currently managing package-lock.json files manually:
 
-1. Install package-lock-fixer globally or locally
-2. Run `package-lock-fixer validate` on your existing lockfile
-3. Use `package-lock-fixer fix --write` to automatically resolve issues
+1. Install npm-check globally or locally
+2. Run `npm-check validate` on your existing lockfile
+3. Use `npm-check fix --write` to automatically resolve issues
 4. Review the backup in `.backups/` if needed
 5. Integrate into your development workflow
 
@@ -236,7 +236,7 @@ MIT License - see LICENSE file for details
 ### Next Steps
 
 1. Read the [README.md](README.md) for comprehensive documentation
-2. Try the command-line interface: `package-lock-fixer --help`
+2. Try the command-line interface: `npm-check --help`
 3. Integrate into your project workflow
 4. Share feedback and contribute improvements!
 

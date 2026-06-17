@@ -1,7 +1,7 @@
 #!/bin/sh
 set -e
 
-echo "=== Package Lock Fixer Integration Tests ==="
+echo "=== npm-check Integration Tests ==="
 echo "Node version: $(node --version)"
 echo "npm version: $(npm --version)"
 echo "============================================="

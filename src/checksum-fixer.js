@@ -107,7 +107,7 @@ export async function fixChecksums(lockfile, options = {}) {
   const version = detectLockfileVersion(lockfile);
   if (version === LOCKFILE_VERSIONS.V1) {
     throw new ChecksumFixError(
-      'v1 lockfiles are not supported; run `npfix migrate 3` first',
+      'v1 lockfiles are not supported; run `npm-check migrate 3` first',
       'UNSUPPORTED_VERSION'
     );
   }

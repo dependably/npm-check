@@ -37,7 +37,7 @@ This document provides detailed descriptions of all modules in `src/` for AI/LLM
 
 **Usage Pattern:**
 ```javascript
-import { parseLockfile, validatePackageLock, fixPackageLock } from 'package-lock-fixer';
+import { parseLockfile, validatePackageLock, fixPackageLock } from 'npm-check';
 ```
 
 ---
@@ -637,7 +637,7 @@ import {
   validatePackageLock,
   fixPackageLock,
   serializeLockfile
-} from 'package-lock-fixer';
+} from 'npm-check';
 
 // 1. Parse lockfile
 const lockfile = parseLockfile('package-lock.json');
@@ -665,7 +665,7 @@ import {
   chunkLockfile,
   processBatchedPackages,
   mergeLockfileChunks
-} from 'package-lock-fixer';
+} from 'npm-check';
 
 const lockfile = parseLockfile('large-package-lock.json');
 
@@ -758,7 +758,7 @@ const merged = mergeLockfileChunks(results);
 
 **Purpose:** Audit configuration discovery and validation.
 
-- `CONFIG_FILENAMES`: `['.npfixrc.json', 'npfix.config.json']` (discovery order in cwd)
+- `CONFIG_FILENAMES`: `['.npm-checkrc.json', 'npm-check.config.json']` (discovery order in cwd)
 - `loadAuditConfig(cwd, explicitPath)`: explicit path wins; merges over `DEFAULT_CONFIG`; throws `AuditConfigError` with codes `CONFIG_NOT_FOUND`, `CONFIG_PARSE`, `UNKNOWN_RULE`, `INVALID_SEVERITY`, `INVALID_MAX_WARNINGS`
 - `normalizeRuleEntry(entry)`: `'error' | 'warn' | 'off' | [severity, options]` → `{severity, options}`
 - `mergeConfig(userConfig, configPath)`: validates rule ids/severities, merges rule options over defaults

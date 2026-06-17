@@ -11,7 +11,7 @@ export class AuditConfigError extends Error {
   }
 }
 
-export const CONFIG_FILENAMES = ['.npfixrc.json', 'npfix.config.json'];
+export const CONFIG_FILENAMES = ['.npm-checkrc.json', 'npm-check.config.json'];
 
 export const SEVERITIES = ['error', 'warn', 'off'];
 
@@ -27,6 +27,7 @@ export const DEFAULT_CONFIG = {
       allowGit: true,
       allowFile: true
     }],
+    'install-scripts': ['warn', { allow: [] }],
     'pinned-versions': ['warn', {
       sections: ['dependencies', 'devDependencies', 'optionalDependencies'],
       ignore: []

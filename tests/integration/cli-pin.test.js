@@ -1,5 +1,5 @@
 // tests/integration/cli-pin.test.js
-// End-to-end tests for `npfix pin` file rewriting and backups.
+// End-to-end tests for `npm-check pin` file rewriting and backups.
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import fs from 'fs/promises';
@@ -20,7 +20,7 @@ async function runCli(args, options = {}) {
   }
 }
 
-describe('Integration: npfix pin', () => {
+describe('Integration: npm-check pin', () => {
   test('dry-run reports changes without touching files', async () => {
     const workspace = await createTestWorkspace('unpinned-v3');
     try {

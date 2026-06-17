@@ -1,4 +1,4 @@
-# Package-Lock Fixer: Project Purpose
+# npm-check: Project Purpose
 
 ## Vision
 
@@ -84,7 +84,7 @@ Package-lock.json files are:
 - **Collaboration touchpoints** prone to conflicts
 - **Version-specific** requiring careful management during npm upgrades
 
-Without proper tooling, teams waste time debugging lockfile issues, miss compliance requirements, and risk supply chain vulnerabilities. Package-Lock Fixer eliminates these problems through automation and best practices.
+Without proper tooling, teams waste time debugging lockfile issues, miss compliance requirements, and risk supply chain vulnerabilities. npm-check eliminates these problems through automation and best practices.
 
 ## Strategic Focus
 

@@ -1,4 +1,4 @@
-# Package-Lock Fixer
+# npm-check
 
 A comprehensive toolkit for managing, validating, fixing, and migrating npm package-lock.json files across all lockfile versions.
 
@@ -195,19 +195,19 @@ Automated repair functionality:
 Command-line tool for easy usage:
 
 ```bash
-npfix validate package-lock.json
-npfix migrate 3 package-lock.json
-npfix upgrade --write package-lock.json
-npfix fix --write package-lock.json
-npfix fix-checksums --write package-lock.json
-npfix pin --write
-npfix prune --write package-lock.json
-npfix unused
-npfix audit --strict
-npfix dedupe --write package-lock.json
-npfix check --check hash package-lock.json
-npfix check --check license package-lock.json
-npfix upgrade-hashes --write package-lock.json
+npm-check validate package-lock.json
+npm-check migrate 3 package-lock.json
+npm-check upgrade --write package-lock.json
+npm-check fix --write package-lock.json
+npm-check fix-checksums --write package-lock.json
+npm-check pin --write
+npm-check prune --write package-lock.json
+npm-check unused
+npm-check audit --strict
+npm-check dedupe --write package-lock.json
+npm-check check --check hash package-lock.json
+npm-check check --check license package-lock.json
+npm-check upgrade-hashes --write package-lock.json
 ```
 
 ### 7. Updater (`updater.js`)
@@ -250,10 +250,10 @@ Removes `^`/`~` from package.json, locking versions down:
 
 Opinionated, configurable lockfile linter for CI (non-zero exit on failure):
 
-- Five rules: `lockfile-version`, `valid-structure`, `integrity-hygiene`, `secure-resolved`, `pinned-versions`
+- Rules: `lockfile-version`, `valid-structure`, `integrity-hygiene`, `secure-resolved`, `install-scripts`, `pinned-versions`, `lockfile-sync`, `no-orphan-packages`, `unused-dependencies`
 - Each rule is `{id, description, defaultSeverity, check(context)}` — extensible
 - Severities error/warn/off with per-rule options; `maxWarnings` budget
-- Config file discovery (`.npfixrc.json`, `npfix.config.json`) with CLI overrides
+- Config file discovery (`.npm-checkrc.json`, `npm-check.config.json`) with CLI overrides
 - Stylish (ESLint-like) and JSON report formats
 - CLI exit codes: 0 pass, 1 findings failure, 2 operational error
 
@@ -374,10 +374,10 @@ Flags declared dependencies the application never imports (candidates for remova
 ## Installation & Usage
 
 ```bash
-npm install package-lock-fixer
+npm install npm-check
 
 # or for global CLI usage
-npm install -g package-lock-fixer
+npm install -g npm-check
 ```
 
 **Programmatic Usage:**
@@ -387,7 +387,7 @@ import {
   validatePackageLock,
   migrateToVersion,
   LOCKFILE_VERSIONS
-} from 'package-lock-fixer';
+} from 'npm-check';
 
 const result = validatePackageLock(lockfileData);
 const migrated = migrateToVersion(lockfileData, LOCKFILE_VERSIONS.V3);

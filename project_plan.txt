@@ -11,7 +11,7 @@ Completed:
   - `deduplicatePackages` - removes duplicate packages efficiently
   - Additional exports: `findPackagesMatching`, `countUniquePackages`, `findDuplicatePackages`
 - Basic CLI interface (`bin/cli.js`) exposing commands: `validate`, `migrate`, `upgrade-hashes`, `dedupe`, `fix`, `backups`, `restore` (ESM)
-  - Renamed CLI from `cli` to `npfix` with both `npfix` and `package-lock-fixer` aliases
+  - Renamed CLI from `cli` to `npm-check` with both `npm-check` and `npm-check` aliases
   - Made file argument optional (defaults to `./package-lock.json`)
   - Made `migrate` command default to version 3 (latest)
   - Refactored for maintainability: removed manual argument parsing duplication
@@ -111,15 +111,15 @@ Completed:
 
 ## LOCKFILE LINTER PASS (v1.2.0 - 2026-06-10):
 ### Feature Implementation ✅
-1. **Audit Command**: `npfix audit` — configurable, opinionated lockfile linter with non-zero exit for CI.
+1. **Audit Command**: `npm-check audit` — configurable, opinionated lockfile linter with non-zero exit for CI.
    - Rule engine in src/audit.js (5 rules: lockfile-version, valid-structure, integrity-hygiene, secure-resolved, pinned-versions)
-   - Config discovery (.npfixrc.json / npfix.config.json) + CLI overrides in src/audit-config.js
+   - Config discovery (.npm-checkrc.json / npm-check.config.json) + CLI overrides in src/audit-config.js
    - Stylish + JSON report formats; exit codes 0/1/2 (pass/findings/operational)
-2. **Fix-Checksums Command**: `npfix fix-checksums` — fills missing/placeholder/sha1 integrity with real registry hashes (src/checksum-fixer.js).
+2. **Fix-Checksums Command**: `npm-check fix-checksums` — fills missing/placeholder/sha1 integrity with real registry hashes (src/checksum-fixer.js).
    - Per-package registry derivation from resolved URLs (private registries work)
    - Concurrency pool, timeouts, opt-in flagged local fallback, exit 1 on unresolved
-3. **Pin Command**: `npfix pin` — removes ^/~ from package.json, pins to lockfile-resolved versions, syncs packages[''] (src/pinner.js).
-4. **Upgrade Command**: `npfix upgrade` — alias for migrate 3 with no-op detection.
+3. **Pin Command**: `npm-check pin` — removes ^/~ from package.json, pins to lockfile-resolved versions, syncs packages[''] (src/pinner.js).
+4. **Upgrade Command**: `npm-check upgrade` — alias for migrate 3 with no-op detection.
 5. **Registry Client Hardening**: fetchPackumentIntegrity with status/timeout/registryBase handling (src/integrity.js).
 6. **Shared Iteration**: forEachPackageEntry entry classifier in src/format-library.js.
 
@@ -129,9 +129,9 @@ Completed:
 
 ## ORPHAN & SYNC PASS (v1.3.0 - 2026-06-10):
 ### Feature Implementation ✅
-1. **Prune Command**: `npfix prune` — removes lockfile entries unreachable from the dependency graph (src/pruner.js).
+1. **Prune Command**: `npm-check prune` — removes lockfile entries unreachable from the dependency graph (src/pruner.js).
    - npm node_modules resolution (nearest-first shadowing), workspace link targets, peer/optional edges
-2. **Unused Command**: `npfix unused` — flags declared deps never imported by application source (src/usage-scanner.js).
+2. **Unused Command**: `npm-check unused` — flags declared deps never imported by application source (src/usage-scanner.js).
    - require/import/dynamic-import/re-export scan; npm-script and @types/* awareness; report-only heuristic
 3. **Audit Rules** (now 8): lockfile-sync (error, package.json↔lockfile agreement), no-orphan-packages (warn),
    unused-dependencies (warn, includeDev/ignore options)

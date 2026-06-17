@@ -4,7 +4,7 @@ This document describes the performance optimization features added to handle la
 
 ## Overview
 
-The package-lock-fixer now includes specialized performance utilities for handling large lockfiles (10MB+) without consuming excessive memory or CPU resources. These improvements include:
+The npm-check now includes specialized performance utilities for handling large lockfiles (10MB+) without consuming excessive memory or CPU resources. These improvements include:
 
 1. **Memory optimization** through shallow copying and lazy evaluation
 2. **Batch processing** with automatic garbage collection yielding
@@ -30,7 +30,7 @@ import {
   mergeLockfileChunks,
   estimateLockfileSize,
   isLargeLockfile
-} from 'package-lock-fixer';
+} from 'npm-check';
 ```
 
 #### Shallow Copying
@@ -98,7 +98,7 @@ import {
   findPackagesMatching,
   countUniquePackages,
   findDuplicatePackages
-} from 'package-lock-fixer';
+} from 'npm-check';
 ```
 
 #### Optimized Hash Upgrade
@@ -167,7 +167,7 @@ import {
   isLargeLockfile,
   processBatchedPackages,
   upgradeIntegrityHashesOptimized
-} from 'package-lock-fixer';
+} from 'npm-check';
 import fs from 'fs';
 
 const lockfile = JSON.parse(fs.readFileSync('package-lock.json', 'utf8'));
@@ -184,7 +184,7 @@ if (isLargeLockfile(lockfile, 10)) {
 ### Example 2: Find and Report Duplicates
 
 ```javascript
-import { findDuplicatePackages, countUniquePackages } from 'package-lock-fixer';
+import { findDuplicatePackages, countUniquePackages } from 'npm-check';
 
 const lockfile = JSON.parse(fs.readFileSync('package-lock.json', 'utf8'));
 const uniqueCount = countUniquePackages(lockfile);
@@ -204,7 +204,7 @@ for (const [name, versions] of duplicates) {
 ### Example 3: Process in Chunks for Parallel Operations
 
 ```javascript
-import { chunkLockfile, mergeLockfileChunks } from 'package-lock-fixer';
+import { chunkLockfile, mergeLockfileChunks } from 'npm-check';
 
 const lockfile = JSON.parse(fs.readFileSync('package-lock.json', 'utf8'));
 const chunks = chunkLockfile(lockfile, 1000); // 1000 packages per chunk
@@ -222,7 +222,7 @@ console.log(`Processed ${Object.keys(merged.packages).length} packages`);
 ### Example 4: Memory Monitoring During Operations
 
 ```javascript
-import { getMemoryStats, processBatchedPackages } from 'package-lock-fixer';
+import { getMemoryStats, processBatchedPackages } from 'npm-check';
 
 const lockfile = JSON.parse(fs.readFileSync('package-lock.json', 'utf8'));
 

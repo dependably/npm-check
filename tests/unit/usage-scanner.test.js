@@ -12,7 +12,7 @@ import {
 let tmpDir;
 
 beforeEach(() => {
-  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'npfix-usage-'));
+  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'npm-check-usage-'));
 });
 
 afterEach(() => {

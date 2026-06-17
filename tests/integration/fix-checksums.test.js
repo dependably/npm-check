@@ -20,7 +20,7 @@ async function runCli(args, options = {}) {
   }
 }
 
-describe('Integration: npfix fix-checksums (real registry)', () => {
+describe('Integration: npm-check fix-checksums (real registry)', () => {
   test('restores a blanked integrity hash to the original registry value', async () => {
     const workspace = await createTestWorkspace('unpinned-v3');
     try {

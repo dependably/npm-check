@@ -1,6 +1,6 @@
 # NPM Publishing Guide
 
-This document provides step-by-step instructions for publishing `package-lock-fixer` to the npm registry.
+This document provides step-by-step instructions for publishing `npm-check` to the npm registry.
 
 ## Prerequisites
 
@@ -93,7 +93,7 @@ git push origin --tags
 
 ### 5. Create GitHub Release
 
-1. Go to https://github.com/mhiland/package-lock-fixer/releases
+1. Go to https://github.com/mhiland/npm-check/releases
 2. Click "Draft a new release"
 3. Select the tag you just pushed
 4. Set title: `v1.0.1`
@@ -110,7 +110,7 @@ npm whoami
 npm publish
 
 # Verify it's published
-npm view package-lock-fixer
+npm view npm-check
 ```
 
 ## Post-Publication
@@ -119,14 +119,14 @@ npm view package-lock-fixer
 
 ```bash
 # Check npm registry
-npm search package-lock-fixer
+npm search npm-check
 
 # Install globally to test
-npm install -g package-lock-fixer
-package-lock-fixer --help
+npm install -g npm-check
+npm-check --help
 
 # Or test with npx
-npx package-lock-fixer --help
+npx npm-check --help
 ```
 
 ### Update Release Information
@@ -167,7 +167,7 @@ npm login
 The package name might already exist on npm. Check:
 
 ```bash
-npm view package-lock-fixer
+npm view npm-check
 ```
 
 ### "403 Forbidden"
@@ -249,10 +249,10 @@ If an issue is discovered after publishing:
 
 ```bash
 # Deprecate problematic version
-npm deprecate package-lock-fixer@1.0.1 "Critical bug, use 1.0.2"
+npm deprecate npm-check@1.0.1 "Critical bug, use 1.0.2"
 
 # OR unpublish (within 24 hours of publication)
-npm unpublish package-lock-fixer@1.0.1
+npm unpublish npm-check@1.0.1
 
 # Then release fixed version
 npm version patch
@@ -263,15 +263,15 @@ npm publish
 
 Monitor these channels for issues:
 
-1. **GitHub Issues**: https://github.com/mhiland/package-lock-fixer/issues
-2. **npm Trends**: https://www.npmtrends.com/package-lock-fixer
+1. **GitHub Issues**: https://github.com/mhiland/npm-check/issues
+2. **npm Trends**: https://www.npmtrends.com/npm-check
 3. **npm Notifications**: Check for security advisories
 4. **Community**: Monitor popular Node.js forums and chat channels
 
 ## Distribution Channels
 
 ### Primary
-- **npm registry**: https://www.npmjs.com/package/package-lock-fixer
+- **npm registry**: https://www.npmjs.com/package/npm-check
 
 ### Secondary (Optional Future)
 - **GitHub releases**: For binary distributions

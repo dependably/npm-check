@@ -178,7 +178,7 @@ describe('fixChecksums', () => {
     const fs = await import('fs');
     const os = await import('os');
     const pathMod = await import('path');
-    const tmpDir = fs.mkdtempSync(pathMod.join(os.tmpdir(), 'npfix-tarball-'));
+    const tmpDir = fs.mkdtempSync(pathMod.join(os.tmpdir(), 'npm-check-tarball-'));
     try {
       fs.writeFileSync(pathMod.join(tmpDir, 'vendored-1.0.0.tgz'), Buffer.from([0x1f, 0x8b, 0x08, 0x00]));
       const lockfile = makeLockfile({

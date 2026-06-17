@@ -1,5 +1,5 @@
 // tests/integration/cli-audit.test.js
-// End-to-end tests for `npfix audit` exit codes and output formats.
+// End-to-end tests for `npm-check audit` exit codes and output formats.
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import fs from 'fs/promises';
@@ -21,7 +21,7 @@ async function runCli(args, options = {}) {
   }
 }
 
-describe('Integration: npfix audit', () => {
+describe('Integration: npm-check audit', () => {
   test('exits 0 on a clean lockfile', async () => {
     const workspace = await createTestWorkspace('unpinned-v3');
     try {
@@ -96,7 +96,7 @@ describe('Integration: npfix audit', () => {
     const workspace = await createTestWorkspace('audit-bad');
     try {
       // Valid config that disables everything → pass
-      await fs.writeFile(path.join(workspace.dir, '.npfixrc.json'), JSON.stringify({
+      await fs.writeFile(path.join(workspace.dir, '.npm-checkrc.json'), JSON.stringify({
         rules: {
           'lockfile-version': 'off',
           'valid-structure': 'off',
@@ -112,7 +112,7 @@ describe('Integration: npfix audit', () => {
       expect(ok.code).toBe(0);
 
       // Broken config → operational error
-      await fs.writeFile(path.join(workspace.dir, '.npfixrc.json'), '{ not json');
+      await fs.writeFile(path.join(workspace.dir, '.npm-checkrc.json'), '{ not json');
       const broken = await runCli(['audit', workspace.lockfilePath], { cwd: workspace.dir });
       expect(broken.code).toBe(2);
       expect(broken.stderr).toMatch(/Audit error/);

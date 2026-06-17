@@ -7,24 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-06-17
+
+### Changed
+- **Rebrand to `npm-check`**: the package, the CLI command, and all docs are now `npm-check`. The previous `package-lock-fixer` and `npfix` binaries are replaced by a single `npm-check` bin. Audit config files are now `.npm-checkrc.json` / `npm-check.config.json` (was `.npfixrc.json` / `npfix.config.json`).
+
+### Added
+- **Audit Rule `install-scripts`** (warn, 9 total): flags any dependency whose lockfile entry declares a lifecycle install script (`hasInstallScript` — preinstall/install/postinstall), the most common npm malware vector. Detection is purely static (no execution, no `node_modules` needed). Configurable `allow` list to ratify trusted packages; remediate by allowlisting or installing with `--ignore-scripts`.
+
 ## [1.3.0] - 2026-06-10
 
 ### Added
-- **Prune Command**: New `npfix prune` — removes orphaned packages from the lockfile, i.e. entries unreachable from the root package or any workspace by following dependency edges with npm's node_modules resolution rules (nested shadowing nearest-first, workspace `link:` targets, peer/optional deps included). Dry-run by default, `--write` with backup.
-- **Unused Command**: New `npfix unused` — flags dependencies declared in package.json that the application's source never imports (heuristic scan of require/import/dynamic-import/re-export specifiers across .js/.ts/etc., skipping node_modules and build output). npm-script mentions and `@types/*` of used packages count as used. Report-only; `--include-dev` and `--json` flags.
+- **Prune Command**: New `npm-check prune` — removes orphaned packages from the lockfile, i.e. entries unreachable from the root package or any workspace by following dependency edges with npm's node_modules resolution rules (nested shadowing nearest-first, workspace `link:` targets, peer/optional deps included). Dry-run by default, `--write` with backup.
+- **Unused Command**: New `npm-check unused` — flags dependencies declared in package.json that the application's source never imports (heuristic scan of require/import/dynamic-import/re-export specifiers across .js/.ts/etc., skipping node_modules and build output). npm-script mentions and `@types/*` of used packages count as used. Report-only; `--include-dev` and `--json` flags.
 - **Audit Rules**: Three new rules (8 total):
   - `lockfile-sync` (error): package.json and the lockfile agree — name/version match, every declared dep present in the root entry with the same range and installed in the packages map, no lockfile-only leftovers.
-  - `no-orphan-packages` (warn): no unreachable lockfile entries; suggests `npfix prune`.
+  - `no-orphan-packages` (warn): no unreachable lockfile entries; suggests `npm-check prune`.
   - `unused-dependencies` (warn): every declared dependency is imported by the application; `includeDev`/`ignore` options.
 - **API**: Exported `findOrphanedPackages`, `prunePackages`, `scanUsedPackages`, `findUnusedDependencies`, `specifierToPackageName`, and related error classes.
 
 ## [1.2.0] - 2026-06-10
 
 ### Added
-- **Audit Command**: New `npfix audit` — an opinionated, configurable linter for package-lock best practices that exits non-zero on failure (for CI gating). Five rules: `lockfile-version`, `valid-structure`, `integrity-hygiene`, `secure-resolved`, `pinned-versions`, each settable to error/warn/off with per-rule options. Config discovered from `.npfixrc.json` / `npfix.config.json` with CLI overrides (`--rule`, `--max-warnings`, `--strict`, `--config`). Stylish and JSON report formats. Exit codes: 0 pass, 1 findings failure, 2 operational error.
-- **Fix-Checksums Command**: New `npfix fix-checksums` — fills missing, placeholder, and sha1 integrity hashes with real `dist.integrity` values fetched from each package's registry (derived per-package from its `resolved` URL, so private registries work). Concurrent fetching with `--concurrency`/`--timeout`, opt-in `--local-fallback` (loudly flagged: directory hashes are not npm tarball hashes). Exits 1 if any hashes remain unresolved.
-- **Pin Command**: New `npfix pin` — rewrites `^`/`~` ranges in package.json to the lockfile-resolved exact versions and syncs the lockfile root entry. Skips complex/git/file/alias ranges with reasons; `--include-peer` opt-in.
-- **Upgrade Command**: New `npfix upgrade` — convenience alias for `migrate 3` with no-op detection when already at v3.
+- **Audit Command**: New `npm-check audit` — an opinionated, configurable linter for package-lock best practices that exits non-zero on failure (for CI gating). Five rules: `lockfile-version`, `valid-structure`, `integrity-hygiene`, `secure-resolved`, `pinned-versions`, each settable to error/warn/off with per-rule options. Config discovered from `.npm-checkrc.json` / `npm-check.config.json` with CLI overrides (`--rule`, `--max-warnings`, `--strict`, `--config`). Stylish and JSON report formats. Exit codes: 0 pass, 1 findings failure, 2 operational error.
+- **Fix-Checksums Command**: New `npm-check fix-checksums` — fills missing, placeholder, and sha1 integrity hashes with real `dist.integrity` values fetched from each package's registry (derived per-package from its `resolved` URL, so private registries work). Concurrent fetching with `--concurrency`/`--timeout`, opt-in `--local-fallback` (loudly flagged: directory hashes are not npm tarball hashes). Exits 1 if any hashes remain unresolved.
+- **Pin Command**: New `npm-check pin` — rewrites `^`/`~` ranges in package.json to the lockfile-resolved exact versions and syncs the lockfile root entry. Skips complex/git/file/alias ranges with reasons; `--include-peer` opt-in.
+- **Upgrade Command**: New `npm-check upgrade` — convenience alias for `migrate 3` with no-op detection when already at v3.
 - **API**: Exported `fixChecksums`, `deriveRegistryBase`, `pinVersions`, `classifyRange`, `runAudit`, `formatAuditReport`, `auditRules`, `loadAuditConfig`, `mergeConfig`, `fetchPackumentIntegrity`, `forEachPackageEntry`, `hashPackageDirectory`, and related error classes.
 - **Registry Client Hardening**: `fetchPackumentIntegrity` checks HTTP status, supports timeouts, custom registry bases, scoped-name encoding, and distinguishes 404 (resolves null) from network failure (rejects).
 

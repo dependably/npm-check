@@ -12,7 +12,7 @@ let projDir;
 let projLockfilePath;
 
 beforeAll(() => {
-  projDir = fs.mkdtempSync(path.join(os.tmpdir(), 'npfix-audit-proj-'));
+  projDir = fs.mkdtempSync(path.join(os.tmpdir(), 'npm-check-audit-proj-'));
   fs.writeFileSync(path.join(projDir, 'app.js'), `import goodPkg from 'good-pkg';\n`);
   projLockfilePath = path.join(projDir, 'package-lock.json');
 });
@@ -191,6 +191,46 @@ describe('runAudit', () => {
     });
   });
 
+  describe('install-scripts rule', () => {
+    function lockfileWithInstallScripts() {
+      const lockfile = cleanLockfile();
+      lockfile.packages['node_modules/good-pkg'].hasInstallScript = true;
+      lockfile.packages['node_modules/sneaky-pkg'] = {
+        version: '2.0.0',
+        resolved: 'https://registry.npmjs.org/sneaky-pkg/-/sneaky-pkg-2.0.0.tgz',
+        integrity: GOOD_HASH,
+        hasInstallScript: true
+      };
+      return lockfile;
+    }
+
+    it('flags every package with a lifecycle install script', () => {
+      const report = runAudit({ lockfile: lockfileWithInstallScripts(), packageJson: cleanPackageJson() });
+      const scripts = report.findings.filter((f) => f.ruleId === 'install-scripts');
+      expect(scripts).toHaveLength(2);
+      expect(scripts[0].severity).toBe('warn');
+      expect(scripts.map((f) => f.packagePath).sort())
+        .toEqual(['node_modules/good-pkg', 'node_modules/sneaky-pkg']);
+      expect(scripts.find((f) => f.packagePath === 'node_modules/sneaky-pkg').message)
+        .toMatch(/runs a lifecycle install script/);
+    });
+
+    it('honors the allow list', () => {
+      const report = runAudit(
+        { lockfile: lockfileWithInstallScripts(), packageJson: cleanPackageJson() },
+        { rules: { 'install-scripts': ['warn', { allow: ['good-pkg'] }] } }
+      );
+      const scripts = report.findings.filter((f) => f.ruleId === 'install-scripts');
+      expect(scripts).toHaveLength(1);
+      expect(scripts[0].packagePath).toBe('node_modules/sneaky-pkg');
+    });
+
+    it('produces no findings when no package declares an install script', () => {
+      const report = runAudit({ lockfile: cleanLockfile(), packageJson: cleanPackageJson() });
+      expect(report.findings.filter((f) => f.ruleId === 'install-scripts')).toEqual([]);
+    });
+  });
+
   describe('pinned-versions rule', () => {
     it('warns on caret/tilde ranges with resolved versions', () => {
       const packageJson = cleanPackageJson();
@@ -285,7 +325,7 @@ describe('runAudit', () => {
       expect(orphans).toHaveLength(1);
       expect(orphans[0].severity).toBe('warn');
       expect(orphans[0].packagePath).toBe('node_modules/orphan');
-      expect(orphans[0].message).toMatch(/npfix prune/);
+      expect(orphans[0].message).toMatch(/npm-check prune/);
     });
   });
 
@@ -405,12 +445,13 @@ describe('formatAuditReport', () => {
 });
 
 describe('rules registry', () => {
-  it('exposes all eight rules with ids and check functions', () => {
+  it('exposes all nine rules with ids and check functions', () => {
     expect(rules.map((r) => r.id)).toEqual([
       'lockfile-version',
       'valid-structure',
       'integrity-hygiene',
       'secure-resolved',
+      'install-scripts',
       'pinned-versions',
       'lockfile-sync',
       'no-orphan-packages',

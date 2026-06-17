@@ -1,5 +1,5 @@
 // tests/integration/cli-prune.test.js
-// End-to-end tests for `npfix prune` orphan removal.
+// End-to-end tests for `npm-check prune` orphan removal.
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import fs from 'fs/promises';
@@ -20,7 +20,7 @@ async function runCli(args, options = {}) {
   }
 }
 
-describe('Integration: npfix prune', () => {
+describe('Integration: npm-check prune', () => {
   test('removes injected orphans with --write and creates a backup', async () => {
     const workspace = await createTestWorkspace('unpinned-v3');
     try {

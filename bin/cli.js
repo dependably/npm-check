@@ -22,10 +22,10 @@ const argv = process.argv.slice(2);
 
 function printHelp() {
   console.log(`
-Package Lockfile Tool (npfix)
+npm-check — npm lockfile toolkit
 
 Usage:
-  npfix <command> [file] [options]
+  npm-check <command> [file] [options]
 
 Commands:
   validate [file]            Validate a package-lock.json file
@@ -66,8 +66,8 @@ Unused Options:
   --json                     Machine-readable output
 
 Audit Options:
-  --config <path>            Audit config file (default: discover .npfixrc.json
-                             or npfix.config.json in the current directory)
+  --config <path>            Audit config file (default: discover .npm-checkrc.json
+                             or npm-check.config.json in the current directory)
   --rule <id>:<severity>     Override a rule severity (error|warn|off); repeatable
   --max-warnings N           Fail when warnings exceed N (default: unlimited)
   --strict                   Shorthand for --max-warnings 0
@@ -84,18 +84,18 @@ Exit Codes:
   2  audit operational error (bad config, unknown rule, unreadable file)
 
 Examples:
-  npfix validate
-  npfix upgrade --write                    # Lockfile v2 → v3
-  npfix fix-checksums --write              # Real integrity hashes from registry
-  npfix pin --write                        # Lock down ^/~ versions
-  npfix prune --write                      # Remove orphaned lockfile entries
-  npfix unused                             # Flag never-imported dependencies
-  npfix audit                              # Lint with default rules
-  npfix audit --strict --format json
-  npfix audit --rule pinned-versions:error
-  npfix check --check hash                 # Only verify integrity
-  npfix restore
-  npfix clean-backups --keep 5
+  npm-check validate
+  npm-check upgrade --write                    # Lockfile v2 → v3
+  npm-check fix-checksums --write              # Real integrity hashes from registry
+  npm-check pin --write                        # Lock down ^/~ versions
+  npm-check prune --write                      # Remove orphaned lockfile entries
+  npm-check unused                             # Flag never-imported dependencies
+  npm-check audit                              # Lint with default rules
+  npm-check audit --strict --format json
+  npm-check audit --rule pinned-versions:error
+  npm-check check --check hash                 # Only verify integrity
+  npm-check restore
+  npm-check clean-backups --keep 5
 
 Default file: ./package-lock.json
 `);
@@ -156,7 +156,7 @@ async function main() {
   }
 
   if (argv.includes('-v') || argv.includes('--version')) {
-    console.log(`npfix version ${getVersion()}`);
+    console.log(`npm-check version ${getVersion()}`);
     return;
   }
 

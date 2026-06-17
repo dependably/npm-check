@@ -14,7 +14,7 @@ import {
 let tmpDir;
 
 beforeEach(() => {
-  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'npfix-audit-config-'));
+  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'npm-check-audit-config-'));
 });
 
 afterEach(() => {
@@ -83,23 +83,23 @@ describe('loadAuditConfig', () => {
     expect(config.rules['lockfile-version'].severity).toBe('error');
   });
 
-  it('discovers .npfixrc.json first', () => {
-    fs.writeFileSync(path.join(tmpDir, '.npfixrc.json'), JSON.stringify({ maxWarnings: 5 }));
-    fs.writeFileSync(path.join(tmpDir, 'npfix.config.json'), JSON.stringify({ maxWarnings: 9 }));
+  it('discovers .npm-checkrc.json first', () => {
+    fs.writeFileSync(path.join(tmpDir, '.npm-checkrc.json'), JSON.stringify({ maxWarnings: 5 }));
+    fs.writeFileSync(path.join(tmpDir, 'npm-check.config.json'), JSON.stringify({ maxWarnings: 9 }));
 
     const config = loadAuditConfig(tmpDir);
     expect(config.maxWarnings).toBe(5);
-    expect(config.configPath).toBe(path.join(tmpDir, '.npfixrc.json'));
+    expect(config.configPath).toBe(path.join(tmpDir, '.npm-checkrc.json'));
   });
 
-  it('falls back to npfix.config.json', () => {
-    fs.writeFileSync(path.join(tmpDir, 'npfix.config.json'), JSON.stringify({ maxWarnings: 9 }));
+  it('falls back to npm-check.config.json', () => {
+    fs.writeFileSync(path.join(tmpDir, 'npm-check.config.json'), JSON.stringify({ maxWarnings: 9 }));
     const config = loadAuditConfig(tmpDir);
     expect(config.maxWarnings).toBe(9);
   });
 
   it('explicit path wins over discovery', () => {
-    fs.writeFileSync(path.join(tmpDir, '.npfixrc.json'), JSON.stringify({ maxWarnings: 5 }));
+    fs.writeFileSync(path.join(tmpDir, '.npm-checkrc.json'), JSON.stringify({ maxWarnings: 5 }));
     const explicit = path.join(tmpDir, 'custom.json');
     fs.writeFileSync(explicit, JSON.stringify({ maxWarnings: 2 }));
 
@@ -119,7 +119,7 @@ describe('loadAuditConfig', () => {
   });
 
   it('throws CONFIG_PARSE on malformed JSON', () => {
-    fs.writeFileSync(path.join(tmpDir, '.npfixrc.json'), '{ not json');
+    fs.writeFileSync(path.join(tmpDir, '.npm-checkrc.json'), '{ not json');
     try {
       loadAuditConfig(tmpDir);
       throw new Error('expected to throw');
@@ -132,7 +132,7 @@ describe('loadAuditConfig', () => {
 
 describe('constants', () => {
   it('exposes the documented filenames and defaults', () => {
-    expect(CONFIG_FILENAMES).toEqual(['.npfixrc.json', 'npfix.config.json']);
-    expect(Object.keys(DEFAULT_CONFIG.rules)).toHaveLength(8);
+    expect(CONFIG_FILENAMES).toEqual(['.npm-checkrc.json', 'npm-check.config.json']);
+    expect(Object.keys(DEFAULT_CONFIG.rules)).toHaveLength(9);
   });
 });

@@ -13,7 +13,7 @@ RUN if [ "$NPM_VERSION" != "latest" ]; then \
       npm install -g npm@${NPM_VERSION}; \
     fi
 
-# Copy package-lock-fixer source
+# Copy npm-check source
 COPY package.json package-lock.json ./
 COPY src/ ./src/
 COPY bin/ ./bin/

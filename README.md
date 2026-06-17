@@ -21,75 +21,75 @@ A comprehensive tool for validating, migrating, fixing, and updating npm `packag
 ## Installation
 
 ```bash
-npm install -g package-lock-fixer
+npm install -g npm-check
 ```
 
 ## Quick Start
 
 ### CLI Usage
 
-The repository includes a lightweight CLI exposed as the `npfix` binary (also aliased as `package-lock-fixer`):
+The repository includes a lightweight CLI exposed as the `npm-check` binary (also aliased as `npm-check`):
 
 ```bash
 # Validate a lockfile (defaults to ./package-lock.json)
-npfix validate
+npm-check validate
 
 # Migrate to latest version (v3)
-npfix migrate
+npm-check migrate
 
 # Migrate to a specific version
-npfix migrate 2
+npm-check migrate 2
 
 # Upgrade lockfile v2 → v3 (alias for migrate 3; no-op if already v3)
-npfix upgrade --write
+npm-check upgrade --write
 
 # Fill missing/placeholder/sha1 integrity hashes with real registry hashes
-npfix fix-checksums --write
+npm-check fix-checksums --write
 
 # Pin ^/~ ranges in package.json to the lockfile-resolved versions
-npfix pin --write
+npm-check pin --write
 
 # Lint the lockfile for best practices (exits non-zero on failure)
-npfix audit
+npm-check audit
 
 # Remove orphaned packages unreachable from the dependency graph
-npfix prune --write
+npm-check prune --write
 
 # Flag declared dependencies the application never imports
-npfix unused
+npm-check unused
 
 # Run automated fixer (adds placeholders for missing integrity, dedupes packages)
-npfix fix --write
+npm-check fix --write
 
 # Upgrade integrity hashes
-npfix upgrade-hashes --write
+npm-check upgrade-hashes --write
 
 # Deduplicate packages
-npfix dedupe --write
+npm-check dedupe --write
 
 # Check integrity hashes and licenses
-npfix check
+npm-check check
 
 # Check only integrity hashes
-npfix check --check hash
+npm-check check --check hash
 
 # Check only licenses against approved list
-npfix check --check license
+npm-check check --check license
 
 # Use custom approved licenses file
-npfix check --check license --licenses-csv ./my-approved.csv
+npm-check check --check license --licenses-csv ./my-approved.csv
 
 # Strict mode (treats unknown licenses as errors)
-npfix check --check license --strict
+npm-check check --check license --strict
 
 # Specify a custom file path
-npfix validate ./path/to/package-lock.json
+npm-check validate ./path/to/package-lock.json
 
 # List backups
-npfix backups
+npm-check backups
 
 # Restore from latest backup
-npfix restore
+npm-check restore
 ```
 
 **Notes:**
@@ -97,7 +97,7 @@ npfix restore
 - The migrate command defaults to version 3 (latest) when no target version is specified.
 - The `--write` flag creates automatic backups before modifying files.
 - The `check` command requires `node_modules` directory to exist for verification.
-- Aliases: `package-lock-fixer` and `npfix` both point to the same CLI.
+- Aliases: `npm-check` and `npm-check` both point to the same CLI.
 
 ### Check Command
 
@@ -106,7 +106,7 @@ The `check` command validates package integrity hashes and licenses:
 **Integrity Check** – Verifies that packages in `node_modules` match the integrity hashes recorded in `package-lock.json`:
 
 ```bash
-npfix check --check hash
+npm-check check --check hash
 ```
 
 This is useful for detecting if packages have been modified or corrupted after installation.
@@ -115,10 +115,10 @@ This is useful for detecting if packages have been modified or corrupted after i
 
 ```bash
 # Create approved-licenses.csv in your project root
-npfix check --check license
+npm-check check --check license
 
 # Or use a custom CSV file
-npfix check --check license --licenses-csv ./my-approved-licenses.csv
+npm-check check --check license --licenses-csv ./my-approved-licenses.csv
 ```
 
 **Approved Licenses CSV Format:**
@@ -142,7 +142,7 @@ The first column is the SPDX license identifier that must match exactly. Comment
 Use `--strict` to treat unknown licenses (missing license field) as errors instead of warnings:
 
 ```bash
-npfix check --check license --strict
+npm-check check --check license --strict
 ```
 
 ### Audit Command
@@ -150,11 +150,11 @@ npfix check --check license --strict
 The `audit` command is an opinionated linter for `package-lock.json` best practices and supply-chain hygiene. It is designed for CI: it exits non-zero when the audit fails.
 
 ```bash
-npfix audit                          # Lint ./package-lock.json with default rules
-npfix audit --strict                 # Treat any warning as failure
-npfix audit --format json            # Machine-readable output
-npfix audit --rule pinned-versions:error --rule secure-resolved:off
-npfix audit --config ./my-audit.json
+npm-check audit                          # Lint ./package-lock.json with default rules
+npm-check audit --strict                 # Treat any warning as failure
+npm-check audit --format json            # Machine-readable output
+npm-check audit --rule pinned-versions:error --rule secure-resolved:off
+npm-check audit --config ./my-audit.json
 ```
 
 **Default Rules:**
@@ -165,14 +165,15 @@ npfix audit --config ./my-audit.json
 | `valid-structure` | error | Lockfile passes structural validation |
 | `integrity-hygiene` | error | No missing, placeholder, or sha1 integrity hashes (git/file/link/bundled deps exempt) |
 | `secure-resolved` | error | No `http://` resolved URLs; registry hosts limited to an allowlist (default: `registry.npmjs.org`) |
+| `install-scripts` | warn | No dependency declares a lifecycle install script (`hasInstallScript`) unless allowlisted via the `allow` option |
 | `pinned-versions` | warn | No `^`/`~` ranges in package.json dependency sections |
 | `lockfile-sync` | error | package.json and the lockfile agree (name/version, every declared dep present with matching range, no lockfile-only leftovers) |
-| `no-orphan-packages` | warn | No lockfile entries unreachable from the dependency graph (fix with `npfix prune`) |
+| `no-orphan-packages` | warn | No lockfile entries unreachable from the dependency graph (fix with `npm-check prune`) |
 | `unused-dependencies` | warn | Every declared dependency is imported by the application source (heuristic; `includeDev`/`ignore` options) |
 
 **Configuration File:**
 
-The audit looks for `.npfixrc.json`, then `npfix.config.json`, in the current directory (or pass `--config <path>`). CLI flags override file settings. Rule entries are `"error"`, `"warn"`, `"off"`, or `[severity, options]`:
+The audit looks for `.npm-checkrc.json`, then `npm-check.config.json`, in the current directory (or pass `--config <path>`). CLI flags override file settings. Rule entries are `"error"`, `"warn"`, `"off"`, or `[severity, options]`:
 
 ```json
 {
@@ -208,13 +209,13 @@ The audit looks for `.npfixrc.json`, then `npfix.config.json`, in the current di
 Fills missing, placeholder (`sha512-PLACEHOLDER`), and weak (`sha1-`) integrity hashes with the authoritative `dist.integrity` from each package's registry. The registry is derived per-package from the entry's `resolved` URL, so scoped/private registries work without configuration.
 
 ```bash
-npfix fix-checksums                  # Dry-run: show what would change
-npfix fix-checksums --write          # Apply (creates backups)
-npfix fix-checksums --concurrency 16 --timeout 5000
-npfix fix-checksums --local-fallback # Hash node_modules copies when registry fails
+npm-check fix-checksums                  # Dry-run: show what would change
+npm-check fix-checksums --write          # Apply (creates backups)
+npm-check fix-checksums --concurrency 16 --timeout 5000
+npm-check fix-checksums --local-fallback # Hash node_modules copies when registry fails
 ```
 
-Exits `1` if any candidate hashes remain unresolved (CI-gateable). Git, file-directory, linked, workspace, and bundled dependencies are skipped — they legitimately lack registry hashes. v1 lockfiles are not supported; run `npfix migrate 3` first.
+Exits `1` if any candidate hashes remain unresolved (CI-gateable). Git, file-directory, linked, workspace, and bundled dependencies are skipped — they legitimately lack registry hashes. v1 lockfiles are not supported; run `npm-check migrate 3` first.
 
 > ⚠️ **Local fallback caveat:** hashes produced by `--local-fallback` are computed from `node_modules` directories and are **not** npm tarball hashes — `npm ci` will fail integrity verification against the registry for those entries. Use only for air-gapped/internal verification; such changes are tagged `local-directory` in the output.
 
@@ -223,10 +224,10 @@ Exits `1` if any candidate hashes remain unresolved (CI-gateable). Git, file-dir
 Rewrites caret (`^`) and tilde (`~`) ranges in `package.json` to the exact versions already resolved in the lockfile, and keeps the lockfile's root entry (`packages[""]`) in sync so `npm install` sees no mismatch.
 
 ```bash
-npfix pin                            # Dry-run from the current directory
-npfix pin --write                    # Apply (backs up both files)
-npfix pin ./packages/app --write     # Operate on another directory
-npfix pin --include-peer             # Also pin peerDependencies (off by default)
+npm-check pin                            # Dry-run from the current directory
+npm-check pin --write                    # Apply (backs up both files)
+npm-check pin ./packages/app --write     # Operate on another directory
+npm-check pin --include-peer             # Also pin peerDependencies (off by default)
 ```
 
 Complex ranges (`>=`, `||`, `1.x`, `*`, dist-tags), git/file/workspace/alias specs, and dependencies missing from the lockfile are left untouched and reported with reasons.
@@ -236,20 +237,20 @@ Complex ranges (`>=`, `||`, `1.x`, `*`, dist-tags), git/file/workspace/alias spe
 Removes orphaned packages from the lockfile — entries unreachable from the root package (or any workspace) by following dependency edges with npm's node_modules resolution rules. Orphans typically accumulate after bad merges or hand-edits.
 
 ```bash
-npfix prune                          # Dry-run: list orphaned entries
-npfix prune --write                  # Remove them (creates a backup)
+npm-check prune                          # Dry-run: list orphaned entries
+npm-check prune --write                  # Remove them (creates a backup)
 ```
 
-Reachability follows `dependencies`, `optionalDependencies`, and `peerDependencies` of every installed package (plus `devDependencies` of the root and workspaces), resolves nested `node_modules` shadowing nearest-first, and follows workspace `link:` entries. v1 lockfiles are not supported; run `npfix migrate 3` first. On v2 lockfiles the legacy `dependencies` tree is left untouched (npm regenerates it) with a recommendation to migrate to v3.
+Reachability follows `dependencies`, `optionalDependencies`, and `peerDependencies` of every installed package (plus `devDependencies` of the root and workspaces), resolves nested `node_modules` shadowing nearest-first, and follows workspace `link:` entries. v1 lockfiles are not supported; run `npm-check migrate 3` first. On v2 lockfiles the legacy `dependencies` tree is left untouched (npm regenerates it) with a recommendation to migrate to v3.
 
 ### Unused Command
 
 Flags dependencies declared in `package.json` that the application never imports — candidates for removal.
 
 ```bash
-npfix unused                         # Scan the current directory
-npfix unused ./my-app --include-dev  # Also check devDependencies
-npfix unused --json                  # Machine-readable output
+npm-check unused                         # Scan the current directory
+npm-check unused ./my-app --include-dev  # Also check devDependencies
+npm-check unused --json                  # Machine-readable output
 ```
 
 The scan walks source files (`.js`, `.mjs`, `.cjs`, `.jsx`, `.ts`, `.tsx`, `.vue`, `.svelte`, skipping `node_modules`, `dist`, etc.) for `require()`, `import`, dynamic `import()`, and re-export specifiers. Packages mentioned in npm scripts count as used (CLI tools), and `@types/foo` counts as used when `foo` is. Results are **heuristic and report-only** — packages loaded via config files or runtime magic can be false positives, so nothing is removed automatically.
@@ -271,7 +272,7 @@ import {
   checkLicenses,
   checkAll,
   parseLicensesCsv
-} from 'package-lock-fixer';
+} from 'npm-check';
 
 // Parse and validate a lockfile
 const lockfile = parseLockfile('package-lock.json');
@@ -342,7 +343,7 @@ import {
   chunkLockfile,
   mergeLockfileChunks,
   isLargeLockfile
-} from 'package-lock-fixer';
+} from 'npm-check';
 
 const lockfile = parseLockfile('large-package-lock.json');
 
@@ -367,7 +368,7 @@ console.log(`Heap: ${stats.heapUsed}MB / ${stats.heapTotal}MB`);
 ### Streaming Large Lockfiles
 
 ```js
-import { StreamingParser } from 'package-lock-fixer';
+import { StreamingParser } from 'npm-check';
 
 const parser = new StreamingParser({
   onPackage: (path, pkg) => {
@@ -384,7 +385,7 @@ const lockfile = await parser.parseFile('huge-package-lock.json');
 ### Parallel Processing
 
 ```js
-import { parallelUpgradeIntegrityHashes, parallelDeduplicatePackages } from 'package-lock-fixer';
+import { parallelUpgradeIntegrityHashes, parallelDeduplicatePackages } from 'npm-check';
 
 const lockfile = parseLockfile('package-lock.json');
 
@@ -398,7 +399,7 @@ const deduplicated = await parallelDeduplicatePackages(upgraded);
 ### Progress Tracking
 
 ```js
-import { createProgressReporter } from 'package-lock-fixer';
+import { createProgressReporter } from 'npm-check';
 
 const progress = createProgressReporter(totalPackages, {
   showMemory: true,
@@ -423,7 +424,7 @@ import {
   validatePackageLock,
   fixPackageLock,
   serializeLockfile
-} from 'package-lock-fixer';
+} from 'npm-check';
 
 // 1. Parse
 const lockfile = parseLockfile('package-lock.json');
@@ -454,7 +455,7 @@ import {
   validatePackageLock,
   findDuplicatePackages,
   countUniquePackages
-} from 'package-lock-fixer';
+} from 'npm-check';
 
 const lockfile = parseLockfile('package-lock.json');
 

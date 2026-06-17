@@ -1,4 +1,4 @@
-// Setup script for package-lock-fixer development environment
+// Setup script for npm-check development environment
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -34,7 +34,7 @@ function setupBackupsDir() {
 }
 
 function main() {
-  console.log('🚀 Setting up package-lock-fixer development environment...\n');
+  console.log('🚀 Setting up npm-check development environment...\n');
 
   setupBackupsDir();
   setupPreCommitHook();
