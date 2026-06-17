@@ -49,6 +49,7 @@ export {
 export {
   runAudit,
   formatAuditReport,
+  classifyInstallScripts,
   rules as auditRules,
   AuditError
 } from './audit.js';

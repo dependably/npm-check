@@ -4,7 +4,8 @@
 // clean, sectioned report.
 import fs from 'fs';
 import path from 'path';
-import { runAudit } from './audit.js';
+import { runAudit, classifyInstallScripts } from './audit.js';
+import { mergeConfig } from './audit-config.js';
 import { checkIntegrity, checkLicenses } from './checker.js';
 
 export class ReportError extends Error {
@@ -24,6 +25,8 @@ const RULE_SECTION = {
   'integrity-hygiene': 'integrity',
   'secure-resolved': 'resolved',
   'install-scripts': 'install-scripts',
+  'no-git-deps': 'git',
+  'no-remote-deps': 'remote',
   'pinned-versions': 'pinned',
   'no-orphan-packages': 'orphans',
   'unused-dependencies': 'unused'
@@ -36,6 +39,8 @@ const SECTIONS = [
   { id: 'resolved', title: 'Resolved URLs' },
   { id: 'licenses', title: 'Licenses' },
   { id: 'install-scripts', title: 'Install scripts' },
+  { id: 'git', title: 'Git dependencies' },
+  { id: 'remote', title: 'Remote-URL deps' },
   { id: 'pinned', title: 'Pinned versions' },
   { id: 'orphans', title: 'Orphaned packages' },
   { id: 'unused', title: 'Unused dependencies' }
@@ -90,6 +95,14 @@ export async function runReport(target, options = {}) {
 
   // 1. Offline audit rules.
   const audit = runAudit({ lockfile, packageJson, filePath }, auditConfig);
+
+  // Install-script tally (allowed vs blocked), reconciled against npm v12's
+  // package.json `allowScripts` — used for the section's summary line.
+  const sampleRule = auditConfig.rules && auditConfig.rules['install-scripts'];
+  const isResolved = sampleRule && typeof sampleRule === 'object' && !Array.isArray(sampleRule) && typeof sampleRule.severity === 'string';
+  const resolvedConfig = isResolved ? auditConfig : mergeConfig(auditConfig);
+  const scriptOptions = (resolvedConfig.rules['install-scripts'] || {}).options || {};
+  const scriptTally = classifyInstallScripts(lockfile, packageJson, scriptOptions);
 
   // Bucket audit findings into report sections (normalized shape).
   const buckets = {};
@@ -165,6 +178,16 @@ export async function runReport(target, options = {}) {
       if (licenseResult.rejected) bits.push(`${licenseResult.rejected} rejected`);
       if (licenseResult.unknown) bits.push(`${licenseResult.unknown} unknown`);
       summary = bits.join(' · ');
+    } else if (id === 'install-scripts') {
+      const sev = worstSeverity(findings);
+      status = sev || 'pass';
+      if (scriptTally.total === 0) {
+        summary = 'none';
+      } else if (scriptTally.v12Aware) {
+        summary = `${scriptTally.total} ${scriptTally.total === 1 ? 'script' : 'scripts'} · ${scriptTally.allowed.length} allowed · ${scriptTally.blocked.length} blocked`;
+      } else {
+        summary = `${scriptTally.total} ${scriptTally.total === 1 ? 'package' : 'packages'} (no allowScripts — all need review)`;
+      }
     } else {
       const sev = worstSeverity(findings);
       status = sev || 'pass';
@@ -186,6 +209,8 @@ const DEFAULT_PASS_SUMMARY = {
   structure: 'valid',
   resolved: 'all TLS / trusted',
   'install-scripts': 'none',
+  git: 'none',
+  remote: 'none',
   pinned: 'all pinned',
   orphans: 'none',
   unused: 'none'

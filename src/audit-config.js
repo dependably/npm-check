@@ -28,6 +28,8 @@ export const DEFAULT_CONFIG = {
       allowFile: true
     }],
     'install-scripts': ['warn', { allow: [] }],
+    'no-git-deps': 'warn',
+    'no-remote-deps': 'warn',
     'pinned-versions': ['warn', {
       sections: ['dependencies', 'devDependencies', 'optionalDependencies'],
       ignore: []

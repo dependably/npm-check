@@ -47,7 +47,7 @@ describe('runReport', () => {
     );
     expect(report.sections.map((s) => s.id)).toEqual([
       'structure', 'integrity', 'resolved', 'licenses',
-      'install-scripts', 'pinned', 'orphans', 'unused'
+      'install-scripts', 'git', 'remote', 'pinned', 'orphans', 'unused'
     ]);
     expect(report.summary.pass).toBe(true);
     expect(report.summary.errors).toBe(0);
@@ -108,6 +108,23 @@ describe('runReport', () => {
     expect(integrity.summary).toMatch(/offline/);
   });
 
+  it('shows allowed/blocked install-script counts for an npm v12 (allowScripts) file', async () => {
+    const lockfile = cleanLockfile();
+    lockfile.packages['node_modules/good-pkg'].hasInstallScript = true;
+    lockfile.packages['node_modules/native'] = {
+      name: 'native', version: '2.0.0', hasInstallScript: true,
+      resolved: 'https://registry.npmjs.org/native/-/native-2.0.0.tgz', integrity: HASH_A
+    };
+    const packageJson = cleanPackageJson();
+    packageJson.allowScripts = { 'good-pkg@1.0.0': true }; // native left pending → blocked
+
+    const report = await runReport({ lockfile, packageJson, filePath: 'package-lock.json' }, baseOpts());
+    const scripts = report.sections.find((s) => s.id === 'install-scripts');
+    expect(scripts.summary).toBe('2 scripts · 1 allowed · 1 blocked');
+    expect(scripts.findings).toHaveLength(1); // only the blocked one
+    expect(scripts.findings[0].location).toBe('node_modules/native');
+  });
+
   it('strict mode turns warnings into a failure', async () => {
     const lockfile = cleanLockfile();
     lockfile.packages['node_modules/good-pkg'].hasInstallScript = true;
@@ -146,7 +163,7 @@ describe('formatReport', () => {
     const report = await runReport({ lockfile: cleanLockfile(), packageJson: cleanPackageJson(), filePath: 'package-lock.json' }, baseOpts());
     const json = JSON.parse(formatReport(report, { format: 'json' }));
     expect(json.summary.pass).toBe(true);
-    expect(json.sections).toHaveLength(8);
+    expect(json.sections).toHaveLength(10);
   });
 
   it('rejects an unknown format', () => {

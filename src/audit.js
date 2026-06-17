@@ -140,22 +140,93 @@ const secureResolvedRule = {
   }
 };
 
+/**
+ * Classify every package that declares a lifecycle install script as allowed
+ * or blocked, reconciling against both this rule's `allow` list and npm v12's
+ * native package.json `allowScripts` map (keys are `name@version` pinned or
+ * bare `name`; values true=approved / false=denied). Under npm v12 a script
+ * only runs when explicitly approved, so anything not approved is "blocked".
+ *
+ * @returns {{ total, allowed: object[], blocked: object[], v12Aware: boolean }}
+ */
+export function classifyInstallScripts(lockfile, packageJson, options = {}) {
+  const { allow = [] } = options;
+  const allowScripts = packageJson && packageJson.allowScripts;
+  const v12Aware = Boolean(allowScripts && typeof allowScripts === 'object');
+  const allowed = [];
+  const blocked = [];
+  if (!lockfile.packages) return { total: 0, allowed, blocked, v12Aware };
+
+  forEachPackageEntry(lockfile, ({ key, entry, name, isRoot, isWorkspaceSource, isLink }) => {
+    if (isRoot || isWorkspaceSource || isLink) return;
+    if (!entry || entry.hasInstallScript !== true) return;
+
+    let approval = 'pending'; // pending | allowed | denied
+    if (v12Aware && name) {
+      const pinned = `${name}@${entry.version}`;
+      if (pinned in allowScripts) approval = allowScripts[pinned] ? 'allowed' : 'denied';
+      else if (name in allowScripts) approval = allowScripts[name] ? 'allowed' : 'denied';
+    }
+    const viaRuleAllow = Boolean(name && allow.includes(name));
+    const rec = { key, name, version: entry.version, approval, viaRuleAllow };
+    if (viaRuleAllow || approval === 'allowed') allowed.push(rec);
+    else blocked.push(rec);
+  });
+
+  return { total: allowed.length + blocked.length, allowed, blocked, v12Aware };
+}
+
 const installScriptsRule = {
   id: 'install-scripts',
   description: 'Packages with lifecycle install scripts must be reviewed and allowlisted',
   defaultSeverity: 'warn',
-  check({ lockfile, options }) {
-    const { allow = [] } = options;
+  check({ lockfile, packageJson, options }) {
+    const { blocked, v12Aware } = classifyInstallScripts(lockfile, packageJson, options);
+    return blocked.map(({ key, name, approval }) => ({
+      packagePath: key,
+      message: approval === 'denied'
+        ? `${name || key} runs an install script but is denied in package.json "allowScripts" — npm v12 will not run it`
+        : v12Aware
+          ? `${name || key} runs an install script not yet approved in package.json "allowScripts" — npm v12 will not run it (\`npm approve-scripts\`)`
+          : `${name || key} runs a lifecycle install script (preinstall/install/postinstall) — review and add to this rule's "allow" list if trusted, or install with \`--ignore-scripts\``
+    }));
+  }
+};
+
+const noGitDepsRule = {
+  id: 'no-git-deps',
+  description: 'Git dependencies require --allow-git under npm v12',
+  defaultSeverity: 'warn',
+  check({ lockfile }) {
     const findings = [];
     if (!lockfile.packages) return findings;
-
-    forEachPackageEntry(lockfile, ({ key, entry, name, isRoot, isWorkspaceSource, isLink }) => {
-      if (isRoot || isWorkspaceSource || isLink) return;
-      if (!entry || entry.hasInstallScript !== true) return;
-      if (name && allow.includes(name)) return;
+    forEachPackageEntry(lockfile, ({ key, name, isRoot, isWorkspaceSource, isLink, isGitDep }) => {
+      if (isRoot || isWorkspaceSource || isLink || !isGitDep) return;
       findings.push({
         packagePath: key,
-        message: `${name || key} runs a lifecycle install script (preinstall/install/postinstall) — review and add to this rule's "allow" list if trusted, or install with \`--ignore-scripts\``
+        message: `${name || key} is a git dependency — npm v12 will not install it without \`--allow-git\``
+      });
+    });
+    return findings;
+  }
+};
+
+const noRemoteDepsRule = {
+  id: 'no-remote-deps',
+  description: 'Remote-URL (non-registry) dependencies require --allow-remote under npm v12',
+  defaultSeverity: 'warn',
+  check({ lockfile }) {
+    const findings = [];
+    if (!lockfile.packages) return findings;
+    forEachPackageEntry(lockfile, ({ key, entry, name, isRoot, isWorkspaceSource, isLink, isGitDep, isFileDep }) => {
+      if (isRoot || isWorkspaceSource || isLink || isGitDep || isFileDep) return;
+      const resolved = entry && entry.resolved;
+      if (!resolved || !/^https?:/i.test(resolved)) return;
+      // Registry tarballs carry the `/-/` path marker; a direct remote URL tarball does not.
+      if (resolved.includes('/-/')) return;
+      findings.push({
+        packagePath: key,
+        message: `${name || key} resolves from a remote URL (${resolved}) — npm v12 will not install it without \`--allow-remote\``
       });
     });
     return findings;
@@ -329,6 +400,8 @@ export const rules = [
   integrityHygieneRule,
   secureResolvedRule,
   installScriptsRule,
+  noGitDepsRule,
+  noRemoteDepsRule,
   pinnedVersionsRule,
   lockfileSyncRule,
   noOrphanPackagesRule,

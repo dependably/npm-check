@@ -133,6 +133,6 @@ describe('loadAuditConfig', () => {
 describe('constants', () => {
   it('exposes the documented filenames and defaults', () => {
     expect(CONFIG_FILENAMES).toEqual(['.npm-checkrc.json', 'npm-check.config.json']);
-    expect(Object.keys(DEFAULT_CONFIG.rules)).toHaveLength(9);
+    expect(Object.keys(DEFAULT_CONFIG.rules)).toHaveLength(11);
   });
 });

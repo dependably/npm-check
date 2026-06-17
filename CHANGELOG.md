@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **npm v12 readiness** (for the [July 2026 breaking changes](https://github.blog/changelog/2026-06-09-upcoming-breaking-changes-for-npm-v12/) where install scripts, git deps, and remote-URL deps become opt-in):
+  - `install-scripts` rule now reconciles with npm v12's package.json `allowScripts` map (pinned `name@version` or name-only entries; `true`/`false`). It flags scripts that are pending approval or explicitly denied — i.e. the ones npm v12 will silently not run — and treats approved ones as clean. The report's Install scripts section shows `N scripts · X allowed · Y blocked` when the project is `allowScripts`-aware.
+  - New `no-git-deps` rule (warn): flags git dependencies (need `--allow-git` under npm v12).
+  - New `no-remote-deps` rule (warn): flags remote-URL / non-registry tarball dependencies (need `--allow-remote` under npm v12).
+  - Report gains **Git dependencies** and **Remote-URL deps** sections. Exported `classifyInstallScripts()`.
 - **Unified `report` command** (now the default — bare `npm-check` runs it). Runs every check in one pass — the 9 audit rules + registry integrity verification + license validation — and prints one clean, grouped report: a section summary table (Structure, Integrity, Resolved URLs, Licenses, Install scripts, Pinned versions, Orphans, Unused), then per-section detail, then a totals line. `--format json` for CI. Network/filesystem checks degrade gracefully (`--offline`/`--no-integrity`; licenses auto-skip without `node_modules`/approved-list). New API: `runReport()` / `formatReport()`.
 
 ### Changed

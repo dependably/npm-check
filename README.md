@@ -175,7 +175,9 @@ npm-check audit --config ./my-audit.json
 | `valid-structure` | error | Lockfile passes structural validation |
 | `integrity-hygiene` | error | No missing, placeholder, or sha1 integrity hashes (git/file/link/bundled deps exempt) |
 | `secure-resolved` | error | No `http://` resolved URLs; registry hosts limited to an allowlist (default: `registry.npmjs.org`) |
-| `install-scripts` | warn | No dependency declares a lifecycle install script (`hasInstallScript`) unless allowlisted via the `allow` option |
+| `install-scripts` | warn | No dependency declares a lifecycle install script (`hasInstallScript`) unless approved — via the rule's `allow` option **or** npm v12's package.json `allowScripts` map (pinned `name@version` or name-only). Flags pending/denied scripts that npm v12 won't run |
+| `no-git-deps` | warn | No git dependencies — npm v12 won't install them without `--allow-git` |
+| `no-remote-deps` | warn | No remote-URL (non-registry) tarball dependencies — npm v12 won't install them without `--allow-remote` |
 | `pinned-versions` | warn | No `^`/`~` ranges in package.json dependency sections |
 | `lockfile-sync` | error | package.json and the lockfile agree (name/version, every declared dep present with matching range, no lockfile-only leftovers) |
 | `no-orphan-packages` | warn | No lockfile entries unreachable from the dependency graph (fix with `npm-check prune`) |

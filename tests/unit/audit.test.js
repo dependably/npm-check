@@ -445,18 +445,80 @@ describe('formatAuditReport', () => {
 });
 
 describe('rules registry', () => {
-  it('exposes all nine rules with ids and check functions', () => {
+  it('exposes all eleven rules with ids and check functions', () => {
     expect(rules.map((r) => r.id)).toEqual([
       'lockfile-version',
       'valid-structure',
       'integrity-hygiene',
       'secure-resolved',
       'install-scripts',
+      'no-git-deps',
+      'no-remote-deps',
       'pinned-versions',
       'lockfile-sync',
       'no-orphan-packages',
       'unused-dependencies'
     ]);
     rules.forEach((rule) => expect(typeof rule.check).toBe('function'));
+  });
+});
+
+describe('install-scripts allowScripts reconciliation (npm v12)', () => {
+  function lockfileWithScripts() {
+    const lockfile = cleanLockfile();
+    lockfile.packages['node_modules/good-pkg'].hasInstallScript = true;
+    lockfile.packages['node_modules/sneaky'] = {
+      name: 'sneaky', version: '2.0.0', integrity: GOOD_HASH,
+      resolved: 'https://registry.npmjs.org/sneaky/-/sneaky-2.0.0.tgz',
+      hasInstallScript: true
+    };
+    return lockfile;
+  }
+
+  it('treats pinned and name-only allowScripts entries as approved', () => {
+    const packageJson = cleanPackageJson();
+    packageJson.allowScripts = { 'good-pkg@1.0.0': true, 'sneaky': true };
+    const report = runAudit({ lockfile: lockfileWithScripts(), packageJson });
+    expect(report.findings.filter((f) => f.ruleId === 'install-scripts')).toEqual([]);
+  });
+
+  it('flags packages not approved (pending) and explicitly denied under v12', () => {
+    const packageJson = cleanPackageJson();
+    packageJson.allowScripts = { 'good-pkg@1.0.0': true, 'sneaky': false };
+    const report = runAudit({ lockfile: lockfileWithScripts(), packageJson });
+    const scripts = report.findings.filter((f) => f.ruleId === 'install-scripts');
+    expect(scripts).toHaveLength(1);
+    expect(scripts[0].packagePath).toBe('node_modules/sneaky');
+    expect(scripts[0].message).toMatch(/denied/);
+  });
+
+  it('without allowScripts, flags every install-script package (pre-v12)', () => {
+    const report = runAudit({ lockfile: lockfileWithScripts(), packageJson: cleanPackageJson() });
+    expect(report.findings.filter((f) => f.ruleId === 'install-scripts')).toHaveLength(2);
+  });
+});
+
+describe('no-git-deps and no-remote-deps rules (npm v12 opt-ins)', () => {
+  it('flags git and remote-URL deps, leaving registry deps alone', () => {
+    const lockfile = cleanLockfile();
+    lockfile.packages['node_modules/fromgit'] = { name: 'fromgit', version: '1.0.0', resolved: 'git+https://github.com/a/b.git#abc' };
+    lockfile.packages['node_modules/fromurl'] = { name: 'fromurl', version: '1.0.0', resolved: 'https://example.com/fromurl-1.0.0.tgz', integrity: GOOD_HASH };
+    const report = runAudit({ lockfile, packageJson: cleanPackageJson() });
+
+    const git = report.findings.filter((f) => f.ruleId === 'no-git-deps');
+    expect(git).toHaveLength(1);
+    expect(git[0].packagePath).toBe('node_modules/fromgit');
+    expect(git[0].message).toMatch(/--allow-git/);
+
+    const remote = report.findings.filter((f) => f.ruleId === 'no-remote-deps');
+    expect(remote).toHaveLength(1);
+    expect(remote[0].packagePath).toBe('node_modules/fromurl');
+    expect(remote[0].message).toMatch(/--allow-remote/);
+  });
+
+  it('does not flag normal registry tarballs as remote', () => {
+    const report = runAudit({ lockfile: cleanLockfile(), packageJson: cleanPackageJson() });
+    expect(report.findings.filter((f) => f.ruleId === 'no-remote-deps')).toEqual([]);
+    expect(report.findings.filter((f) => f.ruleId === 'no-git-deps')).toEqual([]);
   });
 });

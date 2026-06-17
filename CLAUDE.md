@@ -263,7 +263,8 @@ Removes `^`/`~` from package.json, locking versions down:
 
 Opinionated, configurable lockfile linter for CI (non-zero exit on failure):
 
-- Rules: `lockfile-version`, `valid-structure`, `integrity-hygiene`, `secure-resolved`, `install-scripts`, `pinned-versions`, `lockfile-sync`, `no-orphan-packages`, `unused-dependencies`
+- Rules: `lockfile-version`, `valid-structure`, `integrity-hygiene`, `secure-resolved`, `install-scripts`, `no-git-deps`, `no-remote-deps`, `pinned-versions`, `lockfile-sync`, `no-orphan-packages`, `unused-dependencies`
+- **npm v12 readiness** (the three breaking opt-ins): `install-scripts` reconciles with package.json `allowScripts` (pinned `name@version` or name-only) and flags pending/denied scripts; `no-git-deps` and `no-remote-deps` flag deps that will need `--allow-git` / `--allow-remote`. The report's Install scripts section shows `total · allowed · blocked` when the project is `allowScripts`-aware.
 - Each rule is `{id, description, defaultSeverity, check(context)}` — extensible
 - Severities error/warn/off with per-rule options; `maxWarnings` budget
 - Config file discovery (`.npm-checkrc.json`, `npm-check.config.json`) with CLI overrides
