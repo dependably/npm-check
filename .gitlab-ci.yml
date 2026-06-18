@@ -87,14 +87,21 @@ publish:
     - PKG=$(node -p "const p=require('./package.json'); p.name + '@' + p.version")
     - echo "Publishing $TARBALL ($PKG) to $REGISTRY_URL"
     # Publishing fails if this version already exists — bump the version to release.
-    # On failure, dump npm's debug log so the registry's actual rejection reason
-    # (e.g. a 403 policy message) is visible in the job output.
+    # On failure, dump npm's debug log (silly-level, includes the registry's HTTP
+    # response body) so the actual rejection reason — e.g. a 422 ProblemDetails
+    # "detail" — is visible in the job output. npm prints the log path in its error;
+    # parse that, and fall back to scanning the standard log dirs.
     - |
-      if ! npm publish "$TARBALL" --registry "$REGISTRY_URL"; then
-        echo "=== npm publish failed — debug log tail ===" >&2
-        tail -n 40 "$HOME"/.npm/_logs/*-debug-*.log 2>/dev/null >&2 || true
+      if ! npm publish "$TARBALL" --registry "$REGISTRY_URL" --loglevel verbose 2> publish.err; then
+        cat publish.err >&2
+        echo "=== registry response (npm debug log) ===" >&2
+        LOG=$(grep -oE '/[^ ]+_logs/[0-9TZ_-]+-debug-[0-9]+\.log' publish.err | tail -1)
+        for f in "$LOG" /root/.npm/_logs/*-debug-*.log "$HOME"/.npm/_logs/*-debug-*.log; do
+          [ -n "$f" ] && [ -f "$f" ] && { echo "--- $f ---" >&2; cat "$f" >&2; break; }
+        done
         exit 1
       fi
+      cat publish.err >&2
     # Verify the version is actually retrievable from the registry. A plain
     # `npm publish` success can be a false positive against a non-registry
     # endpoint (e.g. an SPA that 200s the PUT); this read-back fails the job
