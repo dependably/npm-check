@@ -179,6 +179,10 @@ export async function remediateDependencies(lockfile, packageJson, options = {})
       fromVersion: current ? current.version : null,
       reasons: reasonList
     });
+    // `latest` is a mutable, maintainer-controlled pointer: the bump pulls a
+    // version that hasn't itself been scanned. Flag it so the caller re-runs the
+    // scanners after `npm install` rather than assuming the bump is clean.
+    warnings.push({ package: name, reason: `bumped to unvetted latest (${latest}) — re-run \`npm-check\` after \`npm install\` to confirm it isn't itself vulnerable/deprecated` });
   }
 
   // 4. Apply bumps to a fresh package.json + sync the lockfile root entry.

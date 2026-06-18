@@ -310,9 +310,16 @@ export async function checkIntegrity(lockfileData, options = {}) {
     timeoutMs = 10000,
     defaultRegistry = DEFAULT_REGISTRY,
     failOnUnresolved = false,
+    // Operator-pinned trusted registry hosts. The authoritative hash is fetched
+    // from the host named in the lockfile's own `resolved` URL — so a tampered
+    // lockfile could point at an attacker host that returns a matching hash. When
+    // this allowlist is set, an entry resolving from a non-listed host is FAILED
+    // (not verified against it), closing that self-referential-trust gap.
+    allowedHosts = null,
     fetchIntegrity = null,
     onProgress = null
   } = options;
+  const hostAllowlist = Array.isArray(allowedHosts) && allowedHosts.length ? new Set(allowedHosts) : null;
 
   if (lockfileData && lockfileData.lockfileVersion === 1) {
     throw new CheckError(
@@ -364,6 +371,25 @@ export async function checkIntegrity(lockfileData, options = {}) {
 
   await mapWithConcurrency(candidates, concurrency, async ({ key, entry, name }) => {
     const registryBase = deriveRegistryBase(entry.resolved, name) || defaultRegistry;
+
+    // Trust-anchor enforcement: never verify a hash against a host the operator
+    // hasn't trusted — a tampered lockfile would just point `resolved` at its own server.
+    if (hostAllowlist) {
+      let host = null;
+      try { host = new URL(registryBase).host; } catch { /* unparseable → treat as untrusted */ }
+      if (!host || !hostAllowlist.has(host)) {
+        const item = { valid: false, package: name, version: entry.version, packagePath: key, reason: `untrusted registry host "${host || registryBase}" (not in allowedHosts) — refusing to trust its integrity hash` };
+        results.failed++;
+        results.valid = false;
+        results.errors.push(item);
+        results.details.push(item);
+        completed++;
+        results.checked = completed;
+        if (reporter) reporter.update(completed);
+        return;
+      }
+    }
+
     let registryHash = null;
     let networkError = null;
     try {

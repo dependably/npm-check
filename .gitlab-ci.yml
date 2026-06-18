@@ -47,9 +47,11 @@ unit-tests:
 
 # Secret scan — fail the pipeline if a committed secret is detected. Pinned by
 # digest so the scanner version can't drift under us. GIT_DEPTH: 0 fetches full
-# history; on an MR/push the incremental range (CI_COMMIT_BEFORE_SHA..HEAD) is
-# scanned, --only-verified keeps it fast and false-positive-free, --fail makes a
-# verified finding a hard failure.
+# history. We prefer an incremental scan (CI_COMMIT_BEFORE_SHA..HEAD) for speed,
+# but fall back to a FULL-history scan whenever the "before" SHA is unusable —
+# the all-zero sentinel on a branch's first push, or an unreachable commit after
+# a force-push — so a secret hidden in earlier/rewritten history can't slip the
+# gate. --only-verified keeps it fast/false-positive-free, --fail hard-fails.
 secret-scan:
   stage: test
   image:
@@ -58,7 +60,14 @@ secret-scan:
   variables:
     GIT_DEPTH: 0
   script:
-    - trufflehog git file://. --since-commit "${CI_COMMIT_BEFORE_SHA:-HEAD~1}" --only-verified --fail
+    - |
+      BEFORE="${CI_COMMIT_BEFORE_SHA}"
+      if [ -z "$BEFORE" ] || [ "$BEFORE" = "0000000000000000000000000000000000000000" ] || ! git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
+        echo "No usable base commit (first push / force-push) — scanning full history"
+        trufflehog git file://. --only-verified --fail
+      else
+        trufflehog git file://. --since-commit "$BEFORE" --only-verified --fail
+      fi
 
 build:
   stage: build
@@ -102,21 +111,25 @@ publish:
     - PKG=$(node -p "const p=require('./package.json'); p.name + '@' + p.version")
     - echo "Publishing $TARBALL ($PKG) to $REGISTRY_URL"
     # Publishing fails if this version already exists — bump the version to release.
-    # On failure, dump npm's debug log (silly-level, includes the registry's HTTP
+    # On failure, dump npm's debug log (verbose, includes the registry's HTTP
     # response body) so the actual rejection reason — e.g. a 422 ProblemDetails
-    # "detail" — is visible in the job output. npm prints the log path in its error;
-    # parse that, and fall back to scanning the standard log dirs.
+    # "detail" — is visible. The log ALSO contains the request Authorization header,
+    # so everything is piped through `redact` before reaching the (retained,
+    # broadly-readable) job output — defense-in-depth even though REGISTRY_KEY is a
+    # masked CI variable. npm prints the log path in its error; parse that, and fall
+    # back to scanning the standard log dirs.
     - |
+      redact() { sed -E 's/((authorization|authtoken|_auth|_password|bearer)[: =]+)[^ ]+/\1<redacted>/Ig; s/npm_[A-Za-z0-9]{6,}/npm_<redacted>/g'; }
       if ! npm publish "$TARBALL" --registry "$REGISTRY_URL" --loglevel verbose 2> publish.err; then
-        cat publish.err >&2
-        echo "=== registry response (npm debug log) ===" >&2
+        redact < publish.err >&2
+        echo "=== registry response (npm debug log, redacted) ===" >&2
         LOG=$(grep -oE '/[^ ]+_logs/[0-9TZ_-]+-debug-[0-9]+\.log' publish.err | tail -1)
         for f in "$LOG" /root/.npm/_logs/*-debug-*.log "$HOME"/.npm/_logs/*-debug-*.log; do
-          [ -n "$f" ] && [ -f "$f" ] && { echo "--- $f ---" >&2; cat "$f" >&2; break; }
+          [ -n "$f" ] && [ -f "$f" ] && { echo "--- $f (redacted) ---" >&2; redact < "$f" >&2; break; }
         done
         exit 1
       fi
-      cat publish.err >&2
+      redact < publish.err >&2
     # Verify the version is actually retrievable from the registry. A plain
     # `npm publish` success can be a false positive against a non-registry
     # endpoint (e.g. an SPA that 200s the PUT); this read-back fails the job
