@@ -104,6 +104,66 @@ function getJson(url, timeoutMs, redirectsLeft = 1) {
 }
 
 /**
+ * POST a JSON body to a registry endpoint and resolve the parsed JSON response.
+ * Modeled on the GET helper above; used for the bulk advisory endpoint.
+ * Resolves null on 404 (endpoint not supported by this registry); rejects on
+ * network errors/timeouts/non-200 so callers can distinguish "offline" from
+ * "unsupported".
+ * @param {string} url - Full endpoint URL
+ * @param {object} bodyObject - JSON-serializable request body
+ * @param {number} timeoutMs - Per-request timeout
+ * @param {number} redirectsLeft - Remaining redirect hops
+ * @returns {Promise<object|null>} Parsed JSON, or null on 404
+ */
+export function postJson(url, bodyObject, timeoutMs, redirectsLeft = 1) {
+  return new Promise((resolve, reject) => {
+    const payload = JSON.stringify(bodyObject);
+    const options = {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+        'Content-Length': Buffer.byteLength(payload)
+      }
+    };
+    const req = https.request(url, options, (res) => {
+      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location && redirectsLeft > 0) {
+        res.resume();
+        resolve(postJson(new URL(res.headers.location, url).toString(), bodyObject, timeoutMs, redirectsLeft - 1));
+        return;
+      }
+      if (res.statusCode === 404) {
+        res.resume();
+        resolve(null);
+        return;
+      }
+      if (res.statusCode !== 200) {
+        res.resume();
+        reject(new Error(`Registry responded with status ${res.statusCode} for ${url}`));
+        return;
+      }
+      let data = '';
+      res.on('data', (chunk) => {
+        data += chunk;
+      });
+      res.on('end', () => {
+        try {
+          resolve(JSON.parse(data));
+        } catch (e) {
+          reject(new Error(`Invalid JSON from registry for ${url}`));
+        }
+      });
+    });
+    req.on('error', reject);
+    req.setTimeout(timeoutMs, () => {
+      req.destroy(new Error(`Registry request timed out after ${timeoutMs}ms: ${url}`));
+    });
+    req.write(payload);
+    req.end();
+  });
+}
+
+/**
  * Fetch a package version's integrity hash from a registry packument.
  * Resolves null when the package/version is not found (404 or no dist.integrity);
  * rejects on network errors/timeouts so callers can distinguish "offline" from "not on npm".

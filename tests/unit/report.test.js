@@ -29,9 +29,20 @@ function cleanPackageJson() {
 
 const fakeRegistry = (table) => (name) => Promise.resolve(table[name] || null);
 
+// Injectable bulk-advisory fetcher: returns advisories for names present in `table`.
+const fakeAdvisories = (table) => (registryBase, body) => {
+  const out = {};
+  for (const name of Object.keys(body)) if (table[name]) out[name] = table[name];
+  return Promise.resolve(out);
+};
+const advisory = (severity, over = {}) => ({
+  id: 1, title: 'Prototype pollution', severity, vulnerable_versions: '*', url: 'https://x.test/1', ...over
+});
+
 const baseOpts = (extra = {}) => ({
   nodeModulesPath: NO_NM, // license skips
   fetchIntegrity: fakeRegistry({ 'good-pkg': HASH_A }),
+  fetchAdvisories: fakeAdvisories({}), // no vulns by default; no network
   ...extra
 });
 
@@ -46,9 +57,13 @@ describe('runReport', () => {
       baseOpts()
     );
     expect(report.sections.map((s) => s.id)).toEqual([
-      'structure', 'integrity', 'resolved', 'licenses',
+      'structure', 'integrity', 'vuln', 'resolved', 'licenses',
       'install-scripts', 'git', 'remote', 'pinned', 'orphans', 'unused'
     ]);
+
+    const vuln = report.sections.find((s) => s.id === 'vuln');
+    expect(vuln.status).toBe('pass');
+    expect(vuln.summary).toMatch(/1 scanned/);
     expect(report.summary.pass).toBe(true);
     expect(report.summary.errors).toBe(0);
 
@@ -108,6 +123,30 @@ describe('runReport', () => {
     expect(integrity.summary).toMatch(/offline/);
   });
 
+  it('skips the vuln section when vuln:false without network', async () => {
+    let called = 0;
+    const report = await runReport(
+      { lockfile: cleanLockfile(), packageJson: cleanPackageJson(), filePath: 'package-lock.json' },
+      { nodeModulesPath: NO_NM, integrity: false, vuln: false,
+        fetchAdvisories: () => { called++; return Promise.resolve({}); } }
+    );
+    expect(called).toBe(0);
+    const vuln = report.sections.find((s) => s.id === 'vuln');
+    expect(vuln.status).toBe('skip');
+    expect(vuln.summary).toMatch(/offline/);
+  });
+
+  it('fails the run when a critical advisory is found', async () => {
+    const report = await runReport(
+      { lockfile: cleanLockfile(), packageJson: cleanPackageJson(), filePath: 'package-lock.json' },
+      baseOpts({ fetchAdvisories: fakeAdvisories({ 'good-pkg': [advisory('critical')] }) })
+    );
+    expect(report.summary.pass).toBe(false);
+    const vuln = report.sections.find((s) => s.id === 'vuln');
+    expect(vuln.status).toBe('error');
+    expect(vuln.findings.some((f) => /Prototype pollution/.test(f.message))).toBe(true);
+  });
+
   it('shows allowed/blocked install-script counts for an npm v12 (allowScripts) file', async () => {
     const lockfile = cleanLockfile();
     lockfile.packages['node_modules/good-pkg'].hasInstallScript = true;
@@ -163,7 +202,7 @@ describe('formatReport', () => {
     const report = await runReport({ lockfile: cleanLockfile(), packageJson: cleanPackageJson(), filePath: 'package-lock.json' }, baseOpts());
     const json = JSON.parse(formatReport(report, { format: 'json' }));
     expect(json.summary.pass).toBe(true);
-    expect(json.sections).toHaveLength(10);
+    expect(json.sections).toHaveLength(11);
   });
 
   it('rejects an unknown format', () => {

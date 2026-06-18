@@ -136,6 +136,17 @@ Completed:
 3. **Audit Rules** (now 8): lockfile-sync (error, package.json↔lockfile agreement), no-orphan-packages (warn),
    unused-dependencies (warn, includeDev/ignore options)
 
+## KNOWN-VULNERABILITY SCAN PASS (2026-06-17):
+### Feature Implementation ✅
+1. **Vuln Command**: `npm-check vuln` — scans locked packages for known vulnerabilities via the
+   npm registry bulk advisory endpoint (POST /-/npm/v1/security/advisories/bulk) (src/vuln.js).
+   - Lockfile-first (no node_modules); reuses deriveRegistryBase + concurrency model; private-registry aware
+   - Does NOT shell out to `npm audit`; degrades gracefully (unresolved, non-fatal) when the endpoint is unsupported
+   - --min-severity threshold (info|low|moderate|high|critical; default high) fails the run; --offline / --fail-on-unresolved
+   - Server-side per-version filtering trusted; no semver dependency (preserves zero-dependency core)
+2. **Report Section**: "Known vulnerabilities" added to the unified report (default command); --no-vuln / --offline skip it
+3. **postJson**: new exported helper in src/integrity.js (POST analog of the private getJson)
+
 In Progress:
 - (none currently)
 

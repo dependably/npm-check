@@ -208,6 +208,7 @@ npm-check pin --write
 npm-check prune --write package-lock.json
 npm-check unused
 npm-check audit --strict
+npm-check vuln --min-severity critical
 npm-check dedupe --write package-lock.json
 npm-check check --check hash package-lock.json
 npm-check check --check license package-lock.json
@@ -218,7 +219,7 @@ npm-check upgrade-hashes --write package-lock.json
 
 The default command (bare `npm-check`, or `npm-check report [file]`). Runs **every** check in one pass — the 9 audit rules + registry integrity verification + license validation — and renders one grouped, sectioned report (section summary table, then per-section detail, then a totals line). `--format json` for CI/tooling.
 
-- Sections: Structure & format, Integrity (registry), Resolved URLs, Licenses, Install scripts, Pinned versions, Orphaned packages, Unused dependencies
+- Sections: Structure & format, Integrity (registry), Known vulnerabilities, Resolved URLs, Licenses, Install scripts, Pinned versions, Orphaned packages, Unused dependencies
 - Network/filesystem checks degrade gracefully: integrity → `--offline`/`--no-integrity` to skip; licenses auto-skip when there's no `node_modules` or no approved-licenses CSV
 - Exit 0 unless an error-severity finding exists (or `--strict`/`--max-warnings` budget is exceeded)
 - **Key Functions:** `runReport()` returns `{filePath, sections, summary}`; `formatReport()` renders pretty or JSON
@@ -299,6 +300,22 @@ Flags declared dependencies the application never imports (candidates for remova
 **Key Functions:**
 - `scanUsedPackages()` - Returns `{used: Set, scannedFiles}`
 - `findUnusedDependencies()` - Returns `{unused, used, scannedFiles, sectionsChecked}`
+
+### 13. Vuln Scanner (`vuln.js`)
+
+Scans locked packages for known vulnerabilities (complements the integrity check — integrity asks "is the lockfile what it claims to be?", this asks "do the locked versions have published advisories?"):
+
+- Queries the npm registry **bulk advisory endpoint** (`POST {registry}/-/npm/v1/security/advisories/bulk`) directly from the lockfile — no `node_modules`, no `npm audit` subprocess
+- Reuses `deriveRegistryBase()` (per-package registry, so private registries work), the concurrent fetch pool, and a `postJson` helper added to `integrity.js`
+- Groups requests by registry and batches names per POST (`batchSize`, default 250)
+- `minSeverity` threshold (info/low/moderate/high/critical; default high): advisories at/above fail the run as errors, below as warnings
+- Skips entries that can't be checked this way (root/workspace/link/git/file/bundled, missing version)
+- Registry-unreachable / endpoint-unsupported entries are reported `unresolved` and do not fail by default (`failOnUnresolved` to fail closed); `offline` skips entirely
+- Trusts the endpoint's server-side per-version filtering (no `semver` dependency); may slightly over-report when one name is locked at multiple versions
+- Surfaced as both the report's "Known vulnerabilities" section and the standalone `vuln` CLI command
+
+**Key Functions:**
+- `checkVulnerabilities()` - Returns `{valid, scanned, vulnerable, clean, unresolved, skipped, errors, warnings, unresolvedItems, details}`
 
 ## Planned Components
 
