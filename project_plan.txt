@@ -136,6 +136,16 @@ Completed:
 3. **Audit Rules** (now 8): lockfile-sync (error, package.json↔lockfile agreement), no-orphan-packages (warn),
    unused-dependencies (warn, includeDev/ignore options)
 
+## NO-FUND AUDIT RULE (2026-06-17):
+### Feature Implementation ✅
+1. **no-fund rule** (src/audit.js) — flags packages that carry `funding` metadata (the ones npm
+   tallies in its "N packages are looking for funding" install notice). Warn severity by default.
+   - Fix guidance: disable npm funding solicitations with `npm config set fund false` (adds `fund=false` to .npmrc)
+   - Self-clears when a project-level `.npmrc` already sets `fund=false`; only the committed project
+     `.npmrc` is consulted (not ~/.npmrc) so CI and local audits agree
+   - Surfaced as the report's "Funding solicitations" section and the standalone `audit` command
+   - Registered in DEFAULT_CONFIG (audit-config.js) + RULE_SECTION/SECTIONS (report.js); covered by unit tests
+
 ## KNOWN-VULNERABILITY SCAN PASS (2026-06-17):
 ### Feature Implementation ✅
 1. **Vuln Command**: `npm-check vuln` — scans locked packages for known vulnerabilities via the

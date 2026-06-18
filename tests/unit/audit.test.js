@@ -363,6 +363,70 @@ describe('runAudit', () => {
     });
   });
 
+  describe('no-fund rule', () => {
+    function lockfileWithFunding() {
+      const lockfile = cleanLockfile();
+      lockfile.packages['node_modules/good-pkg'].funding = {
+        type: 'opencollective',
+        url: 'https://opencollective.com/good'
+      };
+      return lockfile;
+    }
+
+    it('flags packages that emit funding solicitations', () => {
+      const report = runAudit({
+        lockfile: lockfileWithFunding(),
+        packageJson: cleanPackageJson(),
+        filePath: projLockfilePath
+      });
+      const fund = report.findings.filter((f) => f.ruleId === 'no-fund');
+      expect(fund).toHaveLength(1);
+      expect(fund[0].severity).toBe('warn');
+      expect(fund[0].packagePath).toBe('.npmrc');
+      expect(fund[0].message).toMatch(/1 package emit/);
+      expect(fund[0].message).toMatch(/fund=false/);
+    });
+
+    it('does not flag when no package declares funding', () => {
+      const report = runAudit({
+        lockfile: cleanLockfile(),
+        packageJson: cleanPackageJson(),
+        filePath: projLockfilePath
+      });
+      expect(report.findings.filter((f) => f.ruleId === 'no-fund')).toEqual([]);
+    });
+
+    it('is silenced by a project .npmrc with fund=false', () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'npm-check-fund-'));
+      try {
+        fs.writeFileSync(path.join(dir, '.npmrc'), 'fund = false\n');
+        const report = runAudit({
+          lockfile: lockfileWithFunding(),
+          packageJson: cleanPackageJson(),
+          filePath: path.join(dir, 'package-lock.json')
+        });
+        expect(report.findings.filter((f) => f.ruleId === 'no-fund')).toEqual([]);
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it('still flags when .npmrc sets fund=true', () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'npm-check-fund-'));
+      try {
+        fs.writeFileSync(path.join(dir, '.npmrc'), 'fund=true\n');
+        const report = runAudit({
+          lockfile: lockfileWithFunding(),
+          packageJson: cleanPackageJson(),
+          filePath: path.join(dir, 'package-lock.json')
+        });
+        expect(report.findings.filter((f) => f.ruleId === 'no-fund')).toHaveLength(1);
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
+  });
+
   describe('severity and pass semantics', () => {
     it('skips rules set to off', () => {
       const lockfile = { ...cleanLockfile(), lockfileVersion: 2 };
@@ -445,7 +509,7 @@ describe('formatAuditReport', () => {
 });
 
 describe('rules registry', () => {
-  it('exposes all eleven rules with ids and check functions', () => {
+  it('exposes all twelve rules with ids and check functions', () => {
     expect(rules.map((r) => r.id)).toEqual([
       'lockfile-version',
       'valid-structure',
@@ -457,7 +521,8 @@ describe('rules registry', () => {
       'pinned-versions',
       'lockfile-sync',
       'no-orphan-packages',
-      'unused-dependencies'
+      'unused-dependencies',
+      'no-fund'
     ]);
     rules.forEach((rule) => expect(typeof rule.check).toBe('function'));
   });

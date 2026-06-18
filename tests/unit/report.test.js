@@ -59,7 +59,7 @@ describe('runReport', () => {
     );
     expect(report.sections.map((s) => s.id)).toEqual([
       'structure', 'integrity', 'vuln', 'deprecated', 'resolved', 'licenses',
-      'install-scripts', 'git', 'remote', 'pinned', 'orphans', 'unused'
+      'install-scripts', 'git', 'remote', 'pinned', 'orphans', 'unused', 'fund'
     ]);
 
     const vuln = report.sections.find((s) => s.id === 'vuln');
@@ -203,7 +203,7 @@ describe('formatReport', () => {
     const report = await runReport({ lockfile: cleanLockfile(), packageJson: cleanPackageJson(), filePath: 'package-lock.json' }, baseOpts());
     const json = JSON.parse(formatReport(report, { format: 'json' }));
     expect(json.summary.pass).toBe(true);
-    expect(json.sections).toHaveLength(12);
+    expect(json.sections).toHaveLength(13);
   });
 
   it('rejects an unknown format', () => {

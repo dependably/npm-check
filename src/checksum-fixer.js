@@ -168,7 +168,7 @@ export async function fixChecksums(lockfile, options = {}) {
           const localHash = await hashPackageDirectory(pkgDir);
           changes.push({ packagePath: key, name, version: entry.version, from: entry.integrity || null, to: localHash, source: 'local-directory' });
           return;
-        } catch (e) {
+        } catch {
           // fall through to unresolved
         }
       }

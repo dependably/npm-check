@@ -36,7 +36,8 @@ export const DEFAULT_CONFIG = {
     }],
     'lockfile-sync': 'error',
     'no-orphan-packages': 'warn',
-    'unused-dependencies': ['warn', { includeDev: false, ignore: [] }]
+    'unused-dependencies': ['warn', { includeDev: false, ignore: [] }],
+    'no-fund': 'warn'
   }
 };
 

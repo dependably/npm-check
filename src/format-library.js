@@ -67,7 +67,7 @@ export function parseLockfile(content) {
   try {
     return JSON.parse(content);
   } catch (e) {
-    throw new Error('Invalid JSON in lockfile');
+    throw new Error('Invalid JSON in lockfile', { cause: e });
   }
 }
 

@@ -148,7 +148,7 @@ export async function remediateDependencies(lockfile, packageJson, options = {})
 
     const current = installed.get(name);
     const registryBase = (current && deriveRegistryBase(current.resolved, name)) || defaultRegistry;
-    let latest = null;
+    let latest;
     try {
       latest = fetchLatest
         ? await fetchLatest(name, registryBase)

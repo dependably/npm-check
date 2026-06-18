@@ -31,7 +31,8 @@ const RULE_SECTION = {
   'no-remote-deps': 'remote',
   'pinned-versions': 'pinned',
   'no-orphan-packages': 'orphans',
-  'unused-dependencies': 'unused'
+  'unused-dependencies': 'unused',
+  'no-fund': 'fund'
 };
 
 // Display order and titles for the sections.
@@ -47,7 +48,8 @@ const SECTIONS = [
   { id: 'remote', title: 'Remote-URL deps' },
   { id: 'pinned', title: 'Pinned versions' },
   { id: 'orphans', title: 'Orphaned packages' },
-  { id: 'unused', title: 'Unused dependencies' }
+  { id: 'unused', title: 'Unused dependencies' },
+  { id: 'fund', title: 'Funding solicitations' }
 ];
 
 const MAX_DETAIL = 50; // cap per-section detail lines so the report stays readable
@@ -287,7 +289,8 @@ const DEFAULT_PASS_SUMMARY = {
   remote: 'none',
   pinned: 'all pinned',
   orphans: 'none',
-  unused: 'none'
+  unused: 'none',
+  fund: 'suppressed'
 };
 
 const ICON = { pass: '✔', warn: '⚠', error: '✖', skip: '·' };

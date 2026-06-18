@@ -1,4 +1,5 @@
 // src/audit.js
+import fs from 'fs';
 import path from 'path';
 import { forEachPackageEntry } from './format-library.js';
 import { validatePackageLock } from './validator.js';
@@ -123,7 +124,7 @@ const secureResolvedRule = {
       let url;
       try {
         url = new URL(resolved);
-      } catch (e) {
+      } catch {
         findings.push({ packagePath: key, message: `unparseable resolved URL: ${resolved}` });
         return;
       }
@@ -348,7 +349,7 @@ const noOrphanPackagesRule = {
     let orphans;
     try {
       orphans = findOrphanedPackages(lockfile).orphans;
-    } catch (e) {
+    } catch {
       // v1 lockfiles: lockfile-version rule already covers this
       return [];
     }
@@ -394,6 +395,54 @@ const unusedDependenciesRule = {
   }
 };
 
+/**
+ * Does a project `.npmrc` already suppress npm's funding solicitations?
+ * npm prints "N packages are looking for funding" on install unless `fund`
+ * is set false. We only consult the project-level `.npmrc` (the committed,
+ * reproducible artifact a CI audit can rely on) — not the machine's `~/.npmrc`,
+ * which would make results differ between local and CI.
+ */
+function npmrcDisablesFund(dir, options = {}) {
+  const npmrcPath = options.npmrcPath ? path.resolve(options.npmrcPath) : path.join(dir, '.npmrc');
+  let content;
+  try {
+    content = fs.readFileSync(npmrcPath, 'utf8');
+  } catch {
+    return false; // no .npmrc → funding messages are on by default
+  }
+  // ini-style `fund=false` / `fund = false`, ignoring case, surrounding ws, and inline comments
+  return content.split(/\r?\n/).some((line) => {
+    const m = line.match(/^\s*fund\s*=\s*([^\s;#]+)/i);
+    return Boolean(m) && m[1].toLowerCase() === 'false';
+  });
+}
+
+const noFundRule = {
+  id: 'no-fund',
+  description: 'npm funding solicitations should be suppressed (fund=false in .npmrc)',
+  defaultSeverity: 'warn',
+  check({ lockfile, filePath, options }) {
+    if (!lockfile.packages) return [];
+
+    // Count installed packages that declare funding metadata — these are
+    // exactly what npm's "N packages are looking for funding" notice tallies.
+    let funded = 0;
+    forEachPackageEntry(lockfile, ({ entry, isRoot, isWorkspaceSource, isLink }) => {
+      if (isRoot || isWorkspaceSource || isLink) return;
+      if (entry && entry.funding) funded++;
+    });
+    if (funded === 0) return [];
+
+    // Already silenced by a project .npmrc → nothing to flag.
+    if (npmrcDisablesFund(path.dirname(path.resolve(filePath)), options)) return [];
+
+    return [{
+      packagePath: '.npmrc',
+      message: `${funded} package${funded === 1 ? '' : 's'} emit npm funding solicitations on install — disable with \`npm config set fund false\` (adds \`fund=false\` to .npmrc)`
+    }];
+  }
+};
+
 export const rules = [
   lockfileVersionRule,
   validStructureRule,
@@ -405,7 +454,8 @@ export const rules = [
   pinnedVersionsRule,
   lockfileSyncRule,
   noOrphanPackagesRule,
-  unusedDependenciesRule
+  unusedDependenciesRule,
+  noFundRule
 ];
 
 /**

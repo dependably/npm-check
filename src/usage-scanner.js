@@ -48,7 +48,7 @@ function walkFiles(dir, extensions, ignoreDirs, files = []) {
   let entries;
   try {
     entries = fs.readdirSync(dir, { withFileTypes: true });
-  } catch (e) {
+  } catch {
     return files;
   }
   for (const entry of entries) {
@@ -83,7 +83,7 @@ export function scanUsedPackages(dir, options = {}) {
     let content;
     try {
       content = fs.readFileSync(file, 'utf8');
-    } catch (e) {
+    } catch {
       continue;
     }
     for (const pattern of IMPORT_PATTERNS) {

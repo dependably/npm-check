@@ -46,7 +46,7 @@ export function deriveRegistryBase(resolvedUrl, packageName) {
   let url;
   try {
     url = new URL(resolvedUrl);
-  } catch (e) {
+  } catch {
     return null;
   }
   if (url.protocol !== 'https:' && url.protocol !== 'http:') return null;
@@ -91,7 +91,7 @@ function getJson(url, timeoutMs, redirectsLeft = 1) {
       res.on('end', () => {
         try {
           resolve(JSON.parse(data));
-        } catch (e) {
+        } catch {
           reject(new Error(`Invalid JSON from registry for ${url}`));
         }
       });
@@ -149,7 +149,7 @@ export function postJson(url, bodyObject, timeoutMs, redirectsLeft = 1) {
       res.on('end', () => {
         try {
           resolve(JSON.parse(data));
-        } catch (e) {
+        } catch {
           reject(new Error(`Invalid JSON from registry for ${url}`));
         }
       });
@@ -254,7 +254,7 @@ export async function fetchPackumentIntegrity(packageName, version, options = {}
 export async function generateIntegrityFromRegistry(packageName, version) {
   try {
     return await fetchPackumentIntegrity(packageName, version);
-  } catch (e) {
+  } catch {
     return null;
   }
 }
@@ -285,7 +285,7 @@ export async function generateOrPlaceholderIntegrity(pkg, options = {}) {
       if (hash) {
         return hash;
       }
-    } catch (e) {
+    } catch {
       // Silently fall through to placeholder
     }
   }

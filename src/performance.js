@@ -250,7 +250,7 @@ export function isLargeLockfile(lockfile, thresholdMB = 10) {
       const pkgCount = Object.keys(lockfile.packages).length;
       if (pkgCount > 10000) return true;
     }
-  } catch (e) {
+  } catch {
     // ignore and fall through
   }
 

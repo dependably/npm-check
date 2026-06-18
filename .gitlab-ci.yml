@@ -45,6 +45,21 @@ unit-tests:
   # against the live registry across npm versions — run them on demand with
   # `npm run test:integration` in a docker-in-docker job rather than here.
 
+# Secret scan — fail the pipeline if a committed secret is detected. Pinned by
+# digest so the scanner version can't drift under us. GIT_DEPTH: 0 fetches full
+# history; on an MR/push the incremental range (CI_COMMIT_BEFORE_SHA..HEAD) is
+# scanned, --only-verified keeps it fast and false-positive-free, --fail makes a
+# verified finding a hard failure.
+secret-scan:
+  stage: test
+  image:
+    name: trufflesecurity/trufflehog:3.95.3@sha256:9cc33bb080cac0efbbf228a17667172875b529eeeab01efcc4697adfb55f568a
+    entrypoint: [""]
+  variables:
+    GIT_DEPTH: 0
+  script:
+    - trufflehog git file://. --since-commit "${CI_COMMIT_BEFORE_SHA:-HEAD~1}" --only-verified --fail
+
 build:
   stage: build
   script:
