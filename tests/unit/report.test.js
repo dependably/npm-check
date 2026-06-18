@@ -43,6 +43,7 @@ const baseOpts = (extra = {}) => ({
   nodeModulesPath: NO_NM, // license skips
   fetchIntegrity: fakeRegistry({ 'good-pkg': HASH_A }),
   fetchAdvisories: fakeAdvisories({}), // no vulns by default; no network
+  fetchManifest: () => Promise.resolve({}), // not deprecated by default; no network
   ...extra
 });
 
@@ -57,7 +58,7 @@ describe('runReport', () => {
       baseOpts()
     );
     expect(report.sections.map((s) => s.id)).toEqual([
-      'structure', 'integrity', 'vuln', 'resolved', 'licenses',
+      'structure', 'integrity', 'vuln', 'deprecated', 'resolved', 'licenses',
       'install-scripts', 'git', 'remote', 'pinned', 'orphans', 'unused'
     ]);
 
@@ -115,7 +116,7 @@ describe('runReport', () => {
     let called = 0;
     const report = await runReport(
       { lockfile: cleanLockfile(), packageJson: cleanPackageJson(), filePath: 'package-lock.json' },
-      { nodeModulesPath: NO_NM, integrity: false, fetchIntegrity: () => { called++; return Promise.resolve(HASH_A); } }
+      { nodeModulesPath: NO_NM, integrity: false, vuln: false, deprecated: false, fetchIntegrity: () => { called++; return Promise.resolve(HASH_A); } }
     );
     expect(called).toBe(0);
     const integrity = report.sections.find((s) => s.id === 'integrity');
@@ -127,7 +128,7 @@ describe('runReport', () => {
     let called = 0;
     const report = await runReport(
       { lockfile: cleanLockfile(), packageJson: cleanPackageJson(), filePath: 'package-lock.json' },
-      { nodeModulesPath: NO_NM, integrity: false, vuln: false,
+      { nodeModulesPath: NO_NM, integrity: false, vuln: false, deprecated: false,
         fetchAdvisories: () => { called++; return Promise.resolve({}); } }
     );
     expect(called).toBe(0);
@@ -202,7 +203,7 @@ describe('formatReport', () => {
     const report = await runReport({ lockfile: cleanLockfile(), packageJson: cleanPackageJson(), filePath: 'package-lock.json' }, baseOpts());
     const json = JSON.parse(formatReport(report, { format: 'json' }));
     expect(json.summary.pass).toBe(true);
-    expect(json.sections).toHaveLength(11);
+    expect(json.sections).toHaveLength(12);
   });
 
   it('rejects an unknown format', () => {

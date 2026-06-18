@@ -11,6 +11,7 @@ import { createBackup, listBackups, restoreFromLatestBackup, cleanOldBackups, Ba
 import { createProgressBar } from '../src/progress-reporter.js';
 import { checkIntegrity, checkLicenses } from '../src/checker.js';
 import { checkVulnerabilities } from '../src/vuln.js';
+import { checkDeprecations } from '../src/deprecation.js';
 import { detectLockfileVersion } from '../src/format-library.js';
 import { fixChecksums } from '../src/checksum-fixer.js';
 import { pinVersions, detectIndent } from '../src/pinner.js';
@@ -43,6 +44,7 @@ Commands:
   unused [dir]               Flag declared dependencies the application never imports
   audit [file]               Lint lockfile for best practices (non-zero exit on failure)
   vuln [file]                Scan locked packages for known vulnerabilities (registry advisories)
+  deprecated [file]          Scan locked packages for deprecation notices (the npm ci warnings)
   dedupe [file]              Deduplicate packages in lockfile
   fix [file] [--write]       Run automated fixer with optional write
   check [file]               Verify integrity hashes and licenses
@@ -51,15 +53,17 @@ Commands:
   clean-backups [file]       Clean old backup files with optional --keep N
 
 Report Options:
-  --offline                  Skip all network checks (integrity + vuln); offline rules only
+  --offline                  Skip all network checks (integrity + vuln + deprecated); offline rules only
   --no-integrity             Skip the integrity check
   --no-vuln                  Skip the known-vulnerability scan
+  --no-deprecated            Skip the deprecation scan
   --no-license               Skip the license check
   --min-severity <level>     Vuln severity that fails the run (info|low|moderate|high|critical; default: high)
   --format pretty|json       Output format (default: pretty)
   --strict                   Treat warnings as failures
   --max-warnings N           Fail if warnings exceed N (-1 = unlimited)
   --fail-on-unresolved       Fail when integrity can't be verified (registry down/missing)
+  --fail-on-deprecated       Fail when a locked package is deprecated (default: warn)
   --concurrency / --timeout / --registry / --licenses-csv   (as in Check Options)
 
 Check Options:
@@ -78,6 +82,15 @@ Vuln Options:
   --format pretty|json       Output format (default: pretty)
   --offline                  Skip the scan (report everything as skipped)
   --fail-on-unresolved       Fail when a package can't be checked (registry down/unsupported)
+  --concurrency N            Parallel registry requests (default: 8)
+  --timeout MS               Per-request timeout in milliseconds (default: 10000)
+  --registry <url>           Registry for entries without a derivable base
+
+Deprecated Options:
+  --format pretty|json       Output format (default: pretty)
+  --offline                  Skip the scan (report everything as skipped)
+  --fail-on-deprecated       Fail the run when a locked package is deprecated (default: warn)
+  --fail-on-unresolved       Fail when a package can't be checked (registry down/missing)
   --concurrency N            Parallel registry requests (default: 8)
   --timeout MS               Per-request timeout in milliseconds (default: 10000)
   --registry <url>           Registry for entries without a derivable base
@@ -126,6 +139,8 @@ Examples:
   npm-check audit --rule pinned-versions:error
   npm-check vuln                               # Scan for known vulnerabilities
   npm-check vuln --min-severity critical --format json
+  npm-check deprecated                         # Scan for deprecated packages (npm ci warnings)
+  npm-check deprecated --fail-on-deprecated    # Fail CI when any locked package is deprecated
   npm-check check --check hash                 # Only verify integrity
   npm-check restore
   npm-check clean-backups --keep 5
@@ -246,7 +261,9 @@ async function main() {
           const integrity = !argv.includes('--offline') && !argv.includes('--no-integrity');
           const license = !argv.includes('--no-license');
           const vuln = !argv.includes('--offline') && !argv.includes('--no-vuln');
+          const deprecated = !argv.includes('--offline') && !argv.includes('--no-deprecated');
           const failOnUnresolved = argv.includes('--fail-on-unresolved');
+          const failOnDeprecated = argv.includes('--fail-on-deprecated');
 
           const SEVERITIES = ['info', 'low', 'moderate', 'high', 'critical'];
           let minSeverity = 'high';
@@ -284,7 +301,7 @@ async function main() {
           const packageJsonPath = path.join(dir, 'package.json');
           if (fs.existsSync(packageJsonPath)) packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
 
-          if ((integrity || vuln) && format === 'pretty') console.log('🔎 Running all checks (querying the registry)…');
+          if ((integrity || vuln || deprecated) && format === 'pretty') console.log('🔎 Running all checks (querying the registry)…');
 
           let lastProgress = null;
           const onProgress = format === 'pretty' ? (progress) => {
@@ -297,7 +314,7 @@ async function main() {
           report = await runReport(
             { lockfile, packageJson, filePath: path.relative(process.cwd(), filePath) || filePath, dir },
             {
-              auditConfig: config, integrity, license, vuln, minSeverity, strict, maxWarnings,
+              auditConfig: config, integrity, license, vuln, deprecated, failOnDeprecated, minSeverity, strict, maxWarnings,
               concurrency, timeoutMs, failOnUnresolved, onProgress,
               ...(defaultRegistry ? { defaultRegistry } : {}),
               ...(licensesCsv ? { licensesCsv } : {})
@@ -1079,6 +1096,108 @@ async function main() {
               }
             }
             console.log(result.valid ? '\n✅ No known vulnerabilities at/above the threshold' : '\n❌ Known vulnerabilities found');
+          }
+
+          process.exit(result.valid ? 0 : 1);
+        } catch (error) {
+          handleError(error, `${command} command failed`);
+        }
+        break;
+      }
+
+      case 'deprecated': {
+        const filePath = getFilePath(argv[1]);
+        if (!fs.existsSync(filePath)) {
+          console.error(`❌ No lockfile found at ${filePath}`);
+          console.error('   Run `npm-check deprecated <path>` or `npm-check --help`.');
+          process.exit(2);
+        }
+
+        let format = 'pretty';
+        const formatIndex = argv.indexOf('--format');
+        if (formatIndex !== -1 && argv[formatIndex + 1]) {
+          format = argv[formatIndex + 1];
+          if (!['pretty', 'json'].includes(format)) { console.error('❌ Invalid --format value. Use: pretty or json'); process.exit(2); }
+        }
+
+        const offline = argv.includes('--offline');
+        const failOnDeprecated = argv.includes('--fail-on-deprecated');
+        const failOnUnresolved = argv.includes('--fail-on-unresolved');
+
+        let concurrency = 8;
+        const concurrencyIndex = argv.indexOf('--concurrency');
+        if (concurrencyIndex !== -1 && argv[concurrencyIndex + 1]) {
+          const parsed = parseInt(argv[concurrencyIndex + 1], 10);
+          if (isNaN(parsed) || parsed < 1) { console.error('❌ Invalid --concurrency value. Must be a positive number'); process.exit(2); }
+          concurrency = parsed;
+        }
+        let timeoutMs = 10000;
+        const timeoutIndex = argv.indexOf('--timeout');
+        if (timeoutIndex !== -1 && argv[timeoutIndex + 1]) {
+          const parsed = parseInt(argv[timeoutIndex + 1], 10);
+          if (isNaN(parsed) || parsed < 1) { console.error('❌ Invalid --timeout value. Must be a positive number'); process.exit(2); }
+          timeoutMs = parsed;
+        }
+        let defaultRegistry;
+        const registryIndex = argv.indexOf('--registry');
+        if (registryIndex !== -1 && argv[registryIndex + 1]) defaultRegistry = argv[registryIndex + 1];
+
+        const lockfile = parseLockfile(filePath);
+
+        let lastProgress = null;
+        const onProgress = format === 'pretty' ? (progress) => {
+          if (!lastProgress || progress.percentage !== lastProgress.percentage) {
+            process.stdout.write(`\r${createProgressBar(progress)} ${progress.stage}`);
+            lastProgress = progress;
+          }
+        } : null;
+
+        try {
+          if (format === 'pretty' && !offline) console.log('📉 Scanning locked packages for deprecation notices…');
+          const result = await checkDeprecations(lockfile, {
+            concurrency, timeoutMs, offline, failOnDeprecated, failOnUnresolved, onProgress,
+            ...(defaultRegistry ? { defaultRegistry } : {})
+          });
+
+          if (onProgress) process.stdout.write('\r' + ' '.repeat(80) + '\r');
+
+          if (format === 'json') {
+            console.log(JSON.stringify(result, null, 2));
+          } else {
+            console.log(`   Scanned: ${result.scanned}`);
+            console.log(`   📉 Deprecated: ${result.deprecated}`);
+            console.log(`   ⏭️  Skipped: ${result.skipped}`);
+            console.log(`   ❔ Unresolved: ${result.unresolved}`);
+
+            if (result.errors.some(e => e.message)) {
+              console.log('\n   Deprecated (fail the run):');
+              result.errors.forEach(e => {
+                if (!e.message) return;
+                console.log(`     • ${e.package}@${e.version}: ${e.message}`);
+              });
+            }
+            if (result.warnings.length > 0) {
+              console.log('\n   Deprecated (warnings):');
+              result.warnings.forEach(w => {
+                console.log(`     • ${w.package}@${w.version}: ${w.message}`);
+              });
+            }
+            if (result.unresolvedItems.length > 0) {
+              console.log('\n   Unresolved (could not check against the registry):');
+              result.unresolvedItems.forEach(item => {
+                console.log(`     • ${item.package}@${item.version}: ${item.reason}`);
+              });
+              if (!failOnUnresolved) {
+                console.log('   (unresolved entries do not fail the scan; pass --fail-on-unresolved to fail closed)');
+              }
+            }
+            if (result.deprecated === 0) {
+              console.log('\n✅ No deprecated packages found');
+            } else if (result.valid) {
+              console.log('\n⚠️  Deprecated packages found (warnings; pass --fail-on-deprecated to fail the run)');
+            } else {
+              console.log('\n❌ Deprecated packages found');
+            }
           }
 
           process.exit(result.valid ? 0 : 1);

@@ -164,6 +164,38 @@ export function postJson(url, bodyObject, timeoutMs, redirectsLeft = 1) {
 }
 
 /**
+ * Build the registry URL for a single package version manifest.
+ * Scoped names keep the literal '/' encoded as %2f per registry convention.
+ * @param {string} registryBase - Registry base URL
+ * @param {string} packageName - Name of the package
+ * @param {string} version - Exact version
+ * @returns {string} Full manifest URL
+ */
+function packumentVersionUrl(registryBase, packageName, version) {
+  const base = registryBase.replace(/\/+$/, '');
+  const namePath = packageName.startsWith('@')
+    ? packageName.replace('/', '%2f')
+    : encodeURIComponent(packageName);
+  return `${base}/${namePath}/${encodeURIComponent(version)}`;
+}
+
+/**
+ * Fetch a single package version's manifest from a registry.
+ * Resolves the parsed manifest object, null when the package/version is not
+ * found (404), and rejects on network errors/timeouts so callers can
+ * distinguish "offline" from "not on npm".
+ * @param {string} packageName - Name of the package
+ * @param {string} version - Exact version
+ * @param {object} options - { registryBase, timeoutMs, fetchJson (injectable transport for tests) }
+ * @returns {Promise<object|null>} Version manifest or null
+ */
+export async function fetchPackumentManifest(packageName, version, options = {}) {
+  const { registryBase = DEFAULT_REGISTRY, timeoutMs = 10000, fetchJson = getJson } = options;
+  const url = packumentVersionUrl(registryBase, packageName, version);
+  return fetchJson(url, timeoutMs);
+}
+
+/**
  * Fetch a package version's integrity hash from a registry packument.
  * Resolves null when the package/version is not found (404 or no dist.integrity);
  * rejects on network errors/timeouts so callers can distinguish "offline" from "not on npm".
@@ -174,12 +206,7 @@ export function postJson(url, bodyObject, timeoutMs, redirectsLeft = 1) {
  */
 export async function fetchPackumentIntegrity(packageName, version, options = {}) {
   const { registryBase = DEFAULT_REGISTRY, timeoutMs = 10000, fetchJson = getJson } = options;
-  const base = registryBase.replace(/\/+$/, '');
-  // Scoped names keep the literal '/' encoded as %2f per registry convention
-  const namePath = packageName.startsWith('@')
-    ? packageName.replace('/', '%2f')
-    : encodeURIComponent(packageName);
-  const url = `${base}/${namePath}/${encodeURIComponent(version)}`;
+  const url = packumentVersionUrl(registryBase, packageName, version);
 
   const pkg = await fetchJson(url, timeoutMs);
   if (pkg && pkg.dist && pkg.dist.integrity) {
