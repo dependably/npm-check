@@ -27,7 +27,29 @@ export function fixPackageLock(lockfile, options = {}) {
   const fixes = [];
   let fixed = { ...lockfile };
 
-  const { fillMissingIntegrity = true, dedupe = true, normalizeTo = null, throwOnError = false } = options;
+  const { fillMissingIntegrity = true, dedupe = true, normalizeTo = null, throwOnError = false, packageJson = null } = options;
+
+  // Sync the lockfile's root identity (name/version) with package.json when
+  // provided. A stale name/version here is exactly what the report's
+  // "Structure & format" errors flag after a package rename or version bump,
+  // and it's safe to correct without re-resolving the dependency tree.
+  if (packageJson && typeof packageJson === 'object') {
+    for (const field of ['name', 'version']) {
+      const desired = packageJson[field];
+      if (typeof desired !== 'string' || desired === '') continue;
+      if (fixed[field] !== desired) {
+        fixed[field] = desired;
+        fixes.push(`Synced lockfile ${field} to package.json ("${desired}")`);
+      }
+      if (fixed.packages && fixed.packages['']) {
+        const root = fixed.packages[''];
+        if (root[field] !== desired) {
+          fixed.packages = { ...fixed.packages, '': { ...root, [field]: desired } };
+          fixes.push(`Synced root package ${field} to package.json ("${desired}")`);
+        }
+      }
+    }
+  }
 
   // Normalize format if requested
   if (normalizeTo && [LOCKFILE_VERSIONS.V1, LOCKFILE_VERSIONS.V2, LOCKFILE_VERSIONS.V3].includes(normalizeTo)) {

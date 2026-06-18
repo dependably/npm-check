@@ -32,6 +32,8 @@ export {
   generateOrPlaceholderIntegrity,
   fetchPackumentIntegrity,
   fetchPackumentManifest,
+  fetchPackument,
+  fetchLatestVersion,
   isValidIntegrity,
   isPlaceholder,
   DEFAULT_REGISTRY
@@ -119,6 +121,10 @@ export {
   checkDeprecations,
   DeprecationError
 } from './deprecation.js';
+export {
+  remediateDependencies,
+  RemediationError
+} from './remediate.js';
 export {
   runReport,
   formatReport,

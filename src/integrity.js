@@ -180,6 +180,35 @@ function packumentVersionUrl(registryBase, packageName, version) {
 }
 
 /**
+ * Fetch a package's full packument (all versions + dist-tags) from a registry.
+ * Resolves the parsed packument, null on 404, rejects on network errors/timeouts.
+ * @param {string} packageName - Name of the package
+ * @param {object} options - { registryBase, timeoutMs, fetchJson (injectable transport for tests) }
+ * @returns {Promise<object|null>} Packument or null
+ */
+export async function fetchPackument(packageName, options = {}) {
+  const { registryBase = DEFAULT_REGISTRY, timeoutMs = 10000, fetchJson = getJson } = options;
+  const base = registryBase.replace(/\/+$/, '');
+  const namePath = packageName.startsWith('@')
+    ? packageName.replace('/', '%2f')
+    : encodeURIComponent(packageName);
+  return fetchJson(`${base}/${namePath}`, timeoutMs);
+}
+
+/**
+ * Fetch a package's "latest" dist-tag version from a registry.
+ * Resolves the version string, or null if the package/tag is unavailable.
+ * @param {string} packageName - Name of the package
+ * @param {object} options - { registryBase, timeoutMs, fetchJson }
+ * @returns {Promise<string|null>} Latest version or null
+ */
+export async function fetchLatestVersion(packageName, options = {}) {
+  const packument = await fetchPackument(packageName, options);
+  const latest = packument && packument['dist-tags'] && packument['dist-tags'].latest;
+  return typeof latest === 'string' ? latest : null;
+}
+
+/**
  * Fetch a single package version's manifest from a registry.
  * Resolves the parsed manifest object, null when the package/version is not
  * found (404), and rejects on network errors/timeouts so callers can

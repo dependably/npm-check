@@ -2,6 +2,7 @@
  * Performance utilities for handling large lockfiles efficiently.
  * Includes streaming, memory optimization, and batch processing strategies.
  */
+import { resolvePackageName } from './format-library.js';
 
 /**
  * Create a shallow copy of a lockfile to avoid deep cloning
@@ -124,9 +125,13 @@ export function createDedupeMap(packagesMap) {
   const dedupeMap = new Map();
 
   for (const [path, pkg] of Object.entries(packagesMap || {})) {
-    if (!pkg || !pkg.name) continue;
+    if (!pkg || typeof pkg !== 'object') continue;
+    // Derive the name from the path — v2/v3 entries usually have no `.name` field,
+    // so keying off `pkg.name` alone silently drops nearly every real entry.
+    const name = resolvePackageName(path, pkg);
+    if (!name) continue;
 
-    const key = `${pkg.name}#${pkg.version || 'unknown'}`;
+    const key = `${name}#${pkg.version || 'unknown'}`;
 
     if (!dedupeMap.has(key)) {
       dedupeMap.set(key, { path, pkg });

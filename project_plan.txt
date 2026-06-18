@@ -158,6 +158,25 @@ Completed:
 2. **Report Section**: "Deprecated packages" added to the unified report (default command); --no-deprecated / --offline skip it
 3. **fetchPackumentManifest**: new exported helper in src/integrity.js (shares URL-building with fetchPackumentIntegrity)
 
+## FIXER-SAFETY + REMEDIATION PASS (2026-06-18):
+### Bug fixes ✅
+1. **Destructive dedupe fixed (data loss).** `deduplicatePackages` keyed a map by `name#version`
+   and rebuilt from it, but real v2/v3 entries have no `.name` field (the name is in the path) —
+   so it silently dropped EVERY dependency, gutting `fix`/`dedupe` output down to the root (440→1).
+   A path-keyed packages map has no safe key-collapse (that's npm hoisting / re-resolution), so the
+   packages map is now PRESERVED; only the legacy v1 dependencies tree is name-deduped. Analysis
+   helpers (createDedupeMap/countUniquePackages/findDuplicatePackages) now derive names via
+   resolvePackageName. Regression test: fixer preserves a realistic nameless v3 packages map.
+### Feature Implementation ✅
+2. **Fixer root-sync.** `fixPackageLock(lockfile, { packageJson })` syncs the stale lockfile
+   top-level + `packages['']` name/version (the report's "Structure & format" errors). The `fix`
+   CLI auto-loads the sibling package.json.
+3. **Remediator (src/remediate.js).** `remediateDependencies()` bumps DIRECT deps that are
+   deprecated or vulnerable (≥ minSeverity) to the registry `dist-tags.latest` (range operator
+   preserved), syncs the lockfile root, and reports transitive findings as guidance. Lockfile-first:
+   user runs `npm install` afterward. New `remediate` CLI command (--write/--min-severity/--no-deprecated).
+   New integrity helpers: fetchPackument() / fetchLatestVersion().
+
 In Progress:
 - (none currently)
 
