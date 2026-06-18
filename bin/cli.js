@@ -370,10 +370,17 @@ async function main() {
           ? validateNpmrc(fs.readFileSync(npmrcPath, 'utf8'))
           : null;
 
+        // Errors are Error subclass instances, whose `message` is non-enumerable
+        // and so vanishes under JSON.stringify — normalize to {code, message} so
+        // the JSON output is actually readable.
+        const normalizeResult = (r) => r && typeof r === 'object' && Array.isArray(r.errors)
+          ? { ...r, errors: r.errors.map((e) => ({ code: e.code, message: e.message })) }
+          : r;
+
         const out = {
-          'package-lock.json': lockResult,
-          'package.json': pkgResult || 'not found (skipped)',
-          '.npmrc': npmrcResult || 'not found (skipped)'
+          'package-lock.json': normalizeResult(lockResult),
+          'package.json': normalizeResult(pkgResult) || 'not found (skipped)',
+          '.npmrc': normalizeResult(npmrcResult) || 'not found (skipped)'
         };
 
         console.log('\n📋 Validation Result:');
