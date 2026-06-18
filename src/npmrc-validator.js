@@ -60,7 +60,7 @@ const KNOWN_KEYS = new Set([
 
 // Plaintext-credential keys: bare `_auth`/`_authtoken`/`_password`, or the
 // scoped `//host/:_authToken` form npm uses for per-registry auth.
-const SECRET_KEY_RE = /(^|\/|:)_(auth|authtoken|password)$/i;
+const SECRET_KEY_RE = /(^|\/|:)_(auth|authtoken|authbase64|password)$/i;
 const ENV_REF_RE = /\$\{[^}]+\}/;
 // A value that is ENTIRELY an env reference is safe; a partial one
 // (`realsecret${X}`) must NOT exempt the line, or a plaintext secret slips by.

@@ -221,6 +221,45 @@ describe('checkIntegrity', () => {
     expect(result.checked).toBe(1);
   });
 
+  it('fails an entry resolving from a host not in allowedHosts (no fetch)', async () => {
+    let fetched = 0;
+    const lockfile = {
+      lockfileVersion: 3,
+      packages: {
+        'node_modules/lodash': {
+          name: 'lodash', version: '4.17.21', integrity: HASH_A,
+          resolved: 'https://evil.example.com/lodash/-/lodash-4.17.21.tgz'
+        }
+      }
+    };
+    const result = await checkIntegrity(lockfile, {
+      allowedHosts: ['registry.npmjs.org'],
+      fetchIntegrity: () => { fetched++; return Promise.resolve(HASH_A); }
+    });
+    expect(result.valid).toBe(false);
+    expect(result.failed).toBe(1);
+    expect(fetched).toBe(0); // never asked the untrusted host for its "authoritative" hash
+    expect(result.errors[0].reason).toMatch(/untrusted registry host/);
+  });
+
+  it('still verifies normally when the resolved host IS in allowedHosts', async () => {
+    const lockfile = {
+      lockfileVersion: 3,
+      packages: {
+        'node_modules/lodash': {
+          name: 'lodash', version: '4.17.21', integrity: HASH_A,
+          resolved: 'https://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz'
+        }
+      }
+    };
+    const result = await checkIntegrity(lockfile, {
+      allowedHosts: ['registry.npmjs.org'],
+      fetchIntegrity: fakeRegistry({ lodash: HASH_A })
+    });
+    expect(result.valid).toBe(true);
+    expect(result.passed).toBe(1);
+  });
+
   it('fails when the locked hash differs from the registry', async () => {
     const lockfile = {
       lockfileVersion: 3,

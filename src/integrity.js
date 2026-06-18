@@ -71,7 +71,14 @@ function getJson(url, timeoutMs, redirectsLeft = 1) {
     const req = https.get(url, (res) => {
       if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location && redirectsLeft > 0) {
         res.resume();
-        resolve(getJson(new URL(res.headers.location, url).toString(), timeoutMs, redirectsLeft - 1));
+        // Only follow a redirect to the SAME host — a security check must not be
+        // bounced to an arbitrary attacker-controlled origin for its answer.
+        const target = new URL(res.headers.location, url);
+        if (target.host !== new URL(url).host) {
+          reject(new Error(`refusing cross-host redirect to ${target.host} for ${url}`));
+          return;
+        }
+        resolve(getJson(target.toString(), timeoutMs, redirectsLeft - 1));
         return;
       }
       if (res.statusCode === 404) {
@@ -129,7 +136,12 @@ export function postJson(url, bodyObject, timeoutMs, redirectsLeft = 1) {
     const req = https.request(url, options, (res) => {
       if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location && redirectsLeft > 0) {
         res.resume();
-        resolve(postJson(new URL(res.headers.location, url).toString(), bodyObject, timeoutMs, redirectsLeft - 1));
+        const target = new URL(res.headers.location, url);
+        if (target.host !== new URL(url).host) {
+          reject(new Error(`refusing cross-host redirect to ${target.host} for ${url}`));
+          return;
+        }
+        resolve(postJson(target.toString(), bodyObject, timeoutMs, redirectsLeft - 1));
         return;
       }
       if (res.statusCode === 404) {

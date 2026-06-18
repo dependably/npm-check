@@ -1,7 +1,9 @@
 #!/bin/bash
 
-# Pre-commit hook for npm-check (tracked; installed via the package.json
-# "prepare" script, which points git's core.hooksPath at .githooks/).
+# Pre-commit hook for npm-check (tracked; installed by running
+# `npm run setup:hooks`, which points git's core.hooksPath at .githooks/).
+# NOTE: deliberately NOT wired to "prepare" — that runs on every consumer
+# `npm install` of the published package and must never touch their git config.
 # Gates a commit on: ESLint, npm-check's own lockfile validation (dogfooding),
 # and a fast test subset (advisory only).
 

@@ -97,6 +97,17 @@ npm-check check --check license --licenses-csv ./my-approved.csv
 # Strict mode (treats unknown licenses as errors)
 npm-check check --check license --strict
 
+# Scan locked packages for known vulnerabilities (npm advisory endpoint; no node_modules)
+npm-check vuln
+npm-check vuln --min-severity critical
+
+# Surface npm's "deprecated" warnings straight from the lockfile
+npm-check deprecated
+npm-check deprecated --fail-on-deprecated
+
+# Bump deprecated/vulnerable DIRECT deps to latest, then run npm install
+npm-check remediate --write
+
 # Specify a custom file path
 npm-check validate ./path/to/package-lock.json
 

@@ -57,6 +57,10 @@ describe('validateNpmrc', () => {
       expect(codes(validateNpmrc('_auth=base64string'))).toContain('NPMRC_PLAINTEXT_SECRET');
     });
 
+    it('errors on a plaintext _authBase64 (legacy npm key)', () => {
+      expect(codes(validateNpmrc('//r.test/:_authBase64=Zm9vOmJhcg=='))).toContain('NPMRC_PLAINTEXT_SECRET');
+    });
+
     it('accepts an env-var password', () => {
       expect(validateNpmrc('_password=${PW}').valid).toBe(true);
     });
