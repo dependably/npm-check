@@ -209,6 +209,7 @@ npm-check prune --write package-lock.json
 npm-check unused
 npm-check audit --strict
 npm-check vuln --min-severity critical
+npm-check deprecated --fail-on-deprecated
 npm-check dedupe --write package-lock.json
 npm-check check --check hash package-lock.json
 npm-check check --check license package-lock.json
@@ -316,6 +317,21 @@ Scans locked packages for known vulnerabilities (complements the integrity check
 
 **Key Functions:**
 - `checkVulnerabilities()` - Returns `{valid, scanned, vulnerable, clean, unresolved, skipped, errors, warnings, unresolvedItems, details}`
+
+### 14. Deprecation Scanner (`deprecation.js`)
+
+Surfaces the same `npm warn deprecated <pkg>@<ver>: <message>` notices npm prints during `npm ci`/`npm install`, read straight from the lockfile (complements the vuln scan — vuln asks "is there a published advisory?", this asks "did the maintainer mark this version deprecated?"):
+
+- Reads each locked version's manifest `deprecated` field from the registry (`GET {registry}/{name}/{version}`) — no `node_modules`, no install
+- Reuses `deriveRegistryBase()` (per-package registry, so private registries work) and the concurrent fetch pool via a `fetchPackumentManifest()` helper added to `integrity.js`
+- Dedupes identical `name@version@registry` so each unique version is fetched once and attributed to every lockfile path that shares it
+- Soft signal: deprecated entries are **warnings by default** (npm itself never fails an install on deprecation); `failOnDeprecated` promotes them to errors for CI
+- Skips entries that can't be checked this way (root/workspace/link/git/file/bundled, missing version)
+- Registry-unreachable / version-not-found entries are reported `unresolved` and do not fail by default (`failOnUnresolved` to fail closed); `offline` skips entirely
+- Surfaced as both the report's "Deprecated packages" section and the standalone `deprecated` CLI command
+
+**Key Functions:**
+- `checkDeprecations()` - Returns `{valid, scanned, deprecated, clean, unresolved, skipped, errors, warnings, unresolvedItems, details}`
 
 ## Planned Components
 

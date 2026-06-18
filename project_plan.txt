@@ -147,6 +147,17 @@ Completed:
 2. **Report Section**: "Known vulnerabilities" added to the unified report (default command); --no-vuln / --offline skip it
 3. **postJson**: new exported helper in src/integrity.js (POST analog of the private getJson)
 
+## DEPRECATED-PACKAGE SCAN PASS (2026-06-17):
+### Feature Implementation ✅
+1. **Deprecated Command**: `npm-check deprecated` — surfaces the same "npm warn deprecated …" notices
+   npm prints during `npm ci`, read straight from the lockfile (src/deprecation.js).
+   - Lockfile-first (no node_modules); reads each version manifest's `deprecated` field via the registry
+   - Reuses deriveRegistryBase + concurrency model; private-registry aware; dedupes identical name@version@registry
+   - Soft signal: deprecated = warning by default (npm never fails on it); --fail-on-deprecated to fail CI
+   - --offline / --fail-on-unresolved; degrades gracefully (unresolved, non-fatal) on 404 / registry down
+2. **Report Section**: "Deprecated packages" added to the unified report (default command); --no-deprecated / --offline skip it
+3. **fetchPackumentManifest**: new exported helper in src/integrity.js (shares URL-building with fetchPackumentIntegrity)
+
 In Progress:
 - (none currently)
 

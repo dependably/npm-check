@@ -31,6 +31,7 @@ export {
   generateIntegrityFromRegistry,
   generateOrPlaceholderIntegrity,
   fetchPackumentIntegrity,
+  fetchPackumentManifest,
   isValidIntegrity,
   isPlaceholder,
   DEFAULT_REGISTRY
@@ -114,6 +115,10 @@ export {
   checkVulnerabilities,
   VulnError
 } from './vuln.js';
+export {
+  checkDeprecations,
+  DeprecationError
+} from './deprecation.js';
 export {
   runReport,
   formatReport,

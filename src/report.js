@@ -8,6 +8,7 @@ import { runAudit, classifyInstallScripts } from './audit.js';
 import { mergeConfig } from './audit-config.js';
 import { checkIntegrity, checkLicenses } from './checker.js';
 import { checkVulnerabilities } from './vuln.js';
+import { checkDeprecations } from './deprecation.js';
 
 export class ReportError extends Error {
   constructor(message, code, context = {}) {
@@ -38,6 +39,7 @@ const SECTIONS = [
   { id: 'structure', title: 'Structure & format' },
   { id: 'integrity', title: 'Integrity (registry)' },
   { id: 'vuln', title: 'Known vulnerabilities' },
+  { id: 'deprecated', title: 'Deprecated packages' },
   { id: 'resolved', title: 'Resolved URLs' },
   { id: 'licenses', title: 'Licenses' },
   { id: 'install-scripts', title: 'Install scripts' },
@@ -84,6 +86,8 @@ export async function runReport(target, options = {}) {
     integrity = true,
     license = true,
     vuln = true,
+    deprecated = true,
+    failOnDeprecated = false,
     minSeverity = 'high',
     licensesCsv = path.join(dir, 'approved-licenses.csv'),
     nodeModulesPath = path.join(dir, 'node_modules'),
@@ -95,6 +99,7 @@ export async function runReport(target, options = {}) {
     failOnUnresolved = false,
     fetchIntegrity = null,
     fetchAdvisories = null,
+    fetchManifest = null,
     onProgress = null
   } = options;
 
@@ -156,6 +161,28 @@ export async function runReport(target, options = {}) {
     }
   }
 
+  // 3b. Deprecation scan (network; registry version manifest `deprecated` field).
+  let deprecationResult = null;
+  if (deprecated) {
+    deprecationResult = await checkDeprecations(lockfile, {
+      concurrency, timeoutMs, failOnDeprecated, failOnUnresolved, fetchManifest, onProgress,
+      ...(defaultRegistry ? { defaultRegistry } : {})
+    });
+    const depFindings = buckets.deprecated = buckets.deprecated || [];
+    for (const err of deprecationResult.errors) {
+      // Unresolved entries also land in `errors` when failOnUnresolved; render those
+      // once, as warnings, below — only deprecation findings carry a `message`.
+      if (!err.message) continue;
+      depFindings.push({ severity: 'error', location: err.packagePath, message: `${err.package}@${err.version}: ${err.message}` });
+    }
+    for (const warn of deprecationResult.warnings) {
+      depFindings.push({ severity: 'warn', location: warn.packagePath, message: `${warn.package}@${warn.version}: ${warn.message}` });
+    }
+    for (const item of deprecationResult.unresolvedItems) {
+      depFindings.push({ severity: 'warn', location: item.packagePath, message: `${item.package}@${item.version}: ${item.reason}` });
+    }
+  }
+
   // 4. License validation (filesystem; needs node_modules + an approved list).
   let licenseResult = null;
   let licenseSkip = null;
@@ -205,6 +232,16 @@ export async function runReport(target, options = {}) {
       if (vulnResult.vulnerable) bits.push(`${vulnResult.vulnerable} vulnerable`);
       if (vulnResult.unresolved) bits.push(`${vulnResult.unresolved} unresolved`);
       if (vulnResult.skipped) bits.push(`${vulnResult.skipped} skipped`);
+      summary = bits.join(' · ');
+    } else if (id === 'deprecated' && !deprecated) {
+      status = 'skip'; summary = 'skipped (--offline)';
+    } else if (id === 'deprecated') {
+      const sev = worstSeverity(findings);
+      status = sev || 'pass';
+      const bits = [`${deprecationResult.scanned} scanned`];
+      if (deprecationResult.deprecated) bits.push(`${deprecationResult.deprecated} deprecated`);
+      if (deprecationResult.unresolved) bits.push(`${deprecationResult.unresolved} unresolved`);
+      if (deprecationResult.skipped) bits.push(`${deprecationResult.skipped} skipped`);
       summary = bits.join(' · ');
     } else if (id === 'licenses' && licenseSkip) {
       status = 'skip'; summary = `skipped (${licenseSkip})`;
