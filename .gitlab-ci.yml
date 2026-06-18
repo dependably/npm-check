@@ -84,8 +84,23 @@ publish:
         echo "always-auth=true"
       } > .npmrc
     - TARBALL=$(ls ./*.tgz)
-    - echo "Publishing $TARBALL to $REGISTRY_URL"
+    - PKG=$(node -p "const p=require('./package.json'); p.name + '@' + p.version")
+    - echo "Publishing $TARBALL ($PKG) to $REGISTRY_URL"
     # Publishing fails if this version already exists — bump the version to release.
-    - npm publish "$TARBALL" --registry "$REGISTRY_URL"
+    # On failure, dump npm's debug log so the registry's actual rejection reason
+    # (e.g. a 403 policy message) is visible in the job output.
+    - |
+      if ! npm publish "$TARBALL" --registry "$REGISTRY_URL"; then
+        echo "=== npm publish failed — debug log tail ===" >&2
+        tail -n 40 "$HOME"/.npm/_logs/*-debug-*.log 2>/dev/null >&2 || true
+        exit 1
+      fi
+    # Verify the version is actually retrievable from the registry. A plain
+    # `npm publish` success can be a false positive against a non-registry
+    # endpoint (e.g. an SPA that 200s the PUT); this read-back fails the job
+    # unless the package is genuinely live.
+    - echo "Verifying $PKG is live on the registry…"
+    - npm view "$PKG" version --registry "$REGISTRY_URL"
+    - echo "✓ $PKG published and verified on $REGISTRY_URL"
   after_script:
     - rm -f .npmrc
