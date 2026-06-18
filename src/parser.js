@@ -27,7 +27,7 @@ export function parseLockfile(filePath, options = {}) {
     try {
       const stats = fs.statSync(filePath);
       shouldUseStreaming = stats.size >= streamingThreshold;
-    } catch (error) {
+    } catch {
       // If we can't get stats, fall back to standard parsing
       shouldUseStreaming = false;
     }

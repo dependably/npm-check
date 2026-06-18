@@ -46,7 +46,7 @@ export async function hashPackageDirectory(pkgDir) {
         // Include filename and content in hash for consistency
         hash.update(file);
         hash.update(content);
-      } catch (e) {
+      } catch {
         // Skip files that can't be read
         continue;
       }
@@ -91,7 +91,7 @@ async function collectPackageFiles(pkgDir) {
           }
         }
       }
-    } catch (e) {
+    } catch {
       // Skip directories we can't read
     }
   }

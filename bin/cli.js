@@ -165,7 +165,7 @@ function getVersion() {
     const packageJsonPath = path.join(path.dirname(new URL(import.meta.url).pathname), '../package.json');
     const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
     return packageJson.version;
-  } catch (e) {
+  } catch {
     return 'unknown';
   }
 }
