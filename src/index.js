@@ -111,6 +111,10 @@ export {
   CheckError
 } from './checker.js';
 export {
+  checkVulnerabilities,
+  VulnError
+} from './vuln.js';
+export {
   runReport,
   formatReport,
   ReportError

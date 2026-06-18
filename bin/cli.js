@@ -10,6 +10,7 @@ import { fixPackageLock } from '../src/fixer.js';
 import { createBackup, listBackups, restoreFromLatestBackup, cleanOldBackups, BackupError } from '../src/backup.js';
 import { createProgressBar } from '../src/progress-reporter.js';
 import { checkIntegrity, checkLicenses } from '../src/checker.js';
+import { checkVulnerabilities } from '../src/vuln.js';
 import { detectLockfileVersion } from '../src/format-library.js';
 import { fixChecksums } from '../src/checksum-fixer.js';
 import { pinVersions, detectIndent } from '../src/pinner.js';
@@ -41,6 +42,7 @@ Commands:
   prune [file]               Remove orphaned packages unreachable from the dependency graph
   unused [dir]               Flag declared dependencies the application never imports
   audit [file]               Lint lockfile for best practices (non-zero exit on failure)
+  vuln [file]                Scan locked packages for known vulnerabilities (registry advisories)
   dedupe [file]              Deduplicate packages in lockfile
   fix [file] [--write]       Run automated fixer with optional write
   check [file]               Verify integrity hashes and licenses
@@ -49,9 +51,11 @@ Commands:
   clean-backups [file]       Clean old backup files with optional --keep N
 
 Report Options:
-  --offline                  Skip the registry integrity check (offline rules only)
+  --offline                  Skip all network checks (integrity + vuln); offline rules only
   --no-integrity             Skip the integrity check
+  --no-vuln                  Skip the known-vulnerability scan
   --no-license               Skip the license check
+  --min-severity <level>     Vuln severity that fails the run (info|low|moderate|high|critical; default: high)
   --format pretty|json       Output format (default: pretty)
   --strict                   Treat warnings as failures
   --max-warnings N           Fail if warnings exceed N (-1 = unlimited)
@@ -68,6 +72,15 @@ Check Options:
   --timeout MS               Per-request timeout in milliseconds (default: 10000)
   --registry <url>           Registry for entries without a derivable base
   --fail-on-unresolved       Fail when an entry can't be verified (registry down/missing)
+
+Vuln Options:
+  --min-severity <level>     Severity that fails the run (info|low|moderate|high|critical; default: high)
+  --format pretty|json       Output format (default: pretty)
+  --offline                  Skip the scan (report everything as skipped)
+  --fail-on-unresolved       Fail when a package can't be checked (registry down/unsupported)
+  --concurrency N            Parallel registry requests (default: 8)
+  --timeout MS               Per-request timeout in milliseconds (default: 10000)
+  --registry <url>           Registry for entries without a derivable base
 
 Fix-Checksums Options:
   --concurrency N            Parallel registry requests (default: 8)
@@ -111,6 +124,8 @@ Examples:
   npm-check audit                              # Lint with default rules
   npm-check audit --strict --format json
   npm-check audit --rule pinned-versions:error
+  npm-check vuln                               # Scan for known vulnerabilities
+  npm-check vuln --min-severity critical --format json
   npm-check check --check hash                 # Only verify integrity
   npm-check restore
   npm-check clean-backups --keep 5
@@ -230,7 +245,16 @@ async function main() {
           // Network/integrity + license toggles.
           const integrity = !argv.includes('--offline') && !argv.includes('--no-integrity');
           const license = !argv.includes('--no-license');
+          const vuln = !argv.includes('--offline') && !argv.includes('--no-vuln');
           const failOnUnresolved = argv.includes('--fail-on-unresolved');
+
+          const SEVERITIES = ['info', 'low', 'moderate', 'high', 'critical'];
+          let minSeverity = 'high';
+          const minSeverityIndex = argv.indexOf('--min-severity');
+          if (minSeverityIndex !== -1 && argv[minSeverityIndex + 1]) {
+            minSeverity = argv[minSeverityIndex + 1];
+            if (!SEVERITIES.includes(minSeverity)) { console.error(`❌ Invalid --min-severity value. Use: ${SEVERITIES.join(', ')}`); process.exit(2); }
+          }
 
           let concurrency = 8;
           const concurrencyIndex = argv.indexOf('--concurrency');
@@ -260,7 +284,7 @@ async function main() {
           const packageJsonPath = path.join(dir, 'package.json');
           if (fs.existsSync(packageJsonPath)) packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
 
-          if (integrity && format === 'pretty') console.log('🔎 Running all checks (verifying integrity against the registry)…');
+          if ((integrity || vuln) && format === 'pretty') console.log('🔎 Running all checks (querying the registry)…');
 
           let lastProgress = null;
           const onProgress = format === 'pretty' ? (progress) => {
@@ -273,7 +297,7 @@ async function main() {
           report = await runReport(
             { lockfile, packageJson, filePath: path.relative(process.cwd(), filePath) || filePath, dir },
             {
-              auditConfig: config, integrity, license, strict, maxWarnings,
+              auditConfig: config, integrity, license, vuln, minSeverity, strict, maxWarnings,
               concurrency, timeoutMs, failOnUnresolved, onProgress,
               ...(defaultRegistry ? { defaultRegistry } : {}),
               ...(licensesCsv ? { licensesCsv } : {})
@@ -954,6 +978,110 @@ async function main() {
           console.log(allValid ? '\n✅ All checks passed' : '\n❌ Some checks failed');
           process.exit(allValid ? 0 : 1);
 
+        } catch (error) {
+          handleError(error, `${command} command failed`);
+        }
+        break;
+      }
+
+      case 'vuln': {
+        const filePath = getFilePath(argv[1]);
+        if (!fs.existsSync(filePath)) {
+          console.error(`❌ No lockfile found at ${filePath}`);
+          console.error('   Run `npm-check vuln <path>` or `npm-check --help`.');
+          process.exit(2);
+        }
+
+        let format = 'pretty';
+        const formatIndex = argv.indexOf('--format');
+        if (formatIndex !== -1 && argv[formatIndex + 1]) {
+          format = argv[formatIndex + 1];
+          if (!['pretty', 'json'].includes(format)) { console.error('❌ Invalid --format value. Use: pretty or json'); process.exit(2); }
+        }
+
+        const SEVERITIES = ['info', 'low', 'moderate', 'high', 'critical'];
+        let minSeverity = 'high';
+        const minSeverityIndex = argv.indexOf('--min-severity');
+        if (minSeverityIndex !== -1 && argv[minSeverityIndex + 1]) {
+          minSeverity = argv[minSeverityIndex + 1];
+          if (!SEVERITIES.includes(minSeverity)) { console.error(`❌ Invalid --min-severity value. Use: ${SEVERITIES.join(', ')}`); process.exit(2); }
+        }
+
+        const offline = argv.includes('--offline');
+        const failOnUnresolved = argv.includes('--fail-on-unresolved');
+
+        let concurrency = 8;
+        const concurrencyIndex = argv.indexOf('--concurrency');
+        if (concurrencyIndex !== -1 && argv[concurrencyIndex + 1]) {
+          const parsed = parseInt(argv[concurrencyIndex + 1], 10);
+          if (isNaN(parsed) || parsed < 1) { console.error('❌ Invalid --concurrency value. Must be a positive number'); process.exit(2); }
+          concurrency = parsed;
+        }
+        let timeoutMs = 10000;
+        const timeoutIndex = argv.indexOf('--timeout');
+        if (timeoutIndex !== -1 && argv[timeoutIndex + 1]) {
+          const parsed = parseInt(argv[timeoutIndex + 1], 10);
+          if (isNaN(parsed) || parsed < 1) { console.error('❌ Invalid --timeout value. Must be a positive number'); process.exit(2); }
+          timeoutMs = parsed;
+        }
+        let defaultRegistry;
+        const registryIndex = argv.indexOf('--registry');
+        if (registryIndex !== -1 && argv[registryIndex + 1]) defaultRegistry = argv[registryIndex + 1];
+
+        const lockfile = parseLockfile(filePath);
+
+        let lastProgress = null;
+        const onProgress = format === 'pretty' ? (progress) => {
+          if (!lastProgress || progress.percentage !== lastProgress.percentage) {
+            process.stdout.write(`\r${createProgressBar(progress)} ${progress.stage}`);
+            lastProgress = progress;
+          }
+        } : null;
+
+        try {
+          if (format === 'pretty' && !offline) console.log('🛡️  Scanning locked packages for known vulnerabilities…');
+          const result = await checkVulnerabilities(lockfile, {
+            concurrency, timeoutMs, minSeverity, offline, failOnUnresolved, onProgress,
+            ...(defaultRegistry ? { defaultRegistry } : {})
+          });
+
+          if (onProgress) process.stdout.write('\r' + ' '.repeat(80) + '\r');
+
+          if (format === 'json') {
+            console.log(JSON.stringify(result, null, 2));
+          } else {
+            console.log(`   Scanned: ${result.scanned}`);
+            console.log(`   🛑 Vulnerable: ${result.vulnerable}`);
+            console.log(`   ⏭️  Skipped: ${result.skipped}`);
+            console.log(`   ❔ Unresolved: ${result.unresolved}`);
+
+            if (result.errors.length > 0) {
+              console.log(`\n   Vulnerabilities at/above ${minSeverity} (fail the run):`);
+              result.errors.forEach(e => {
+                if (!e.advisoryId) return;
+                console.log(`     • ${e.package}@${e.version}: ${e.title} (${e.severity})`);
+                if (e.url) console.log(`       ${e.url}`);
+              });
+            }
+            if (result.warnings.length > 0) {
+              console.log(`\n   Advisories below ${minSeverity} (warnings):`);
+              result.warnings.forEach(w => {
+                console.log(`     • ${w.package}@${w.version}: ${w.title} (${w.severity})`);
+              });
+            }
+            if (result.unresolvedItems.length > 0) {
+              console.log('\n   Unresolved (could not check against the registry):');
+              result.unresolvedItems.forEach(item => {
+                console.log(`     • ${item.package}@${item.version}: ${item.reason}`);
+              });
+              if (!failOnUnresolved) {
+                console.log('   (unresolved entries do not fail the scan; pass --fail-on-unresolved to fail closed)');
+              }
+            }
+            console.log(result.valid ? '\n✅ No known vulnerabilities at/above the threshold' : '\n❌ Known vulnerabilities found');
+          }
+
+          process.exit(result.valid ? 0 : 1);
         } catch (error) {
           handleError(error, `${command} command failed`);
         }

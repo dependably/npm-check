@@ -7,6 +7,7 @@ import path from 'path';
 import { runAudit, classifyInstallScripts } from './audit.js';
 import { mergeConfig } from './audit-config.js';
 import { checkIntegrity, checkLicenses } from './checker.js';
+import { checkVulnerabilities } from './vuln.js';
 
 export class ReportError extends Error {
   constructor(message, code, context = {}) {
@@ -36,6 +37,7 @@ const RULE_SECTION = {
 const SECTIONS = [
   { id: 'structure', title: 'Structure & format' },
   { id: 'integrity', title: 'Integrity (registry)' },
+  { id: 'vuln', title: 'Known vulnerabilities' },
   { id: 'resolved', title: 'Resolved URLs' },
   { id: 'licenses', title: 'Licenses' },
   { id: 'install-scripts', title: 'Install scripts' },
@@ -81,6 +83,8 @@ export async function runReport(target, options = {}) {
     auditConfig = {},
     integrity = true,
     license = true,
+    vuln = true,
+    minSeverity = 'high',
     licensesCsv = path.join(dir, 'approved-licenses.csv'),
     nodeModulesPath = path.join(dir, 'node_modules'),
     strict = false,
@@ -90,6 +94,7 @@ export async function runReport(target, options = {}) {
     defaultRegistry,
     failOnUnresolved = false,
     fetchIntegrity = null,
+    fetchAdvisories = null,
     onProgress = null
   } = options;
 
@@ -129,7 +134,29 @@ export async function runReport(target, options = {}) {
     }
   }
 
-  // 3. License validation (filesystem; needs node_modules + an approved list).
+  // 3. Known-vulnerability scan (network; registry bulk advisory endpoint).
+  let vulnResult = null;
+  if (vuln) {
+    vulnResult = await checkVulnerabilities(lockfile, {
+      concurrency, timeoutMs, minSeverity, failOnUnresolved, fetchAdvisories, onProgress,
+      ...(defaultRegistry ? { defaultRegistry } : {})
+    });
+    const vulnFindings = buckets.vuln = buckets.vuln || [];
+    // Only advisory findings are errors here; unresolved entries (which appear in
+    // `errors` too when failOnUnresolved) are rendered once, as warnings, below.
+    for (const err of vulnResult.errors) {
+      if (!err.advisoryId) continue;
+      vulnFindings.push({ severity: 'error', location: err.packagePath, message: `${err.package}@${err.version}: ${err.title} (${err.severity})` });
+    }
+    for (const warn of vulnResult.warnings) {
+      vulnFindings.push({ severity: 'warn', location: warn.packagePath, message: `${warn.package}@${warn.version}: ${warn.title} (${warn.severity})` });
+    }
+    for (const item of vulnResult.unresolvedItems) {
+      vulnFindings.push({ severity: 'warn', location: item.packagePath, message: `${item.package}@${item.version}: ${item.reason}` });
+    }
+  }
+
+  // 4. License validation (filesystem; needs node_modules + an approved list).
   let licenseResult = null;
   let licenseSkip = null;
   if (!license) {
@@ -168,6 +195,16 @@ export async function runReport(target, options = {}) {
       if (integrityResult.failed) bits.push(`${integrityResult.failed} mismatched`);
       if (integrityResult.unresolved) bits.push(`${integrityResult.unresolved} unresolved`);
       if (integrityResult.skipped) bits.push(`${integrityResult.skipped} skipped`);
+      summary = bits.join(' · ');
+    } else if (id === 'vuln' && !vuln) {
+      status = 'skip'; summary = 'skipped (--offline)';
+    } else if (id === 'vuln') {
+      const sev = worstSeverity(findings);
+      status = sev || 'pass';
+      const bits = [`${vulnResult.scanned} scanned`];
+      if (vulnResult.vulnerable) bits.push(`${vulnResult.vulnerable} vulnerable`);
+      if (vulnResult.unresolved) bits.push(`${vulnResult.unresolved} unresolved`);
+      if (vulnResult.skipped) bits.push(`${vulnResult.skipped} skipped`);
       summary = bits.join(' · ');
     } else if (id === 'licenses' && licenseSkip) {
       status = 'skip'; summary = `skipped (${licenseSkip})`;
