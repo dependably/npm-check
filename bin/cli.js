@@ -4,6 +4,8 @@ import fs from 'fs';
 import path from 'path';
 import { parseLockfile } from '../src/parser.js';
 import { validatePackageLock } from '../src/validator.js';
+import { validatePackageJson } from '../src/package-json-validator.js';
+import { validateNpmrc } from '../src/npmrc-validator.js';
 import { migrateToVersion } from '../src/migrator.js';
 import { upgradeIntegrityHashes, deduplicatePackages } from '../src/updater.js';
 import { fixPackageLock } from '../src/fixer.js';
@@ -35,7 +37,7 @@ Usage:
 
 Commands:
   report [file]              Run ALL checks and print one grouped report (default)
-  validate [file]            Validate a package-lock.json file
+  validate [file]            Validate package-lock.json, package.json, and .npmrc
   migrate [file] [target]    Migrate to target version (1, 2, or 3; default: 3)
   upgrade [file]             Upgrade lockfile to version 3 (alias for migrate 3)
   upgrade-hashes [file]      Upgrade integrity hashes sha1→sha512
@@ -346,14 +348,39 @@ async function main() {
       case 'validate': {
         const filePath = getFilePath(argv[1]);
         ensureFileExists(filePath);
+        const dir = path.dirname(filePath);
 
         const lockfile = parseLockfile(filePath);
-        const result = validatePackageLock(lockfile);
+        const lockResult = validatePackageLock(lockfile);
+
+        const pkgPath = path.join(dir, 'package.json');
+        let pkgResult = null;
+        if (fs.existsSync(pkgPath)) {
+          try {
+            pkgResult = validatePackageJson(JSON.parse(fs.readFileSync(pkgPath, 'utf8')));
+          } catch (e) {
+            // A malformed manifest is itself a validation failure to report —
+            // not a reason to abort the whole command (the lockfile result still matters).
+            pkgResult = { valid: false, errors: [{ code: 'PJ_PARSE_ERROR', message: `package.json is not valid JSON: ${e.message}` }], warnings: [] };
+          }
+        }
+
+        const npmrcPath = path.join(dir, '.npmrc');
+        const npmrcResult = fs.existsSync(npmrcPath)
+          ? validateNpmrc(fs.readFileSync(npmrcPath, 'utf8'))
+          : null;
+
+        const out = {
+          'package-lock.json': lockResult,
+          'package.json': pkgResult || 'not found (skipped)',
+          '.npmrc': npmrcResult || 'not found (skipped)'
+        };
 
         console.log('\n📋 Validation Result:');
-        console.log(JSON.stringify(result, null, 2));
+        console.log(JSON.stringify(out, null, 2));
 
-        process.exit(result.valid ? 0 : 1);
+        const valid = lockResult.valid && (!pkgResult || pkgResult.valid) && (!npmrcResult || npmrcResult.valid);
+        process.exit(valid ? 0 : 1);
         break;
       }
 

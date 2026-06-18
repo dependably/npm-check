@@ -20,6 +20,7 @@ export const DEFAULT_CONFIG = {
   rules: {
     'lockfile-version': ['error', { minVersion: 3 }],
     'valid-structure': 'error',
+    'valid-package-json': 'error',
     'integrity-hygiene': ['error', { allowSha1: false }],
     'secure-resolved': ['error', {
       allowedHosts: ['registry.npmjs.org'],
@@ -37,7 +38,8 @@ export const DEFAULT_CONFIG = {
     'lockfile-sync': 'error',
     'no-orphan-packages': 'warn',
     'unused-dependencies': ['warn', { includeDev: false, ignore: [] }],
-    'no-fund': 'warn'
+    'no-fund': 'warn',
+    'valid-npmrc': ['warn', {}]
   }
 };
 

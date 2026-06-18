@@ -3,6 +3,8 @@ import fs from 'fs';
 import path from 'path';
 import { forEachPackageEntry } from './format-library.js';
 import { validatePackageLock } from './validator.js';
+import { validatePackageJson } from './package-json-validator.js';
+import { validateNpmrc, NPMRC_SECURITY_CODES } from './npmrc-validator.js';
 import { isPlaceholder } from './integrity.js';
 import { classifyRange } from './pinner.js';
 import { findOrphanedPackages } from './pruner.js';
@@ -54,6 +56,33 @@ const validStructureRule = {
       packagePath: '',
       message: typeof warn === 'string' ? warn : warn.message,
       data: { forcedSeverity: 'warn' }
+    }));
+    return [...findings, ...warnFindings];
+  }
+};
+
+const validPackageJsonRule = {
+  id: 'valid-package-json',
+  description: 'package.json must pass schema/field validation',
+  defaultSeverity: 'error',
+  check({ packageJson, options }) {
+    if (!packageJson) {
+      return [{
+        packagePath: 'package.json',
+        message: 'package.json not found next to lockfile; valid-package-json rule skipped',
+        data: { forcedSeverity: 'warn' }
+      }];
+    }
+    const result = validatePackageJson(packageJson, options);
+    const findings = result.errors.map((err) => ({
+      packagePath: 'package.json',
+      message: err.message,
+      data: { code: err.code }
+    }));
+    const warnFindings = result.warnings.map((warn) => ({
+      packagePath: 'package.json',
+      message: typeof warn === 'string' ? warn : warn.message,
+      data: { forcedSeverity: 'warn', code: typeof warn === 'string' ? undefined : warn.code }
     }));
     return [...findings, ...warnFindings];
   }
@@ -443,9 +472,41 @@ const noFundRule = {
   }
 };
 
+const validNpmrcRule = {
+  id: 'valid-npmrc',
+  description: '.npmrc must be well-formed and free of insecure settings',
+  defaultSeverity: 'warn',
+  check({ filePath, options }) {
+    const dir = path.dirname(path.resolve(filePath));
+    const npmrcPath = options.npmrcPath ? path.resolve(options.npmrcPath) : path.join(dir, '.npmrc');
+    let content;
+    try {
+      content = fs.readFileSync(npmrcPath, 'utf8');
+    } catch {
+      return []; // no project .npmrc → nothing to validate (legitimate)
+    }
+    const result = validateNpmrc(content, options);
+    const findings = result.errors.map((err) => ({
+      packagePath: '.npmrc',
+      message: err.message,
+      // Security-critical findings always fail, regardless of configured severity.
+      data: NPMRC_SECURITY_CODES.has(err.code)
+        ? { forcedSeverity: 'error', code: err.code }
+        : { code: err.code }
+    }));
+    const warnFindings = result.warnings.map((warn) => ({
+      packagePath: '.npmrc',
+      message: typeof warn === 'string' ? warn : warn.message,
+      data: { forcedSeverity: 'warn', code: typeof warn === 'string' ? undefined : warn.code }
+    }));
+    return [...findings, ...warnFindings];
+  }
+};
+
 export const rules = [
   lockfileVersionRule,
   validStructureRule,
+  validPackageJsonRule,
   integrityHygieneRule,
   secureResolvedRule,
   installScriptsRule,
@@ -455,7 +516,8 @@ export const rules = [
   lockfileSyncRule,
   noOrphanPackagesRule,
   unusedDependenciesRule,
-  noFundRule
+  noFundRule,
+  validNpmrcRule
 ];
 
 /**

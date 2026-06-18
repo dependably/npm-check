@@ -53,7 +53,14 @@ Defines comprehensive schemas and specifications for all three lockfile versions
 - `forEachPackageEntry()` - Iterates the packages map, classifying each entry (root, workspace, link, bundled, git, file)
 - `resolvePackageName()` - Real package name for an entry (handles npm: aliases and scopes)
 
-### 2. Validator (`validator.js`)
+### 2. Validator (`validator.js`, `package-json-validator.js`, `npmrc-validator.js`)
+
+npm-check validates all three files that govern an install. The lockfile validator
+(`validator.js`) is the comprehensive engine below; `package-json-validator.js`
+(`validatePackageJson`) and `npmrc-validator.js` (`parseNpmrc` + `validateNpmrc`) cover the
+manifest and the project `.npmrc` with the same `{ valid, errors, warnings, info }` contract,
+and are surfaced via the `valid-package-json` / `valid-npmrc` audit rules and the `validate`
+CLI command (see the Audit Engine section).
 
 Comprehensive validation engine that checks:
 
@@ -197,7 +204,7 @@ npm-check                                # full report (all checks) on ./package
 npm-check report web/package-lock.json   # explicit target
 npm-check --offline                      # skip the registry integrity check
 npm-check --format json                  # machine-readable report
-npm-check validate package-lock.json
+npm-check validate package-lock.json     # validates lockfile + sibling package.json + .npmrc
 npm-check migrate 3 package-lock.json
 npm-check upgrade --write package-lock.json
 npm-check fix --write package-lock.json
@@ -217,9 +224,9 @@ npm-check upgrade-hashes --write package-lock.json
 
 ### 6a. Unified Report (`report.js`)
 
-The default command (bare `npm-check`, or `npm-check report [file]`). Runs **every** check in one pass — the 9 audit rules + registry integrity verification + license validation — and renders one grouped, sectioned report (section summary table, then per-section detail, then a totals line). `--format json` for CI/tooling.
+The default command (bare `npm-check`, or `npm-check report [file]`). Runs **every** check in one pass — the audit rules (lockfile + package.json + .npmrc validation) + registry integrity verification + license validation — and renders one grouped, sectioned report (section summary table, then per-section detail, then a totals line). `--format json` for CI/tooling.
 
-- Sections: Structure & format, Integrity (registry), Known vulnerabilities, Resolved URLs, Licenses, Install scripts, Pinned versions, Orphaned packages, Unused dependencies
+- Sections: Structure & format, package.json, .npmrc (config), Integrity (registry), Known vulnerabilities, Resolved URLs, Licenses, Install scripts, Pinned versions, Orphaned packages, Unused dependencies
 - Network/filesystem checks degrade gracefully: integrity → `--offline`/`--no-integrity` to skip; licenses auto-skip when there's no `node_modules` or no approved-licenses CSV
 - Exit 0 unless an error-severity finding exists (or `--strict`/`--max-warnings` budget is exceeded)
 - **Key Functions:** `runReport()` returns `{filePath, sections, summary}`; `formatReport()` renders pretty or JSON
@@ -264,7 +271,8 @@ Removes `^`/`~` from package.json, locking versions down:
 
 Opinionated, configurable lockfile linter for CI (non-zero exit on failure):
 
-- Rules: `lockfile-version`, `valid-structure`, `integrity-hygiene`, `secure-resolved`, `install-scripts`, `no-git-deps`, `no-remote-deps`, `pinned-versions`, `lockfile-sync`, `no-orphan-packages`, `unused-dependencies`, `no-fund` (flags packages emitting npm funding solicitations unless a project `.npmrc` sets `fund=false`)
+- Rules: `lockfile-version`, `valid-structure`, `valid-package-json`, `integrity-hygiene`, `secure-resolved`, `install-scripts`, `no-git-deps`, `no-remote-deps`, `pinned-versions`, `lockfile-sync`, `no-orphan-packages`, `unused-dependencies`, `no-fund` (flags packages emitting npm funding solicitations unless a project `.npmrc` sets `fund=false`), `valid-npmrc`
+- **Config-file validation** (`valid-package-json`, `valid-npmrc`): npm-check validates all three files that govern an install, not just the lockfile. `valid-package-json` (default `error`) delegates to `validatePackageJson()` — name/version validity, dependency-range syntax across all four sections, scripts/bin/main/exports/workspaces types, license presence (warn). `valid-npmrc` (default `warn`) reads the project-level `.npmrc` next to the lockfile and delegates to `validateNpmrc()` — ini syntax, plus security checks where **plaintext auth tokens, `strict-ssl=false`, and disabled `rejectUnauthorized` are always hard errors** regardless of configured severity (insecure `http://` registries and unknown keys are warnings). Both surface as the report's "package.json" / ".npmrc (config)" sections and via the standalone `validate` command.
 - **npm v12 readiness** (the three breaking opt-ins): `install-scripts` reconciles with package.json `allowScripts` (pinned `name@version` or name-only) and flags pending/denied scripts; `no-git-deps` and `no-remote-deps` flag deps that will need `--allow-git` / `--allow-remote`. The report's Install scripts section shows `total · allowed · blocked` when the project is `allowScripts`-aware.
 - Each rule is `{id, description, defaultSeverity, check(context)}` — extensible
 - Severities error/warn/off with per-rule options; `maxWarnings` budget
