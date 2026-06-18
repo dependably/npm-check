@@ -1,7 +1,7 @@
 // src/report.js
-// Unified report: runs every check npm-check offers (the 9 audit rules +
-// registry integrity verification + license validation) and renders one
-// clean, sectioned report.
+// Unified report: runs every check npm-check offers (the audit rules covering
+// lockfile + package.json + .npmrc validation, plus registry integrity
+// verification and license validation) and renders one clean, sectioned report.
 import fs from 'fs';
 import path from 'path';
 import { runAudit, classifyInstallScripts } from './audit.js';
@@ -24,6 +24,8 @@ const RULE_SECTION = {
   'lockfile-version': 'structure',
   'valid-structure': 'structure',
   'lockfile-sync': 'structure',
+  'valid-package-json': 'package-json',
+  'valid-npmrc': 'npmrc',
   'integrity-hygiene': 'integrity',
   'secure-resolved': 'resolved',
   'install-scripts': 'install-scripts',
@@ -38,6 +40,8 @@ const RULE_SECTION = {
 // Display order and titles for the sections.
 const SECTIONS = [
   { id: 'structure', title: 'Structure & format' },
+  { id: 'package-json', title: 'package.json' },
+  { id: 'npmrc', title: '.npmrc (config)' },
   { id: 'integrity', title: 'Integrity (registry)' },
   { id: 'vuln', title: 'Known vulnerabilities' },
   { id: 'deprecated', title: 'Deprecated packages' },
@@ -283,6 +287,8 @@ export async function runReport(target, options = {}) {
 
 const DEFAULT_PASS_SUMMARY = {
   structure: 'valid',
+  'package-json': 'valid',
+  npmrc: 'valid',
   resolved: 'all TLS / trusted',
   'install-scripts': 'none',
   git: 'none',

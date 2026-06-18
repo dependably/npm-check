@@ -42,6 +42,7 @@ function cleanPackageJson() {
   return {
     name: 'clean-project',
     version: '1.0.0',
+    license: 'MIT',
     dependencies: { 'good-pkg': '1.0.0' }
   };
 }
@@ -509,10 +510,11 @@ describe('formatAuditReport', () => {
 });
 
 describe('rules registry', () => {
-  it('exposes all twelve rules with ids and check functions', () => {
+  it('exposes all fourteen rules with ids and check functions', () => {
     expect(rules.map((r) => r.id)).toEqual([
       'lockfile-version',
       'valid-structure',
+      'valid-package-json',
       'integrity-hygiene',
       'secure-resolved',
       'install-scripts',
@@ -522,9 +524,77 @@ describe('rules registry', () => {
       'lockfile-sync',
       'no-orphan-packages',
       'unused-dependencies',
-      'no-fund'
+      'no-fund',
+      'valid-npmrc'
     ]);
     rules.forEach((rule) => expect(typeof rule.check).toBe('function'));
+  });
+});
+
+describe('valid-package-json rule', () => {
+  it('emits error findings for a broken manifest', () => {
+    const packageJson = { name: 'BAD NAME', version: 'nope' };
+    const report = runAudit({ lockfile: cleanLockfile(), packageJson, filePath: projLockfilePath });
+    const findings = report.findings.filter((f) => f.ruleId === 'valid-package-json');
+    expect(findings.length).toBeGreaterThan(0);
+    expect(findings.every((f) => f.packagePath === 'package.json')).toBe(true);
+    expect(findings.some((f) => f.severity === 'error')).toBe(true);
+  });
+
+  it('emits a single warn skip finding when package.json is absent', () => {
+    const report = runAudit({ lockfile: cleanLockfile(), packageJson: null, filePath: projLockfilePath });
+    const findings = report.findings.filter((f) => f.ruleId === 'valid-package-json');
+    expect(findings).toHaveLength(1);
+    expect(findings[0].severity).toBe('warn');
+    expect(findings[0].message).toMatch(/not found/);
+  });
+});
+
+describe('valid-npmrc rule', () => {
+  let npmrcDir;
+  let npmrcLockPath;
+
+  beforeEach(() => {
+    npmrcDir = fs.mkdtempSync(path.join(os.tmpdir(), 'npm-check-npmrc-'));
+    npmrcLockPath = path.join(npmrcDir, 'package-lock.json');
+  });
+  afterEach(() => {
+    fs.rmSync(npmrcDir, { recursive: true, force: true });
+  });
+
+  it('produces no findings when .npmrc is absent', () => {
+    const report = runAudit({ lockfile: cleanLockfile(), packageJson: cleanPackageJson(), filePath: npmrcLockPath });
+    expect(report.findings.filter((f) => f.ruleId === 'valid-npmrc')).toEqual([]);
+  });
+
+  it('flags issues in a project .npmrc next to the lockfile', () => {
+    fs.writeFileSync(path.join(npmrcDir, '.npmrc'), 'made-up-key=1\n');
+    const report = runAudit({ lockfile: cleanLockfile(), packageJson: cleanPackageJson(), filePath: npmrcLockPath });
+    const findings = report.findings.filter((f) => f.ruleId === 'valid-npmrc');
+    expect(findings.length).toBe(1);
+    expect(findings[0].packagePath).toBe('.npmrc');
+  });
+
+  it('honours the npmrcPath option override', () => {
+    const custom = path.join(npmrcDir, 'custom-npmrc');
+    fs.writeFileSync(custom, 'made-up-key=1\n');
+    const report = runAudit(
+      { lockfile: cleanLockfile(), packageJson: cleanPackageJson(), filePath: npmrcLockPath },
+      { rules: { 'valid-npmrc': ['warn', { npmrcPath: custom }] } }
+    );
+    expect(report.findings.filter((f) => f.ruleId === 'valid-npmrc').length).toBe(1);
+  });
+
+  it('forces security findings to error even when the rule is configured warn', () => {
+    fs.writeFileSync(path.join(npmrcDir, '.npmrc'), 'strict-ssl=false\n');
+    const report = runAudit(
+      { lockfile: cleanLockfile(), packageJson: cleanPackageJson(), filePath: npmrcLockPath },
+      { rules: { 'valid-npmrc': 'warn' } }
+    );
+    const findings = report.findings.filter((f) => f.ruleId === 'valid-npmrc');
+    expect(findings).toHaveLength(1);
+    expect(findings[0].severity).toBe('error');
+    expect(report.pass).toBe(false);
   });
 });
 

@@ -24,7 +24,7 @@ function cleanLockfile() {
 }
 
 function cleanPackageJson() {
-  return { name: 'demo', version: '1.0.0', dependencies: { 'good-pkg': '1.0.0' } };
+  return { name: 'demo', version: '1.0.0', license: 'MIT', dependencies: { 'good-pkg': '1.0.0' } };
 }
 
 const fakeRegistry = (table) => (name) => Promise.resolve(table[name] || null);
@@ -58,7 +58,7 @@ describe('runReport', () => {
       baseOpts()
     );
     expect(report.sections.map((s) => s.id)).toEqual([
-      'structure', 'integrity', 'vuln', 'deprecated', 'resolved', 'licenses',
+      'structure', 'package-json', 'npmrc', 'integrity', 'vuln', 'deprecated', 'resolved', 'licenses',
       'install-scripts', 'git', 'remote', 'pinned', 'orphans', 'unused', 'fund'
     ]);
 
@@ -110,6 +110,26 @@ describe('runReport', () => {
 
     const pinned = report.sections.find((s) => s.id === 'pinned');
     expect(pinned.status).toBe('warn');
+  });
+
+  it('routes package.json validation findings into the package-json section', async () => {
+    const packageJson = cleanPackageJson();
+    packageJson.version = 'not-semver';
+
+    const report = await runReport(
+      { lockfile: cleanLockfile(), packageJson, filePath: 'package-lock.json' },
+      baseOpts()
+    );
+
+    const section = report.sections.find((s) => s.id === 'package-json');
+    expect(section.title).toBe('package.json');
+    expect(section.status).toBe('error');
+    expect(section.findings.some((f) => /invalid version/.test(f.message))).toBe(true);
+    expect(report.summary.pass).toBe(false);
+
+    const npmrc = report.sections.find((s) => s.id === 'npmrc');
+    expect(npmrc.title).toBe('.npmrc (config)');
+    expect(npmrc.status).toBe('pass'); // no .npmrc in cwd
   });
 
   it('skips the integrity section under --offline (integrity:false) without network', async () => {
@@ -203,7 +223,7 @@ describe('formatReport', () => {
     const report = await runReport({ lockfile: cleanLockfile(), packageJson: cleanPackageJson(), filePath: 'package-lock.json' }, baseOpts());
     const json = JSON.parse(formatReport(report, { format: 'json' }));
     expect(json.summary.pass).toBe(true);
-    expect(json.sections).toHaveLength(13);
+    expect(json.sections).toHaveLength(15);
   });
 
   it('rejects an unknown format', () => {

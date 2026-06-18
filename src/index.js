@@ -1,6 +1,8 @@
 // src/index.js
 export { parseLockfile, serializeLockfile } from './parser.js';
 export { validatePackageLock, ValidationError } from './validator.js';
+export { validatePackageJson, PackageJsonValidationError } from './package-json-validator.js';
+export { parseNpmrc, validateNpmrc, NpmrcValidationError, NPMRC_SECURITY_CODES } from './npmrc-validator.js';
 export { migrateToVersion, PackageLockMigrator, MigrationError } from './migrator.js';
 export {
   upgradeIntegrityHashes,

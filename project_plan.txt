@@ -187,6 +187,21 @@ Completed:
    user runs `npm install` afterward. New `remediate` CLI command (--write/--min-severity/--no-deprecated).
    New integrity helpers: fetchPackument() / fetchLatestVersion().
 
+## CONFIG-FILE VALIDATION PASS (2026-06-17):
+### Feature Implementation ✅
+1. **package.json validator (src/package-json-validator.js).** validatePackageJson() — name/version
+   validity, dependency-range syntax across dependencies/devDependencies/optionalDependencies/
+   peerDependencies (semver + npm:/file:/git:/github:/workspace:/http(s): protocols + owner/repo
+   shorthand), scripts/bin/main/exports/workspaces types, missing-license warning (relaxed for
+   private packages). Same { valid, errors, warnings, info } contract as validatePackageLock.
+2. **.npmrc validator (src/npmrc-validator.js).** parseNpmrc() (ini, comment/quote-aware, line
+   numbers) + validateNpmrc(). Security checks: plaintext _auth/_authToken/_password, strict-ssl=false,
+   rejectUnauthorized off are ERRORS; http:// registry + unknown keys are warnings. Only the project
+   .npmrc is consulted (not ~/.npmrc) so CI and local agree.
+3. **Audit rules + report sections.** New rules valid-package-json (error) and valid-npmrc (warn);
+   the three .npmrc security codes are forced to error regardless of configured severity. New report
+   sections "package.json" and ".npmrc (config)". `npm-check validate` now validates all three files.
+
 In Progress:
 - (none currently)
 
