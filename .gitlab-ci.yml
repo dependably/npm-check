@@ -1,0 +1,91 @@
+# CI/CD pipeline for npm-check
+#
+# Flow:  test  →  build  →  publish (manual approval, default branch only)
+#
+#   test     lint + unit tests on every push/MR
+#   build    `npm pack` the publishable tarball, kept as a job artifact
+#   publish  manual gate that pushes the built tarball to the private registry
+#
+# Required CI/CD variables (Settings → CI/CD → Variables), set as "Protected"
+# and "Masked" so they're only exposed to protected branches:
+#   REGISTRY_URL   e.g. https://dependably.northwardlabs.ca/
+#   REGISTRY_KEY   auth token for that registry  (npm `_authToken`)
+
+default:
+  image: node:20
+
+stages:
+  - test
+  - build
+  - publish
+
+# Reusable npm dependency cache (keyed on the lockfile).
+.npm_install: &npm_install
+  cache:
+    key:
+      files:
+        - package-lock.json
+    paths:
+      - .npm/
+  before_script:
+    - npm ci --cache .npm --prefer-offline
+
+lint:
+  stage: test
+  <<: *npm_install
+  script:
+    - npm run lint
+
+unit-tests:
+  stage: test
+  <<: *npm_install
+  script:
+    - npm run test:unit
+  # Integration tests (tests/integration) are Docker-based and run `npm ci`
+  # against the live registry across npm versions — run them on demand with
+  # `npm run test:integration` in a docker-in-docker job rather than here.
+
+build:
+  stage: build
+  script:
+    # Pure-ESM package: no transpile step, so "build" is just packing the
+    # publishable tarball. `npm pack` honors the package.json `files` allowlist.
+    - npm pack
+  artifacts:
+    paths:
+      - "*.tgz"
+    expire_in: 1 week
+
+publish:
+  stage: publish
+  # Only the build artifact is needed — no source install, and publishing a
+  # prebuilt tarball deliberately skips `prepublishOnly` (which re-runs the
+  # full suite). The `test` stage above is the authoritative quality gate.
+  dependencies:
+    - build
+  # Manual approval, default branch only. Serialize so two publishes can't race.
+  resource_group: publish
+  rules:
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+      when: manual
+      allow_failure: false
+  script:
+    - |
+      if [ -z "$REGISTRY_URL" ] || [ -z "$REGISTRY_KEY" ]; then
+        echo "ERROR: REGISTRY_URL and REGISTRY_KEY must be set as CI/CD variables." >&2
+        exit 1
+      fi
+    # Derive the registry host (strip scheme + trailing slash) for the auth key.
+    - REGISTRY_HOST=$(printf '%s' "$REGISTRY_URL" | sed -E 's#^https?://##; s#/+$##')
+    - |
+      {
+        echo "registry=$REGISTRY_URL"
+        echo "//$REGISTRY_HOST/:_authToken=$REGISTRY_KEY"
+        echo "always-auth=true"
+      } > .npmrc
+    - TARBALL=$(ls npm-check-*.tgz)
+    - echo "Publishing $TARBALL to $REGISTRY_URL"
+    # Publishing fails if this version already exists — bump the version to release.
+    - npm publish "$TARBALL" --registry "$REGISTRY_URL"
+  after_script:
+    - rm -f .npmrc

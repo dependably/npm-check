@@ -4,3 +4,7 @@ coverage/
 *.log
 .env
 .DS_Store
+
+# build artifacts / registry auth (generated in CI)
+*.tgz
+.npmrc
