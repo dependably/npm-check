@@ -83,7 +83,7 @@ publish:
         echo "//$REGISTRY_HOST/:_authToken=$REGISTRY_KEY"
         echo "always-auth=true"
       } > .npmrc
-    - TARBALL=$(ls npm-check-*.tgz)
+    - TARBALL=$(ls ./*.tgz)
     - echo "Publishing $TARBALL to $REGISTRY_URL"
     # Publishing fails if this version already exists — bump the version to release.
     - npm publish "$TARBALL" --registry "$REGISTRY_URL"

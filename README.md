@@ -21,9 +21,14 @@ A comprehensive tool for validating, migrating, fixing, and updating npm `packag
 
 ## Installation
 
+Published to the private registry. Point the `@moonlitlabs` scope at it, then install:
+
 ```bash
-npm install -g npm-check
+npm config set @moonlitlabs:registry https://dependably.northwardlabs.ca/
+npm install -g @moonlitlabs/npm-check
 ```
+
+The CLI is still invoked as `npm-check`.
 
 ## Quick Start
 
@@ -284,7 +289,7 @@ import {
   checkLicenses,
   checkAll,
   parseLicensesCsv
-} from 'npm-check';
+} from '@moonlitlabs/npm-check';
 
 // Parse and validate a lockfile
 const lockfile = parseLockfile('package-lock.json');
@@ -355,7 +360,7 @@ import {
   chunkLockfile,
   mergeLockfileChunks,
   isLargeLockfile
-} from 'npm-check';
+} from '@moonlitlabs/npm-check';
 
 const lockfile = parseLockfile('large-package-lock.json');
 
@@ -380,7 +385,7 @@ console.log(`Heap: ${stats.heapUsed}MB / ${stats.heapTotal}MB`);
 ### Streaming Large Lockfiles
 
 ```js
-import { StreamingParser } from 'npm-check';
+import { StreamingParser } from '@moonlitlabs/npm-check';
 
 const parser = new StreamingParser({
   onPackage: (path, pkg) => {
@@ -397,7 +402,7 @@ const lockfile = await parser.parseFile('huge-package-lock.json');
 ### Parallel Processing
 
 ```js
-import { parallelUpgradeIntegrityHashes, parallelDeduplicatePackages } from 'npm-check';
+import { parallelUpgradeIntegrityHashes, parallelDeduplicatePackages } from '@moonlitlabs/npm-check';
 
 const lockfile = parseLockfile('package-lock.json');
 
@@ -411,7 +416,7 @@ const deduplicated = await parallelDeduplicatePackages(upgraded);
 ### Progress Tracking
 
 ```js
-import { createProgressReporter } from 'npm-check';
+import { createProgressReporter } from '@moonlitlabs/npm-check';
 
 const progress = createProgressReporter(totalPackages, {
   showMemory: true,
@@ -436,7 +441,7 @@ import {
   validatePackageLock,
   fixPackageLock,
   serializeLockfile
-} from 'npm-check';
+} from '@moonlitlabs/npm-check';
 
 // 1. Parse
 const lockfile = parseLockfile('package-lock.json');
@@ -467,7 +472,7 @@ import {
   validatePackageLock,
   findDuplicatePackages,
   countUniquePackages
-} from 'npm-check';
+} from '@moonlitlabs/npm-check';
 
 const lockfile = parseLockfile('package-lock.json');
 
