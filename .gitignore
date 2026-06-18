@@ -9,5 +9,9 @@ coverage/
 *.tgz
 .npmrc
 
+# SBOM (CycloneDX) — generated in CI, published to Dependency-Track
+sbom.json
+sbom-prod.json
+
 # npm-check write backups (timestamped lockfile/package.json snapshots)
 .backups/

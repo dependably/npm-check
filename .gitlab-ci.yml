@@ -1,15 +1,19 @@
 # CI/CD pipeline for npm-check
 #
-# Flow:  test  →  build  →  publish (manual approval, default branch only)
+# Flow:  test  →  build  →  sbom  →  publish (manual approval, default branch only)
 #
 #   test     lint + unit tests on every push/MR
 #   build    `npm pack` the publishable tarball, kept as a job artifact
+#   sbom     generate a CycloneDX SBOM (every pipeline); publish it to a
+#            Dependency-Track server on the default branch
 #   publish  manual gate that pushes the built tarball to the private registry
 #
 # Required CI/CD variables (Settings → CI/CD → Variables), set as "Protected"
 # and "Masked" so they're only exposed to protected branches:
 #   REGISTRY_URL   e.g. https://dependably.northwardlabs.ca/
 #   REGISTRY_KEY   auth token for that registry  (npm `_authToken`)
+#   DT_URL         Dependency-Track base URL, e.g. https://dtrack.example.com
+#   DT_API_KEY     DT API key with BOM_UPLOAD + PROJECT_CREATION_UPLOAD perms
 
 default:
   image: node:20
@@ -17,6 +21,7 @@ default:
 stages:
   - test
   - build
+  - sbom
   - publish
 
 # Reusable npm dependency cache (keyed on the lockfile).
@@ -79,6 +84,59 @@ build:
     paths:
       - "*.tgz"
     expire_in: 1 week
+
+# Software Bill of Materials (CycloneDX, spec 1.6). Generated on every pipeline
+# from the installed dependency tree and kept as an artifact. cyclonedx-npm is
+# pinned via devDependency + package-lock, so the tool version can't drift.
+# `npm run sbom` includes the full tree (dev toolchain too) so the build's whole
+# supply chain is captured; the prod-only tree is empty (zero runtime deps).
+sbom:
+  stage: sbom
+  <<: *npm_install
+  script:
+    - npm run sbom
+  artifacts:
+    paths:
+      - sbom.json
+    expire_in: 30 days
+
+# Publish the SBOM to Dependency-Track for continuous supply-chain monitoring.
+# Default branch only, and serialized so two uploads can't race. Uses the default
+# node:20 image (provides both `node` and `curl`). autoCreate stands the project
+# up on first upload; projectVersion tracks the package.json version so each
+# release is a distinct BOM. The job hard-fails when DT_* aren't configured,
+# mirroring `publish`'s REGISTRY_* guard.
+sbom-publish:
+  stage: sbom
+  needs:
+    - job: sbom
+      artifacts: true
+  resource_group: sbom-publish
+  rules:
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+  script:
+    - |
+      if [ -z "$DT_URL" ] || [ -z "$DT_API_KEY" ]; then
+        echo "ERROR: DT_URL and DT_API_KEY must be set as CI/CD variables." >&2
+        exit 1
+      fi
+    - |
+      set -eu
+      BASE="${DT_URL%/}"
+      PROJECT=$(node -p "require('./package.json').name")
+      VERSION=$(node -p "require('./package.json').version")
+      echo "Publishing SBOM for $PROJECT@$VERSION to $BASE"
+      status=$(curl -sS -o /tmp/bom.out -w '%{http_code}' \
+        -X POST "$BASE/api/v1/bom" \
+        -H "X-Api-Key: $DT_API_KEY" \
+        -F "autoCreate=true" \
+        -F "projectName=$PROJECT" \
+        -F "projectVersion=$VERSION" \
+        -F "bom=@sbom.json")
+      case "$status" in
+        200) echo "✓ SBOM uploaded";;
+        *) echo "SBOM upload failed (HTTP $status):" >&2; cat /tmp/bom.out >&2; exit 1;;
+      esac
 
 publish:
   stage: publish
