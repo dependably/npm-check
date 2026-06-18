@@ -8,3 +8,6 @@ coverage/
 # build artifacts / registry auth (generated in CI)
 *.tgz
 .npmrc
+
+# npm-check write backups (timestamped lockfile/package.json snapshots)
+.backups/

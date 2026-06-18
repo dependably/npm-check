@@ -38,22 +38,53 @@ describe('Automated Fixer', () => {
     expect(fixes.some(f => /Added placeholder integrity/.test(f))).toBe(true);
   });
 
-  it('deduplicates packages when requested', () => {
-    const v2 = {
+  it('syncs the lockfile root name/version from package.json', () => {
+    // The stale-root case the report flags as "Structure & format" errors after a
+    // package rename / version bump.
+    const lockfile = {
+      name: 'old-name',
+      version: '1.0.0',
+      lockfileVersion: 3,
+      packages: {
+        '': { name: 'old-name', version: '1.0.0' },
+        'node_modules/a': { version: '1.0.0', integrity: 'sha512-x' }
+      }
+    };
+    const packageJson = { name: '@scope/new-name', version: '2.3.4' };
+
+    const { fixedLockfile, fixes } = fixPackageLock(lockfile, { packageJson, fillMissingIntegrity: false, dedupe: false });
+    expect(fixedLockfile.name).toBe('@scope/new-name');
+    expect(fixedLockfile.version).toBe('2.3.4');
+    expect(fixedLockfile.packages[''].name).toBe('@scope/new-name');
+    expect(fixedLockfile.packages[''].version).toBe('2.3.4');
+    expect(fixedLockfile.packages['node_modules/a']).toBeDefined(); // unrelated entries untouched
+    expect(fixes.some(f => /Synced lockfile name/.test(f))).toBe(true);
+    expect(fixes.some(f => /Synced root package version/.test(f))).toBe(true);
+  });
+
+  it('does not drop required install-path entries (dedupe is non-destructive)', () => {
+    // Regression: real v3 entries carry no `.name` field — the name lives in the
+    // path. The old dedupe keyed a map off `.name` and silently dropped every
+    // such entry, gutting the lockfile down to the root. A v2/v3 packages map is
+    // keyed by install path; every entry is required (note both versions of `a`
+    // below live at different paths because they could not be hoisted together).
+    const v3 = {
       name: 'p',
       version: '1.0.0',
-      lockfileVersion: 2,
+      lockfileVersion: 3,
       packages: {
-        'node_modules/a': { name: 'a', version: '1.0.0' },
-        'node_modules/a_duplicate': { name: 'a', version: '1.0.0' },
-        '': { name: 'p', version: '1.0.0' }
+        '': { name: 'p', version: '1.0.0' },
+        'node_modules/a': { version: '1.0.0', resolved: 'https://r/a/-/a-1.0.0.tgz', integrity: 'sha512-x' },
+        'node_modules/b': { version: '2.0.0', resolved: 'https://r/b/-/b-2.0.0.tgz', integrity: 'sha512-y' },
+        'node_modules/b/node_modules/a': { version: '0.9.0', resolved: 'https://r/a/-/a-0.9.0.tgz', integrity: 'sha512-z' }
       }
     };
 
-    const { fixedLockfile, fixes } = fixPackageLock(v2, { fillMissingIntegrity: false, dedupe: true });
-    // After dedupe, number of package paths should be reduced
-    expect(Object.keys(fixedLockfile.packages).length).toBeLessThan(3);
-    expect(fixes.some(f => /Deduplicated packages/.test(f))).toBe(true);
+    const { fixedLockfile } = fixPackageLock(v3, { fillMissingIntegrity: false, dedupe: true });
+    // Every install path is preserved — nothing is silently dropped.
+    expect(Object.keys(fixedLockfile.packages).sort()).toEqual([
+      '', 'node_modules/a', 'node_modules/b', 'node_modules/b/node_modules/a'
+    ]);
   });
 
   describe('edge cases', () => {

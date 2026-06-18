@@ -3,80 +3,13 @@
  * Optimized implementations for handling large lockfiles efficiently.
  */
 
-import { detectLockfileVersion, hasPackagesMap, hasDependenciesTree } from './format-library.js';
+import { detectLockfileVersion, hasPackagesMap, hasDependenciesTree, resolvePackageName } from './format-library.js';
 import {
   shallowCopyLockfile,
-  createDedupeMap,
-  reconstructFromDedupeMap,
   filterPackagesLazy,
   isLargeLockfile
 } from './performance.js';
 import { parallelUpgradeIntegrityHashes as parallelUpgrade, parallelDeduplicatePackages as parallelDedupe } from './parallel-processor.js';
-
-/**
- * Compare two semver version strings
- * Returns: -1 if v1 < v2, 0 if v1 === v2, 1 if v1 > v2
- * Handles basic semver format (major.minor.patch with optional pre-release/build)
- * @param {string} v1 - First version string
- * @param {string} v2 - Second version string
- * @returns {number} Comparison result
- */
-function compareVersions(v1, v2) {
-  if (!v1 || !v2) return 0;
-  if (v1 === v2) return 0;
-
-  // Parse version strings (handle formats like "1.2.3", "1.2.3-alpha", "1.2.3+build")
-  const parseVersion = (v) => {
-    // Remove build metadata (everything after +)
-    const clean = v.split('+')[0];
-    // Split into version and pre-release parts
-    const parts = clean.split('-');
-    const version = parts[0];
-    const prerelease = parts.length > 1 ? parts.slice(1).join('-') : '';
-
-    // Parse major.minor.patch
-    const numbers = version.split('.').map(n => parseInt(n, 10) || 0);
-    // Ensure we have at least 3 parts (major.minor.patch)
-    while (numbers.length < 3) {
-      numbers.push(0);
-    }
-
-    return {
-      major: numbers[0],
-      minor: numbers[1],
-      patch: numbers[2],
-      prerelease
-    };
-  };
-
-  const parsed1 = parseVersion(v1);
-  const parsed2 = parseVersion(v2);
-
-  // Compare major.minor.patch numerically
-  if (parsed1.major !== parsed2.major) {
-    return parsed1.major > parsed2.major ? 1 : -1;
-  }
-  if (parsed1.minor !== parsed2.minor) {
-    return parsed1.minor > parsed2.minor ? 1 : -1;
-  }
-  if (parsed1.patch !== parsed2.patch) {
-    return parsed1.patch > parsed2.patch ? 1 : -1;
-  }
-
-  // If versions are equal, pre-release versions are considered lower
-  if (parsed1.prerelease && !parsed2.prerelease) {
-    return -1;
-  }
-  if (!parsed1.prerelease && parsed2.prerelease) {
-    return 1;
-  }
-  if (parsed1.prerelease && parsed2.prerelease) {
-    // Simple string comparison for pre-release (could be improved)
-    return parsed1.prerelease > parsed2.prerelease ? 1 : (parsed1.prerelease < parsed2.prerelease ? -1 : 0);
-  }
-
-  return 0;
-}
 
 /**
  * Upgrade integrity hashes in a lockfile
@@ -218,71 +151,21 @@ export function deduplicatePackages(lockfileData, options = {}) {
 
   const result = shallowCopyLockfile(lockfileData);
 
-  // Deduplicate packages map using Map for faster lookups
+  // Packages map (v2/v3): keyed by *install path*. Every entry is a distinct,
+  // required node — the package name is encoded in the path, so most entries
+  // carry no `.name` field at all. There is no safe way to "remove duplicates"
+  // here: two entries that share a name@version live at different paths because
+  // npm could not hoist them to one location (conflicting dependents), and
+  // collapsing them produces an un-installable lockfile. Real npm deduplication
+  // is tree hoisting, which requires full re-resolution and is out of scope.
+  //
+  // So we PRESERVE every path entry. (The previous implementation keyed a map by
+  // `name#version` and rebuilt from it, which silently dropped every entry that
+  // lacked a `.name` field — i.e. effectively the entire packages map — gutting
+  // the lockfile down to the root. See deduplicatePackages preserve tests.)
+  // Use `prune` to remove genuinely orphaned (unreachable) entries.
   if (hasPackagesMap(version) && result.packages) {
-    const packages = result.packages;
-    const total = Object.keys(packages).length;
-
-    if (onProgress) {
-      onProgress({ current: 0, total, percentage: 0, stage: 'Building deduplication map' });
-    }
-
-    const dedupeMap = createDedupeMap(packages);
-
-    // Optionally keep only latest versions
-    if (keepLatest) {
-      if (onProgress) {
-        onProgress({ current: Math.floor(total * 0.3), total, percentage: 30, stage: 'Grouping packages by name' });
-      }
-
-      // Group packages by name
-      const packagesByName = new Map();
-
-      for (const [key, entry] of dedupeMap.entries()) {
-        if (!entry || !entry.pkg || !entry.pkg.name) continue;
-
-        const packageName = entry.pkg.name;
-        if (!packagesByName.has(packageName)) {
-          packagesByName.set(packageName, []);
-        }
-        packagesByName.get(packageName).push({ key, entry, version: entry.pkg.version || '0.0.0' });
-      }
-
-      if (onProgress) {
-        onProgress({ current: Math.floor(total * 0.6), total, percentage: 60, stage: 'Finding latest versions' });
-      }
-
-      // For each package name, keep only the latest version
-      const latestVersionsMap = new Map();
-      for (const [, versions] of packagesByName.entries()) {
-        if (versions.length === 1) {
-          // Only one version, keep it
-          latestVersionsMap.set(versions[0].key, versions[0].entry);
-        } else {
-          // Find latest version using semver comparison
-          let latest = versions[0];
-          for (let i = 1; i < versions.length; i++) {
-            if (compareVersions(versions[i].version, latest.version) > 0) {
-              latest = versions[i];
-            }
-          }
-          latestVersionsMap.set(latest.key, latest.entry);
-        }
-      }
-
-      if (onProgress) {
-        onProgress({ current: Math.floor(total * 0.9), total, percentage: 90, stage: 'Reconstructing packages' });
-      }
-
-      // Replace dedupeMap with only latest versions
-      dedupeMap.clear();
-      for (const [key, entry] of latestVersionsMap.entries()) {
-        dedupeMap.set(key, entry);
-      }
-    }
-
-    result.packages = reconstructFromDedupeMap(dedupeMap);
-
+    const total = Object.keys(result.packages).length;
     if (onProgress) {
       onProgress({ current: total, total, percentage: 100, stage: 'Deduplication complete' });
     }
@@ -328,10 +211,12 @@ export function countUniquePackages(lockfileData) {
   }
 
   const uniqueNames = new Set();
-  for (const pkg of Object.values(lockfileData.packages)) {
-    if (pkg && pkg.name && pkg.name !== '(root)') {
-      uniqueNames.add(pkg.name);
-    }
+  for (const [path, pkg] of Object.entries(lockfileData.packages)) {
+    if (!pkg || typeof pkg !== 'object') continue;
+    // Derive the name from the path — v2/v3 entries usually have no `.name` field,
+    // so reading `pkg.name` alone would miss nearly every real dependency.
+    const name = resolvePackageName(path, pkg);
+    if (name && name !== '(root)') uniqueNames.add(name);
   }
 
   return uniqueNames.size;
@@ -346,13 +231,16 @@ export function findDuplicatePackages(lockfileData) {
   const duplicates = new Map();
 
   for (const [path, pkg] of Object.entries(lockfileData.packages || {})) {
-    if (!pkg || !pkg.name || pkg.name === '(root)') continue;
+    if (!pkg || typeof pkg !== 'object') continue;
+    // Derive the name from the path — v2/v3 entries usually have no `.name` field.
+    const name = resolvePackageName(path, pkg);
+    if (!name || name === '(root)') continue;
 
-    if (!duplicates.has(pkg.name)) {
-      duplicates.set(pkg.name, []);
+    if (!duplicates.has(name)) {
+      duplicates.set(name, []);
     }
 
-    duplicates.get(pkg.name).push({ path, version: pkg.version });
+    duplicates.get(name).push({ path, version: pkg.version });
   }
 
   // Keep only actual duplicates

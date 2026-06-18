@@ -181,14 +181,12 @@ Verification engine for package integrity and licenses:
 
 ### 5. Fixer (`fixer.js`)
 
-Automated repair functionality:
+Automated, **non-destructive** structural repair:
 
-- Auto-correct structural issues
-- Regenerate missing integrity hashes
-- Fix version mismatches
-- Resolve duplicate package conflicts
-- Repair broken dependency chains
-- Update outdated resolved URLs
+- Fills missing/placeholder integrity hashes
+- Auto-migrates a v1 dependencies tree to v2 (or to a requested `normalizeTo` version)
+- **Root sync** — when given `package.json`, syncs the lockfile's stale top-level + `packages['']` name/version (the "Structure & format" errors after a rename / version bump). The `fix` CLI auto-loads the sibling package.json for this.
+- **Dedupe is preserve-only.** A v2/v3 `packages` map is keyed by install *path*; every entry is a required node (the name is encoded in the path, so most entries have no `.name` field). Collapsing entries that share a name/version drops required install locations and yields an un-installable lockfile — npm's real "dedupe" is tree hoisting, which needs full re-resolution. So `deduplicatePackages`/`fix` **never remove path entries** (use `prune` to drop genuinely orphaned ones). *(Historical bug: the old name#version dedupe silently dropped every nameless entry, gutting real lockfiles down to the root — fixed and covered by regression tests.)*
 
 ### 6. CLI Interface (`bin/cli.js`)
 
@@ -210,6 +208,7 @@ npm-check unused
 npm-check audit --strict
 npm-check vuln --min-severity critical
 npm-check deprecated --fail-on-deprecated
+npm-check remediate --write              # bump deprecated/vulnerable direct deps, then npm install
 npm-check dedupe --write package-lock.json
 npm-check check --check hash package-lock.json
 npm-check check --check license package-lock.json
@@ -332,6 +331,19 @@ Surfaces the same `npm warn deprecated <pkg>@<ver>: <message>` notices npm print
 
 **Key Functions:**
 - `checkDeprecations()` - Returns `{valid, scanned, deprecated, clean, unresolved, skipped, errors, warnings, unresolvedItems, details}`
+
+### 15. Remediator (`remediate.js`)
+
+Turns the deprecated/vulnerable *findings* into *action* — the write counterpart to the detection scanners:
+
+- Reuses `checkDeprecations()` + `checkVulnerabilities()` to flag package names (deprecated, or an advisory at/above `minSeverity`), then **bumps the flagged DIRECT dependencies** in package.json to the registry's `dist-tags.latest`, preserving the range operator (exact stays exact, `^`/`~` preserved), and syncs the lockfile root entry
+- **Scope is deliberate:** npm-check is lockfile-first and does not re-resolve the graph — that's `npm install`'s job. So it edits package.json ranges + the lockfile root only; the caller runs `npm install` afterward to materialize the tree. Transitive findings (a flagged package that isn't a direct dep) are reported as **guidance** (bump the parent or add an npm `override`), not auto-written
+- Skips complex/git/file/url/alias ranges with a reason; warns when a dep is already at latest yet still flagged (`latest-still-affected`) or the registry is unreachable
+- Uses `fetchLatestVersion()`/`fetchPackument()` helpers added to `integrity.js`
+- Surfaced as the standalone `remediate` CLI command (`--write` to apply, `--min-severity`, `--no-deprecated`)
+
+**Key Functions:**
+- `remediateDependencies(lockfile, packageJson, options)` - Returns `{packageJson, lockfile, bumped, guidance, skipped, warnings, changed}`
 
 ## Planned Components
 

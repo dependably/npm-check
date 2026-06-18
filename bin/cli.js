@@ -12,6 +12,7 @@ import { createProgressBar } from '../src/progress-reporter.js';
 import { checkIntegrity, checkLicenses } from '../src/checker.js';
 import { checkVulnerabilities } from '../src/vuln.js';
 import { checkDeprecations } from '../src/deprecation.js';
+import { remediateDependencies } from '../src/remediate.js';
 import { detectLockfileVersion } from '../src/format-library.js';
 import { fixChecksums } from '../src/checksum-fixer.js';
 import { pinVersions, detectIndent } from '../src/pinner.js';
@@ -45,6 +46,7 @@ Commands:
   audit [file]               Lint lockfile for best practices (non-zero exit on failure)
   vuln [file]                Scan locked packages for known vulnerabilities (registry advisories)
   deprecated [file]          Scan locked packages for deprecation notices (the npm ci warnings)
+  remediate [dir]            Bump direct deps that are deprecated/vulnerable to latest (then npm install)
   dedupe [file]              Deduplicate packages in lockfile
   fix [file] [--write]       Run automated fixer with optional write
   check [file]               Verify integrity hashes and licenses
@@ -101,6 +103,15 @@ Fix-Checksums Options:
   --registry <url>           Default registry for entries without a resolved URL
   --local-fallback           Hash node_modules copies when the registry fails
                              (flagged: these are NOT npm tarball hashes)
+
+Remediate Options:
+  --write                    Apply the bumps to package.json + lockfile root (backs up first)
+  --min-severity <level>     Advisory level that counts a dep as vulnerable (default: high)
+  --no-deprecated            Don't treat deprecated direct deps as remediation targets
+  --format pretty|json       Output format (default: pretty)
+  --registry <url>           Registry for entries without a derivable base
+  (only DIRECT deps are bumped; transitive findings are reported as guidance.
+   Run 'npm install' afterward to re-resolve the tree.)
 
 Pin Options:
   --include-peer             Also pin peerDependencies (off by default)
@@ -760,6 +771,10 @@ async function main() {
         process.stdout.write('\r' + ' '.repeat(80) + '\r');
         console.log(`\n✅ Deduplication complete`);
         console.log(`   Packages: ${beforeCount} → ${afterCount} (removed ${beforeCount - afterCount})`);
+        if (afterCount === beforeCount && beforeCount > 0) {
+          console.log('   (a v2/v3 packages map is keyed by install path — every entry is required,');
+          console.log('    so there is nothing to collapse. Use `npm-check prune` to remove orphaned entries.)');
+        }
 
         if (hasWrite) {
           createBackup(filePath);
@@ -778,10 +793,21 @@ async function main() {
         const hasWrite = argv.includes('--write');
 
         const lockfile = parseLockfile(filePath);
-        const { fixedLockfile, fixes } = fixPackageLock(lockfile);
+        // Load the sibling package.json (if present) so the fixer can sync the
+        // lockfile's stale root name/version — the "Structure & format" errors.
+        let pkgJson = null;
+        const pkgJsonPath = path.join(path.dirname(filePath), 'package.json');
+        if (fs.existsSync(pkgJsonPath)) {
+          try { pkgJson = JSON.parse(fs.readFileSync(pkgJsonPath, 'utf8')); } catch { /* ignore malformed package.json */ }
+        }
+        const { fixedLockfile, fixes } = fixPackageLock(lockfile, { packageJson: pkgJson });
 
         console.log('\n✅ Fixer Results:');
-        fixes.forEach(fix => console.log(`   • ${fix}`));
+        if (fixes.length === 0) {
+          console.log('   • Nothing to fix — lockfile structure is already consistent');
+        } else {
+          fixes.forEach(fix => console.log(`   • ${fix}`));
+        }
 
         if (hasWrite) {
           createBackup(filePath);
@@ -1201,6 +1227,102 @@ async function main() {
           }
 
           process.exit(result.valid ? 0 : 1);
+        } catch (error) {
+          handleError(error, `${command} command failed`);
+        }
+        break;
+      }
+
+      case 'remediate': {
+        // Operates on a directory containing both package.json and the lockfile.
+        let dir = process.cwd();
+        if (argv[1] && !argv[1].startsWith('-')) dir = path.resolve(argv[1]);
+        const hasWrite = argv.includes('--write');
+
+        const packageJsonPath = path.join(dir, 'package.json');
+        const lockfilePath = path.join(dir, 'package-lock.json');
+        ensureFileExists(packageJsonPath);
+        ensureFileExists(lockfilePath);
+
+        let format = 'pretty';
+        const formatIndex = argv.indexOf('--format');
+        if (formatIndex !== -1 && argv[formatIndex + 1]) {
+          format = argv[formatIndex + 1];
+          if (!['pretty', 'json'].includes(format)) { console.error('❌ Invalid --format value. Use: pretty or json'); process.exit(2); }
+        }
+
+        const SEVERITIES = ['info', 'low', 'moderate', 'high', 'critical'];
+        let minSeverity = 'high';
+        const minSeverityIndex = argv.indexOf('--min-severity');
+        if (minSeverityIndex !== -1 && argv[minSeverityIndex + 1]) {
+          minSeverity = argv[minSeverityIndex + 1];
+          if (!SEVERITIES.includes(minSeverity)) { console.error(`❌ Invalid --min-severity value. Use: ${SEVERITIES.join(', ')}`); process.exit(2); }
+        }
+        const includeDeprecated = !argv.includes('--no-deprecated');
+
+        let defaultRegistry;
+        const registryIndex = argv.indexOf('--registry');
+        if (registryIndex !== -1 && argv[registryIndex + 1]) defaultRegistry = argv[registryIndex + 1];
+
+        const packageJsonRaw = fs.readFileSync(packageJsonPath, 'utf8');
+        const packageJson = JSON.parse(packageJsonRaw);
+        const lockfile = parseLockfile(lockfilePath);
+
+        let lastProgress = null;
+        const onProgress = format === 'pretty' ? (progress) => {
+          if (!lastProgress || progress.percentage !== lastProgress.percentage) {
+            process.stdout.write(`\r${createProgressBar(progress)} ${progress.stage}`);
+            lastProgress = progress;
+          }
+        } : null;
+
+        try {
+          if (format === 'pretty') console.log('🩹 Scanning for remediable direct dependencies…');
+          const result = await remediateDependencies(lockfile, packageJson, {
+            minSeverity, includeDeprecated, onProgress,
+            ...(defaultRegistry ? { defaultRegistry } : {})
+          });
+          if (onProgress) process.stdout.write('\r' + ' '.repeat(80) + '\r');
+
+          if (format === 'json') {
+            console.log(JSON.stringify(result, null, 2));
+            process.exit(0);
+          }
+
+          console.log('\n🩹 Remediation Results:');
+          if (result.bumped.length === 0) {
+            console.log('   • No direct dependencies to bump');
+          } else {
+            result.bumped.forEach((b) => {
+              console.log(`   • ${b.section}/${b.package}  ${b.from} → ${b.to}  (${b.reasons.join(', ')})`);
+            });
+          }
+
+          if (result.guidance.length > 0) {
+            console.log('\n   Transitive / manual (not a direct dep — bump the parent or add an npm override):');
+            result.guidance.forEach((g) => {
+              const note = g.kind === 'latest-still-affected' ? `${g.reasons.join(', ')}; latest still affected` : g.reasons.join(', ');
+              console.log(`     • ${g.package}: ${note}`);
+            });
+          }
+          if (result.skipped.length > 0) {
+            console.log('\n   Skipped:');
+            result.skipped.forEach((s) => console.log(`     • ${s.section}/${s.package} (${s.range}): ${s.reason}`));
+          }
+          result.warnings.forEach((w) => console.log(`\n⚠️  ${w.package}: ${w.reason}`));
+
+          if (hasWrite && result.changed) {
+            const indent = detectIndent(packageJsonRaw);
+            createBackup(packageJsonPath);
+            createBackup(lockfilePath);
+            fs.writeFileSync(packageJsonPath, JSON.stringify(result.packageJson, null, indent) + '\n', 'utf8');
+            fs.writeFileSync(lockfilePath, JSON.stringify(result.lockfile, null, 2) + '\n', 'utf8');
+            console.log(`\n📝 Changes written to ${packageJsonPath} and ${lockfilePath}`);
+            console.log('   ▶ Run `npm install` to re-resolve the dependency tree, then re-run `npm-check`.');
+          } else if (result.changed) {
+            console.log('\n⚠️  Use --write to apply these bumps (then run `npm install`)');
+          }
+          process.exit(0);
         } catch (error) {
           handleError(error, `${command} command failed`);
         }
