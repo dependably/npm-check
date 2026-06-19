@@ -29,6 +29,26 @@ export function shallowCopyLockfile(lockfile) {
 }
 
 /**
+ * Invoke a progress callback for a completed batch, computing the percentage
+ * @param {Function|null} onProgress - Progress callback function(progressInfo)
+ * @param {number} processed - Number of packages processed so far
+ * @param {number} total - Total number of packages
+ * @param {string} stage - Stage name for progress reporting
+ * @returns {void}
+ */
+function reportBatchProgress(onProgress, processed, total, stage) {
+  if (!onProgress) return;
+
+  const percentage = total > 0 ? Math.round((processed / total) * 100) : 0;
+  onProgress({
+    current: processed,
+    total,
+    percentage,
+    stage
+  });
+}
+
+/**
  * Process packages in batches to reduce memory pressure
  * @param {object} packagesMap - The packages object to process
  * @param {Function} processor - Function to apply to each package (called as processor(path, pkg))
@@ -62,15 +82,7 @@ export async function processBatchedPackages(packagesMap, processor, batchSizeOr
     }
 
     // Report progress if callback provided
-    if (onProgress) {
-      const percentage = total > 0 ? Math.round((processed / total) * 100) : 0;
-      onProgress({
-        current: processed,
-        total,
-        percentage,
-        stage
-      });
-    }
+    reportBatchProgress(onProgress, processed, total, stage);
 
     // Yield control to allow garbage collection
     if (i + batchSize < entries.length) {

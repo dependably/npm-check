@@ -33,6 +33,159 @@ function severityRank(severity) {
 }
 
 /**
+ * Walk the lockfile and collect the entries we can check via the bulk endpoint,
+ * mirroring checker.js's skip logic. Mutates results.skipped for the rest.
+ * Returns the candidate list ({ key, name, version, registryBase }).
+ */
+function collectCandidates(lockfileData, results, defaultRegistry) {
+  const candidates = [];
+  forEachPackageEntry(lockfileData, (info) => {
+    const { key, entry, name, isRoot, isWorkspaceSource, isLink, isBundled, isGitDep, isFileDep } = info;
+    if (isRoot) return results.skipped++;
+    if (isWorkspaceSource) return results.skipped++;
+    if (isLink) return results.skipped++;
+    if (isBundled || isGitDep || isFileDep) return results.skipped++; // no registry advisory to check
+    if (!entry.version) return results.skipped++;
+    const registryBase = deriveRegistryBase(entry.resolved, name) || defaultRegistry;
+    candidates.push({ key, name, version: entry.version, registryBase });
+  });
+  return candidates;
+}
+
+/**
+ * Group candidates by registry, then by name (the bulk endpoint keys by name),
+ * and slice each registry's name list into POST units of at most `batchSize` names.
+ * Each unit is { registryBase, names: [ [candidate, ...], ... ] }.
+ */
+function buildUnits(candidates, batchSize) {
+  const byRegistry = new Map();
+  for (const c of candidates) {
+    if (!byRegistry.has(c.registryBase)) byRegistry.set(c.registryBase, new Map());
+    const names = byRegistry.get(c.registryBase);
+    if (!names.has(c.name)) names.set(c.name, []);
+    names.get(c.name).push(c);
+  }
+
+  const units = [];
+  for (const [registryBase, names] of byRegistry) {
+    const nameList = [...names.keys()];
+    for (let i = 0; i < nameList.length; i += batchSize) {
+      const chunk = nameList.slice(i, i + batchSize);
+      units.push({ registryBase, names: chunk.map((n) => names.get(n)) });
+    }
+  }
+  return units;
+}
+
+/**
+ * Record every candidate in a unit as unresolved (registry unreachable, or the
+ * endpoint isn't supported). With failOnUnresolved, also fails the run.
+ */
+function recordUnresolvedUnit(unitCandidates, reason, results, failOnUnresolved) {
+  for (const cand of unitCandidates) {
+    const item = { package: cand.name, version: cand.version, packagePath: cand.key, reason };
+    results.unresolved++;
+    results.unresolvedItems.push(item);
+    results.details.push({ unresolved: true, ...item });
+    if (failOnUnresolved) {
+      results.valid = false;
+      results.errors.push(item);
+    }
+  }
+}
+
+/**
+ * Attribute the registry's advisory response to each submitted candidate.
+ * The endpoint already filters server-side to the versions we submitted, so we
+ * trust per-name attribution without local semver range matching.
+ */
+function recordResolvedUnit(unitCandidates, advisoriesByName, results, threshold) {
+  for (const cand of unitCandidates) {
+    const advisories = advisoriesByName[cand.name] || [];
+    if (advisories.length === 0) {
+      results.clean++;
+      results.details.push({ vulnerable: false, package: cand.name, version: cand.version, packagePath: cand.key });
+      continue;
+    }
+    results.vulnerable++;
+    for (const advisory of advisories) recordVuln(cand, advisory, results, threshold);
+    results.details.push({
+      vulnerable: true,
+      package: cand.name,
+      version: cand.version,
+      packagePath: cand.key,
+      advisories: advisories.map((a) => ({
+        id: a.id, title: a.title, severity: (a.severity || 'low').toLowerCase(),
+        vulnerable_versions: a.vulnerable_versions, url: a.url
+      }))
+    });
+  }
+}
+
+/**
+ * Classify one advisory: at/above the threshold it's an error (fails the run),
+ * below it a warning.
+ */
+function recordVuln(cand, advisory, results, threshold) {
+  const finding = {
+    package: cand.name,
+    version: cand.version,
+    packagePath: cand.key,
+    advisoryId: advisory.id,
+    title: advisory.title,
+    severity: (advisory.severity || 'low').toLowerCase(),
+    url: advisory.url
+  };
+  if (severityRank(finding.severity) >= threshold) {
+    results.errors.push(finding);
+    results.valid = false;
+  } else {
+    results.warnings.push(finding);
+  }
+  return finding;
+}
+
+/**
+ * Build the bulk request body for a unit: { name: [unique versions] }.
+ */
+function buildUnitBody(unitNames) {
+  const body = {};
+  for (const group of unitNames) {
+    const name = group[0].name;
+    body[name] = [...new Set(group.map((c) => c.version))];
+  }
+  return body;
+}
+
+/**
+ * Scan a single POST unit: fetch the bulk advisories for its registry and route
+ * the result to the unresolved or resolved recorder. Updates results.scanned.
+ */
+async function scanUnit(unit, fetcher, timeoutMs, results, threshold, failOnUnresolved) {
+  const unitCandidates = unit.names.flat();
+  const body = buildUnitBody(unit.names);
+
+  let advisoriesByName = null;
+  let networkError = null;
+  try {
+    advisoriesByName = await fetcher(unit.registryBase, body, timeoutMs);
+  } catch (e) {
+    networkError = e;
+  }
+
+  if (networkError || advisoriesByName === null) {
+    const reason = networkError
+      ? `registry unreachable (${networkError.message})`
+      : 'registry does not support the bulk advisory endpoint';
+    recordUnresolvedUnit(unitCandidates, reason, results, failOnUnresolved);
+  } else {
+    recordResolvedUnit(unitCandidates, advisoriesByName, results, threshold);
+  }
+
+  results.scanned += unitCandidates.length;
+}
+
+/**
  * Map items through an async fn with a concurrency cap, preserving input order.
  * (Mirrors the private helper in checker.js — kept local to keep the modules decoupled.)
  */
@@ -56,7 +209,9 @@ async function mapWithConcurrency(items, limit, fn) {
  * network errors / timeouts.
  */
 function fetchBulkAdvisories(registryBase, bodyObject, timeoutMs) {
-  const base = registryBase.replace(/\/+$/, '');
+  // Strip trailing slashes without a regex (linear scan, no backtracking).
+  let base = registryBase;
+  while (base.endsWith('/')) base = base.slice(0, -1);
   const url = `${base}/-/npm/v1/security/advisories/bulk`;
   return postJson(url, bodyObject, timeoutMs);
 }
@@ -127,17 +282,7 @@ export async function checkVulnerabilities(lockfileData, options = {}) {
   };
 
   // Collect verifiable candidates (mirror checker.js skip logic).
-  const candidates = [];
-  forEachPackageEntry(lockfileData, (info) => {
-    const { key, entry, name, isRoot, isWorkspaceSource, isLink, isBundled, isGitDep, isFileDep } = info;
-    if (isRoot) return results.skipped++;
-    if (isWorkspaceSource) return results.skipped++;
-    if (isLink) return results.skipped++;
-    if (isBundled || isGitDep || isFileDep) return results.skipped++; // no registry advisory to check
-    if (!entry.version) return results.skipped++;
-    const registryBase = deriveRegistryBase(entry.resolved, name) || defaultRegistry;
-    candidates.push({ key, name, version: entry.version, registryBase });
-  });
+  const candidates = collectCandidates(lockfileData, results, defaultRegistry);
 
   // Offline: nothing left to do — count remaining candidates as skipped.
   if (offline) {
@@ -147,24 +292,8 @@ export async function checkVulnerabilities(lockfileData, options = {}) {
 
   const fetcher = fetchAdvisories || fetchBulkAdvisories;
 
-  // Group candidates by registry, then by name (the bulk endpoint keys by name).
-  // Build POST units of at most `batchSize` names each.
-  const byRegistry = new Map();
-  for (const c of candidates) {
-    if (!byRegistry.has(c.registryBase)) byRegistry.set(c.registryBase, new Map());
-    const names = byRegistry.get(c.registryBase);
-    if (!names.has(c.name)) names.set(c.name, []);
-    names.get(c.name).push(c);
-  }
-
-  const units = [];
-  for (const [registryBase, names] of byRegistry) {
-    const nameList = [...names.keys()];
-    for (let i = 0; i < nameList.length; i += batchSize) {
-      const chunk = nameList.slice(i, i + batchSize);
-      units.push({ registryBase, names: chunk.map((n) => names.get(n)) });
-    }
-  }
+  // Group candidates by registry/name into POST units of at most `batchSize` names.
+  const units = buildUnits(candidates, batchSize);
 
   const reporter = onProgress ? createProgressReporter(units.length, {
     onProgress,
@@ -172,83 +301,8 @@ export async function checkVulnerabilities(lockfileData, options = {}) {
   }) : null;
   let completed = 0;
 
-  const recordVuln = (cand, advisory) => {
-    const finding = {
-      package: cand.name,
-      version: cand.version,
-      packagePath: cand.key,
-      advisoryId: advisory.id,
-      title: advisory.title,
-      severity: (advisory.severity || 'low').toLowerCase(),
-      url: advisory.url
-    };
-    if (severityRank(finding.severity) >= threshold) {
-      results.errors.push(finding);
-      results.valid = false;
-    } else {
-      results.warnings.push(finding);
-    }
-    return finding;
-  };
-
   await mapWithConcurrency(units, concurrency, async (unit) => {
-    // Flat list of candidates this unit covers, plus the bulk body { name: [versions] }.
-    const unitCandidates = unit.names.flat();
-    const body = {};
-    for (const group of unit.names) {
-      const name = group[0].name;
-      body[name] = [...new Set(group.map((c) => c.version))];
-    }
-
-    let advisoriesByName = null;
-    let networkError = null;
-    try {
-      advisoriesByName = await fetcher(unit.registryBase, body, timeoutMs);
-    } catch (e) {
-      networkError = e;
-    }
-
-    if (networkError || advisoriesByName === null) {
-      const reason = networkError
-        ? `registry unreachable (${networkError.message})`
-        : 'registry does not support the bulk advisory endpoint';
-      for (const cand of unitCandidates) {
-        const item = { package: cand.name, version: cand.version, packagePath: cand.key, reason };
-        results.unresolved++;
-        results.unresolvedItems.push(item);
-        results.details.push({ unresolved: true, ...item });
-        if (failOnUnresolved) {
-          results.valid = false;
-          results.errors.push(item);
-        }
-      }
-    } else {
-      // Attribute returned advisories to each submitted name@version for that name.
-      // The endpoint already filters server-side to the versions we submitted, so we
-      // trust per-name attribution without local semver range matching.
-      for (const cand of unitCandidates) {
-        const advisories = advisoriesByName[cand.name] || [];
-        if (advisories.length === 0) {
-          results.clean++;
-          results.details.push({ vulnerable: false, package: cand.name, version: cand.version, packagePath: cand.key });
-        } else {
-          results.vulnerable++;
-          for (const advisory of advisories) recordVuln(cand, advisory);
-          results.details.push({
-            vulnerable: true,
-            package: cand.name,
-            version: cand.version,
-            packagePath: cand.key,
-            advisories: advisories.map((a) => ({
-              id: a.id, title: a.title, severity: (a.severity || 'low').toLowerCase(),
-              vulnerable_versions: a.vulnerable_versions, url: a.url
-            }))
-          });
-        }
-      }
-    }
-
-    results.scanned += unitCandidates.length;
+    await scanUnit(unit, fetcher, timeoutMs, results, threshold, failOnUnresolved);
     completed++;
     if (reporter) reporter.update(completed);
   });

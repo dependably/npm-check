@@ -184,7 +184,8 @@ export function postJson(url, bodyObject, timeoutMs, redirectsLeft = 1) {
  * @returns {string} Full manifest URL
  */
 function packumentVersionUrl(registryBase, packageName, version) {
-  const base = registryBase.replace(/\/+$/, '');
+  let base = registryBase;
+  while (base.endsWith('/')) base = base.slice(0, -1);
   const namePath = packageName.startsWith('@')
     ? packageName.replace('/', '%2f')
     : encodeURIComponent(packageName);
@@ -200,7 +201,8 @@ function packumentVersionUrl(registryBase, packageName, version) {
  */
 export async function fetchPackument(packageName, options = {}) {
   const { registryBase = DEFAULT_REGISTRY, timeoutMs = 10000, fetchJson = getJson } = options;
-  const base = registryBase.replace(/\/+$/, '');
+  let base = registryBase;
+  while (base.endsWith('/')) base = base.slice(0, -1);
   const namePath = packageName.startsWith('@')
     ? packageName.replace('/', '%2f')
     : encodeURIComponent(packageName);

@@ -53,6 +53,158 @@ function needsFix(integrity) {
 }
 
 /**
+ * Build a change record for a resolved hash. Centralizes the common shape so
+ * each source (registry, local-file, local-directory) reads identically.
+ */
+function makeChange(key, entry, name, hash, source) {
+  return { packagePath: key, name, version: entry.version, from: entry.integrity || null, to: hash, source };
+}
+
+/**
+ * Classify a single lockfile entry into either a skip reason or a fix
+ * candidate. Returns the work item without recording it, so the caller owns
+ * the skipped/candidate buckets. file: tarballs become file-tarball
+ * candidates; file: directories are skipped.
+ */
+function classifyEntry(info, baseDir) {
+  const { key, entry, name, isRoot, isWorkspaceSource, isLink, isBundled, isGitDep, isFileDep } = info;
+
+  if (isRoot) return { skip: 'root' };
+  if (isWorkspaceSource) return { skip: 'workspace' };
+  if (isLink) return { skip: 'link' };
+
+  const reason = needsFix(entry.integrity);
+  if (!reason) return { skip: 'valid' };
+
+  if (isBundled) return { skip: 'bundled' };
+  if (isGitDep) return { skip: 'git' };
+
+  if (isFileDep) {
+    // file: specs are relative to the lockfile's directory, not the cwd
+    const filePath = path.resolve(baseDir, entry.resolved.slice('file:'.length).replace(/^\/\//, ''));
+    if (/\.(tgz|tar\.gz|tar)$/i.test(filePath)) {
+      return { candidate: { key, entry, name, fixReason: reason, source: 'file-tarball', filePath } };
+    }
+    return { skip: 'file-dir' };
+  }
+
+  return { candidate: { key, entry, name, fixReason: reason, source: 'registry' } };
+}
+
+/**
+ * Walk every package entry, sorting them into skips and fix candidates.
+ */
+function collectCandidates(lockfile, baseDir) {
+  const candidates = [];
+  const skipped = [];
+  let total = 0;
+
+  forEachPackageEntry(lockfile, (info) => {
+    total++;
+    const outcome = classifyEntry(info, baseDir);
+    if (outcome.skip) {
+      skipped.push({ packagePath: info.key, reason: outcome.skip });
+    } else {
+      candidates.push(outcome.candidate);
+    }
+  });
+
+  return { candidates, skipped, total };
+}
+
+/**
+ * Resolve a hash for a file-tarball candidate from the local tarball, pushing
+ * either a change or an unresolved record.
+ */
+function resolveFileTarball(candidate, buckets) {
+  const { key, entry, name } = candidate;
+  const hash = generateIntegrityFromFile(candidate.filePath);
+  if (hash) {
+    buckets.changes.push(makeChange(key, entry, name, hash, 'local-file'));
+  } else {
+    buckets.unresolved.push({ packagePath: key, reason: `local tarball not readable: ${candidate.filePath}` });
+  }
+}
+
+/**
+ * Hash a registry candidate's local node_modules copy as a fallback. Records a
+ * local-directory change on success and returns true; returns false (leaving
+ * the entry unresolved) on any failure.
+ */
+async function tryLocalFallback(candidate, nodeModulesPath, buckets) {
+  const { key, entry, name } = candidate;
+  const pkgDir = path.join(nodeModulesPath, key.slice(key.lastIndexOf('node_modules/') + 'node_modules/'.length));
+  try {
+    const localHash = await hashPackageDirectory(pkgDir);
+    buckets.changes.push(makeChange(key, entry, name, localHash, 'local-directory'));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Record why a registry candidate could not be resolved, distinguishing a
+ * network failure, a versionless entry, and a registry with no sha512 hash.
+ */
+function recordUnresolved(candidate, networkError, localFallback, buckets) {
+  const { key, entry, name, fixReason } = candidate;
+  if (networkError) {
+    buckets.unresolved.push({ packagePath: key, reason: `registry unreachable (${networkError.message})${localFallback ? '' : '; consider --local-fallback'}` });
+  } else if (!entry.version) {
+    buckets.unresolved.push({ packagePath: key, reason: `cannot fix ${fixReason} integrity: entry has no version` });
+  } else {
+    buckets.unresolved.push({ packagePath: key, reason: `registry has no sha512 integrity for ${name}@${entry.version}` });
+  }
+}
+
+/**
+ * Resolve a hash for a registry candidate: try the registry, then the optional
+ * local fallback, then record an unresolved reason.
+ */
+async function resolveRegistryCandidate(candidate, settings, buckets) {
+  const { key, entry, name } = candidate;
+  const { fetcher, defaultRegistry, localFallback, nodeModulesPath } = settings;
+
+  const registryBase = deriveRegistryBase(entry.resolved, name) || defaultRegistry;
+  let hash = null;
+  let networkError = null;
+  try {
+    hash = entry.version ? await fetcher(name, entry.version, registryBase) : null;
+  } catch (e) {
+    networkError = e;
+  }
+
+  if (hash) {
+    buckets.changes.push(makeChange(key, entry, name, hash, 'registry'));
+    return;
+  }
+
+  if (localFallback && await tryLocalFallback(candidate, nodeModulesPath, buckets)) {
+    return;
+  }
+
+  recordUnresolved(candidate, networkError, localFallback, buckets);
+}
+
+/**
+ * Apply the collected integrity changes to a shallow copy of the lockfile.
+ */
+function applyChanges(lockfile, changes) {
+  const updated = {
+    ...lockfile,
+    packages: { ...lockfile.packages }
+  };
+  for (const change of changes) {
+    updated.packages[change.packagePath] = {
+      ...updated.packages[change.packagePath],
+      integrity: change.to
+    };
+  }
+  return updated;
+}
+
+/**
  * Fill missing, placeholder, or weak (sha1) integrity hashes with real ones.
  * Fetches the authoritative dist.integrity from the package's registry
  * (derived per-package from its resolved URL); optionally falls back to
@@ -75,8 +227,7 @@ export async function fixChecksums(lockfile, options = {}) {
     baseDir = '.'
   } = options;
 
-  const version = detectLockfileVersion(lockfile);
-  if (version === LOCKFILE_VERSIONS.V1) {
+  if (detectLockfileVersion(lockfile) === LOCKFILE_VERSIONS.V1) {
     throw new ChecksumFixError(
       'v1 lockfiles are not supported; run `npm-check migrate 3` first',
       'UNSUPPORTED_VERSION'
@@ -86,40 +237,9 @@ export async function fixChecksums(lockfile, options = {}) {
   const fetcher = fetchIntegrity ||
     ((name, ver, registryBase) => fetchPackumentIntegrity(name, ver, { registryBase, timeoutMs }));
 
-  const candidates = [];
-  const skipped = [];
-  let total = 0;
+  const { candidates, skipped, total } = collectCandidates(lockfile, baseDir);
 
-  forEachPackageEntry(lockfile, (info) => {
-    total++;
-    const { key, entry, name, isRoot, isWorkspaceSource, isLink, isBundled, isGitDep, isFileDep } = info;
-
-    if (isRoot) return skipped.push({ packagePath: key, reason: 'root' });
-    if (isWorkspaceSource) return skipped.push({ packagePath: key, reason: 'workspace' });
-    if (isLink) return skipped.push({ packagePath: key, reason: 'link' });
-
-    const reason = needsFix(entry.integrity);
-    if (!reason) return skipped.push({ packagePath: key, reason: 'valid' });
-
-    if (isBundled) return skipped.push({ packagePath: key, reason: 'bundled' });
-    if (isGitDep) return skipped.push({ packagePath: key, reason: 'git' });
-    if (isFileDep) {
-      // file: specs are relative to the lockfile's directory, not the cwd
-      const filePath = path.resolve(baseDir, entry.resolved.slice('file:'.length).replace(/^\/\//, ''));
-      if (/\.(tgz|tar\.gz|tar)$/i.test(filePath)) {
-        candidates.push({ key, entry, name, fixReason: reason, source: 'file-tarball', filePath });
-      } else {
-        skipped.push({ packagePath: key, reason: 'file-dir' });
-      }
-      return;
-    }
-
-    candidates.push({ key, entry, name, fixReason: reason, source: 'registry' });
-  });
-
-  const changes = [];
-  const unresolved = [];
-  const warnings = [];
+  const buckets = { changes: [], unresolved: [], warnings: [] };
   let completed = 0;
 
   const reportProgress = (stage) => {
@@ -135,56 +255,21 @@ export async function fixChecksums(lockfile, options = {}) {
 
   reportProgress('Fetching integrity hashes');
 
+  const settings = { fetcher, defaultRegistry, localFallback, nodeModulesPath };
   await mapWithConcurrency(candidates, concurrency, async (candidate) => {
-    const { key, entry, name, fixReason, source } = candidate;
     try {
-      if (source === 'file-tarball') {
-        const hash = generateIntegrityFromFile(candidate.filePath);
-        if (hash) {
-          changes.push({ packagePath: key, name, version: entry.version, from: entry.integrity || null, to: hash, source: 'local-file' });
-        } else {
-          unresolved.push({ packagePath: key, reason: `local tarball not readable: ${candidate.filePath}` });
-        }
-        return;
-      }
-
-      const registryBase = deriveRegistryBase(entry.resolved, name) || defaultRegistry;
-      let hash = null;
-      let networkError = null;
-      try {
-        hash = entry.version ? await fetcher(name, entry.version, registryBase) : null;
-      } catch (e) {
-        networkError = e;
-      }
-
-      if (hash) {
-        changes.push({ packagePath: key, name, version: entry.version, from: entry.integrity || null, to: hash, source: 'registry' });
-        return;
-      }
-
-      if (localFallback) {
-        const pkgDir = path.join(nodeModulesPath, key.slice(key.lastIndexOf('node_modules/') + 'node_modules/'.length));
-        try {
-          const localHash = await hashPackageDirectory(pkgDir);
-          changes.push({ packagePath: key, name, version: entry.version, from: entry.integrity || null, to: localHash, source: 'local-directory' });
-          return;
-        } catch {
-          // fall through to unresolved
-        }
-      }
-
-      if (networkError) {
-        unresolved.push({ packagePath: key, reason: `registry unreachable (${networkError.message})${localFallback ? '' : '; consider --local-fallback'}` });
-      } else if (!entry.version) {
-        unresolved.push({ packagePath: key, reason: `cannot fix ${fixReason} integrity: entry has no version` });
+      if (candidate.source === 'file-tarball') {
+        resolveFileTarball(candidate, buckets);
       } else {
-        unresolved.push({ packagePath: key, reason: `registry has no sha512 integrity for ${name}@${entry.version}` });
+        await resolveRegistryCandidate(candidate, settings, buckets);
       }
     } finally {
       completed++;
       reportProgress('Fetching integrity hashes');
     }
   });
+
+  const { changes, unresolved, warnings } = buckets;
 
   const localDirCount = changes.filter((c) => c.source === 'local-directory').length;
   if (localDirCount > 0) {
@@ -195,20 +280,8 @@ export async function fixChecksums(lockfile, options = {}) {
     );
   }
 
-  // Apply changes immutably
-  const updated = {
-    ...lockfile,
-    packages: { ...lockfile.packages }
-  };
-  for (const change of changes) {
-    updated.packages[change.packagePath] = {
-      ...updated.packages[change.packagePath],
-      integrity: change.to
-    };
-  }
-
   return {
-    lockfile: updated,
+    lockfile: applyChanges(lockfile, changes),
     changes,
     unresolved,
     skipped,

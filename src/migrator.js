@@ -45,6 +45,18 @@ function migrateV1toV2(lockfile) {
   return { ...lockfile, packages, requires: true };
 }
 
+function extractRootDependencies(rootPkg, dependencies) {
+  // Flatten the root package's dependency tree into top-level entries
+  if (!rootPkg.dependencies) return;
+  for (const [depName, dep] of Object.entries(rootPkg.dependencies)) {
+    dependencies[depName] = {
+      version: dep.version || '',
+      resolved: dep.resolved,
+      integrity: dep.integrity
+    };
+  }
+}
+
 function migrateV2toV3(lockfile) {
   // V3 format keeps the packages structure but simplifies to top-level dependencies
   // However, we need to preserve all package metadata
@@ -56,15 +68,7 @@ function migrateV2toV3(lockfile) {
     for (const [pkgPath, pkg] of Object.entries(lockfile.packages)) {
       if (pkgPath === '') {
         // Root package - extract top-level dependencies
-        if (pkg.dependencies) {
-          for (const [depName, dep] of Object.entries(pkg.dependencies)) {
-            dependencies[depName] = {
-              version: dep.version || '',
-              resolved: dep.resolved,
-              integrity: dep.integrity
-            };
-          }
-        }
+        extractRootDependencies(pkg, dependencies);
       } else {
         // Non-root packages - preserve them
         packages[pkgPath] = { ...pkg };

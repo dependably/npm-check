@@ -74,8 +74,14 @@ export function listBackups(fileName) {
       .map(f => {
         const backupPath = path.join(BACKUPS_DIR, f);
         const stats = fs.statSync(backupPath);
-        const match = f.match(/\.(.+)\.bak$/);
-        const timestamp = match ? match[1] : 'unknown';
+        // Parse "<name>.<timestamp>.bak" without a backtracking-prone regex:
+        // strip the ".bak" suffix, then take everything after the first dot.
+        let timestamp = 'unknown';
+        if (f.endsWith('.bak')) {
+          const withoutExt = f.slice(0, -4);
+          const firstDot = withoutExt.indexOf('.');
+          if (firstDot !== -1) timestamp = withoutExt.slice(firstDot + 1);
+        }
         return {
           name: f,
           path: backupPath,

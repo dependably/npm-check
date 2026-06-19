@@ -34,7 +34,7 @@ export function parseNpmrc(content) {
       entries.push({ key: null, value: null, line: i + 1, raw: raw.trim(), malformed: true });
       return;
     }
-    const value = line.slice(eq + 1).trim().replace(/^["']|["']$/g, '');
+    const value = line.slice(eq + 1).trim().replace(/(?:^["'])|(?:["']$)/g, '');
     entries.push({
       key: line.slice(0, eq).trim().toLowerCase(),
       value,
@@ -78,68 +78,95 @@ const ALWAYS_ERROR_CODES = new Set([
  */
 export const NPMRC_SECURITY_CODES = ALWAYS_ERROR_CODES;
 
+// Each check below inspects one parsed entry and pushes into the shared
+// errors/warnings arrays via `sink`. It returns `true` when it has fully
+// handled the entry (the caller then moves on), so the security/registry rules
+// short-circuit the later unknown-key warning exactly as before.
+
+// Plaintext credential keys: error unless the value is entirely an env ref.
+// Auth lines are always "handled" so they never trip the unknown-key warning.
+function checkSecret({ key, value, line }, sink) {
+  if (!SECRET_KEY_RE.test(key)) return false;
+  if (!ENV_REF_ONLY_RE.test(value)) {
+    sink.errors.push(new NpmrcValidationError(
+      `plaintext credential at line ${line} ("${key}") — use an env var reference like \${NPM_TOKEN}`,
+      'NPMRC_PLAINTEXT_SECRET'));
+  }
+  return true;
+}
+
+// TLS / verification weakening: strict-ssl=false/0 and any *rejectUnauthorized
+// disabled are always hard errors.
+function checkTls({ key, value, line }, sink) {
+  if (key === 'strict-ssl' && /^(false|0)$/i.test(value)) {
+    sink.errors.push(new NpmrcValidationError(`strict-ssl=${value} at line ${line} disables TLS verification`, 'NPMRC_STRICT_SSL_OFF'));
+    return true;
+  }
+  if (key.endsWith('rejectunauthorized') && /^(false|0)$/i.test(value)) {
+    sink.errors.push(new NpmrcValidationError(`rejectUnauthorized disabled at line ${line}`, 'NPMRC_REJECT_UNAUTHORIZED_OFF'));
+    return true;
+  }
+  return false;
+}
+
+// Privilege escalation: unsafe-perm enabled runs lifecycle scripts elevated.
+function checkUnsafePerm({ key, value, line }, sink) {
+  if (key !== 'unsafe-perm' || !/^(true|1)$/i.test(value)) return false;
+  sink.warnings.push({ code: 'NPMRC_UNSAFE_PERM', message: `unsafe-perm enabled at line ${line} — lifecycle scripts run with elevated privileges` });
+  return true;
+}
+
+// Registry URL validity / scheme. Env-interpolated URLs can't be parsed, so
+// they're accepted as-is; anything else must be a valid URL, and http:// warns.
+function checkRegistry({ key, value, line }, sink) {
+  if (key !== 'registry' && !key.endsWith(':registry')) return false;
+  if (ENV_REF_RE.test(value)) return true; // env-interpolated URL — can't statically parse
+  let url = null;
+  try {
+    url = new URL(value);
+  } catch {
+    sink.errors.push(new NpmrcValidationError(`invalid registry URL at line ${line}: "${value}"`, 'NPMRC_INVALID_REGISTRY'));
+  }
+  if (url && url.protocol === 'http:') {
+    sink.warnings.push({ code: 'NPMRC_INSECURE_REGISTRY', message: `registry over http:// at line ${line} (${value}) — prefer https://` });
+  }
+  return true;
+}
+
+// Unknown key (warn only). `//host/...` lines are per-registry auth/config and
+// are skipped; a scoped key is matched on its bare suffix too.
+function checkUnknownKey({ key, line }, sink) {
+  if (key.startsWith('//')) return; // per-registry auth/config line
+  const bareKey = key.includes(':') ? key.slice(key.lastIndexOf(':') + 1) : key;
+  if (!KNOWN_KEYS.has(key) && !KNOWN_KEYS.has(bareKey)) {
+    sink.warnings.push({ code: 'NPMRC_UNKNOWN_KEY', message: `unrecognized npm config key "${key}" at line ${line}` });
+  }
+}
+
+// Run the security/registry checks in order; the first to claim the entry wins.
+// When none does, the entry falls through to the unknown-key warning.
+function validateEntry(entry, sink) {
+  if (entry.malformed) {
+    sink.errors.push(new NpmrcValidationError(`malformed line ${entry.line}: "${entry.raw}" (expected key=value)`, 'NPMRC_SYNTAX'));
+    return;
+  }
+  if (checkSecret(entry, sink)) return;
+  if (checkTls(entry, sink)) return;
+  if (checkUnsafePerm(entry, sink)) return;
+  if (checkRegistry(entry, sink)) return;
+  checkUnknownKey(entry, sink);
+}
+
 export function validateNpmrc(input, options = {}) {
   const entries = typeof input === 'string' ? parseNpmrc(input) : (input || []);
-  const errors = [];
-  const warnings = [];
+  const sink = { errors: [], warnings: [] };
   const info = { keys: entries.filter((e) => e.key).map((e) => e.key) };
 
   for (const e of entries) {
-    if (e.malformed) {
-      errors.push(new NpmrcValidationError(`malformed line ${e.line}: "${e.raw}" (expected key=value)`, 'NPMRC_SYNTAX'));
-      continue;
-    }
-    const { key, value, line } = e;
-
-    // --- plaintext credentials ---
-    if (SECRET_KEY_RE.test(key)) {
-      if (!ENV_REF_ONLY_RE.test(value)) {
-        errors.push(new NpmrcValidationError(
-          `plaintext credential at line ${line} ("${key}") — use an env var reference like \${NPM_TOKEN}`,
-          'NPMRC_PLAINTEXT_SECRET'));
-      }
-      continue; // auth lines aren't subject to the unknown-key warning
-    }
-
-    // --- TLS / verification weakening ---
-    if (key === 'strict-ssl' && /^(false|0)$/i.test(value)) {
-      errors.push(new NpmrcValidationError(`strict-ssl=${value} at line ${line} disables TLS verification`, 'NPMRC_STRICT_SSL_OFF'));
-      continue;
-    }
-    if (key.endsWith('rejectunauthorized') && /^(false|0)$/i.test(value)) {
-      errors.push(new NpmrcValidationError(`rejectUnauthorized disabled at line ${line}`, 'NPMRC_REJECT_UNAUTHORIZED_OFF'));
-      continue;
-    }
-
-    // --- privilege escalation ---
-    if (key === 'unsafe-perm' && /^(true|1)$/i.test(value)) {
-      warnings.push({ code: 'NPMRC_UNSAFE_PERM', message: `unsafe-perm enabled at line ${line} — lifecycle scripts run with elevated privileges` });
-      continue;
-    }
-
-    // --- registry URL validity / scheme ---
-    if (key === 'registry' || key.endsWith(':registry')) {
-      if (ENV_REF_RE.test(value)) continue; // env-interpolated URL — can't statically parse
-      let url = null;
-      try {
-        url = new URL(value);
-      } catch {
-        errors.push(new NpmrcValidationError(`invalid registry URL at line ${line}: "${value}"`, 'NPMRC_INVALID_REGISTRY'));
-      }
-      if (url && url.protocol === 'http:') {
-        warnings.push({ code: 'NPMRC_INSECURE_REGISTRY', message: `registry over http:// at line ${line} (${value}) — prefer https://` });
-      }
-      continue;
-    }
-
-    // --- unknown key (warn only) ---
-    if (key.startsWith('//')) continue; // per-registry auth/config line
-    const bareKey = key.includes(':') ? key.slice(key.lastIndexOf(':') + 1) : key;
-    if (!KNOWN_KEYS.has(key) && !KNOWN_KEYS.has(bareKey)) {
-      warnings.push({ code: 'NPMRC_UNKNOWN_KEY', message: `unrecognized npm config key "${key}" at line ${line}` });
-    }
+    validateEntry(e, sink);
   }
 
+  const { errors, warnings } = sink;
   const valid = errors.length === 0 && !(options.strictMode && warnings.length > 0);
   return { valid, errors, warnings, info };
 }

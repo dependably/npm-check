@@ -7,8 +7,7 @@ import { Worker } from 'worker_threads';
 import { cpus } from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { chunkLockfile, mergeLockfileChunks } from './performance.js';
-import { isLargeLockfile } from './performance.js';
+import { chunkLockfile, mergeLockfileChunks, isLargeLockfile } from './performance.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);

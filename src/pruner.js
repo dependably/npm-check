@@ -38,6 +38,66 @@ function resolutionCandidates(key, name) {
 }
 
 /**
+ * A root-like entry is the project itself ('') or a workspace source dir —
+ * anything not installed under a node_modules/ path.
+ */
+function isRootLike(key) {
+  return key === '' || !key.includes('node_modules/');
+}
+
+/**
+ * Mark `target` reachable and enqueue it, but only the first time it is seen
+ * and only when it exists in the packages map.
+ */
+function visit(target, packages, reachable, queue) {
+  if (packages[target] === undefined || reachable.has(target)) return;
+  reachable.add(target);
+  queue.push(target);
+}
+
+/**
+ * Follow the node_modules resolution chain for dependency `name` required from
+ * `key`, marking the nearest existing match reachable (like node resolution).
+ */
+function visitDependency(key, name, packages, reachable, queue) {
+  for (const candidate of resolutionCandidates(key, name)) {
+    if (packages[candidate] !== undefined) {
+      visit(candidate, packages, reachable, queue);
+      break; // nearest hit wins, like node resolution
+    }
+  }
+}
+
+/**
+ * Process one dequeued entry: follow its link target (if any) and every
+ * dependency edge in the sections that apply to its position in the tree.
+ */
+function walkEntry(key, entry, packages, reachable, queue) {
+  // Link entries point at their target (usually a workspace dir)
+  if (entry.link && typeof entry.resolved === 'string') {
+    visit(entry.resolved, packages, reachable, queue);
+  }
+
+  const sections = isRootLike(key) ? ROOT_SECTIONS : PACKAGE_SECTIONS;
+  for (const section of sections) {
+    const deps = entry[section];
+    if (!deps || typeof deps !== 'object') continue;
+    for (const name of Object.keys(deps)) {
+      visitDependency(key, name, packages, reachable, queue);
+    }
+  }
+}
+
+/**
+ * Derive the package name for an orphan entry: prefer its explicit `.name`,
+ * otherwise the last node_modules/ path segment.
+ */
+function orphanName(key, entry) {
+  if (entry && entry.name) return entry.name;
+  return key.slice(key.lastIndexOf('node_modules/') + 'node_modules/'.length);
+}
+
+/**
  * Compute which packages-map entries are reachable from the root package and
  * workspace entries by following dependency edges with npm's resolution rules.
  *
@@ -45,8 +105,7 @@ function resolutionCandidates(key, name) {
  * @returns {{reachable: Set<string>, orphans: Array<{key, name, version}>}}
  */
 export function findOrphanedPackages(lockfile) {
-  const version = detectLockfileVersion(lockfile);
-  if (version === LOCKFILE_VERSIONS.V1) {
+  if (detectLockfileVersion(lockfile) === LOCKFILE_VERSIONS.V1) {
     throw new PrunerError(
       'v1 lockfiles are not supported; run `npm-check migrate 3` first',
       'UNSUPPORTED_VERSION'
@@ -59,7 +118,7 @@ export function findOrphanedPackages(lockfile) {
 
   // Roots: the project itself plus workspace source entries
   for (const key of Object.keys(packages)) {
-    if (key === '' || !key.includes('node_modules/')) {
+    if (isRootLike(key)) {
       reachable.add(key);
       queue.push(key);
     }
@@ -68,42 +127,13 @@ export function findOrphanedPackages(lockfile) {
   while (queue.length > 0) {
     const key = queue.shift();
     const entry = packages[key];
-    if (!entry) continue;
-
-    // Link entries point at their target (usually a workspace dir)
-    if (entry.link && typeof entry.resolved === 'string') {
-      const target = entry.resolved;
-      if (packages[target] !== undefined && !reachable.has(target)) {
-        reachable.add(target);
-        queue.push(target);
-      }
-    }
-
-    const isRootLike = key === '' || !key.includes('node_modules/');
-    const sections = isRootLike ? ROOT_SECTIONS : PACKAGE_SECTIONS;
-
-    for (const section of sections) {
-      const deps = entry[section];
-      if (!deps || typeof deps !== 'object') continue;
-
-      for (const name of Object.keys(deps)) {
-        for (const candidate of resolutionCandidates(key, name)) {
-          if (packages[candidate] !== undefined) {
-            if (!reachable.has(candidate)) {
-              reachable.add(candidate);
-              queue.push(candidate);
-            }
-            break; // nearest hit wins, like node resolution
-          }
-        }
-      }
-    }
+    if (entry) walkEntry(key, entry, packages, reachable, queue);
   }
 
   const orphans = [];
   for (const [key, entry] of Object.entries(packages)) {
     if (!reachable.has(key)) {
-      orphans.push({ key, name: entry && entry.name ? entry.name : key.slice(key.lastIndexOf('node_modules/') + 'node_modules/'.length), version: entry ? entry.version : undefined });
+      orphans.push({ key, name: orphanName(key, entry), version: entry ? entry.version : undefined });
     }
   }
 

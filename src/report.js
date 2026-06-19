@@ -64,6 +64,130 @@ function worstSeverity(findings) {
   return null;
 }
 
+// Append a normalized finding to its section bucket, creating it on first use.
+function pushFinding(buckets, id, finding) {
+  const list = buckets[id] || (buckets[id] = []);
+  list.push(finding);
+}
+
+// Bucket integrity findings: real hash mismatches are errors, unresolved entries warn.
+function collectIntegrityFindings(buckets, integrityResult) {
+  for (const err of integrityResult.errors) {
+    if (err.expected && err.actual) {
+      pushFinding(buckets, 'integrity', { severity: 'error', location: err.packagePath, message: `lockfile hash differs from registry for ${err.package}` });
+    }
+  }
+  for (const item of integrityResult.unresolvedItems) {
+    pushFinding(buckets, 'integrity', { severity: 'warn', location: item.packagePath, message: `${item.package}@${item.version}: ${item.reason}` });
+  }
+}
+
+// Bucket vulnerability findings. Only advisory findings are errors here; unresolved
+// entries (which appear in `errors` too when failOnUnresolved) are rendered once as warnings.
+function collectVulnFindings(buckets, vulnResult) {
+  for (const err of vulnResult.errors) {
+    if (!err.advisoryId) continue;
+    pushFinding(buckets, 'vuln', { severity: 'error', location: err.packagePath, message: `${err.package}@${err.version}: ${err.title} (${err.severity})` });
+  }
+  for (const warn of vulnResult.warnings) {
+    pushFinding(buckets, 'vuln', { severity: 'warn', location: warn.packagePath, message: `${warn.package}@${warn.version}: ${warn.title} (${warn.severity})` });
+  }
+  for (const item of vulnResult.unresolvedItems) {
+    pushFinding(buckets, 'vuln', { severity: 'warn', location: item.packagePath, message: `${item.package}@${item.version}: ${item.reason}` });
+  }
+}
+
+// Bucket deprecation findings. Unresolved entries also land in `errors` when
+// failOnUnresolved; render those once, as warnings — only findings carry a `message`.
+function collectDeprecationFindings(buckets, deprecationResult) {
+  for (const err of deprecationResult.errors) {
+    if (!err.message) continue;
+    pushFinding(buckets, 'deprecated', { severity: 'error', location: err.packagePath, message: `${err.package}@${err.version}: ${err.message}` });
+  }
+  for (const warn of deprecationResult.warnings) {
+    pushFinding(buckets, 'deprecated', { severity: 'warn', location: warn.packagePath, message: `${warn.package}@${warn.version}: ${warn.message}` });
+  }
+  for (const item of deprecationResult.unresolvedItems) {
+    pushFinding(buckets, 'deprecated', { severity: 'warn', location: item.packagePath, message: `${item.package}@${item.version}: ${item.reason}` });
+  }
+}
+
+// Bucket license findings: rejected licenses are errors, unknown licenses warn.
+function collectLicenseFindings(buckets, licenseResult) {
+  for (const err of licenseResult.errors) {
+    pushFinding(buckets, 'licenses', { severity: 'error', location: err.package, message: `license "${err.license || 'UNKNOWN'}" not approved` });
+  }
+  for (const warn of licenseResult.warnings) {
+    pushFinding(buckets, 'licenses', { severity: 'warn', location: warn.package, message: `license "${warn.license || 'UNKNOWN'}" unknown` });
+  }
+}
+
+// One-line summary for the integrity section's count bits.
+function integritySummary(r) {
+  const bits = [`${r.passed} verified`];
+  if (r.failed) bits.push(`${r.failed} mismatched`);
+  if (r.unresolved) bits.push(`${r.unresolved} unresolved`);
+  if (r.skipped) bits.push(`${r.skipped} skipped`);
+  return bits.join(' · ');
+}
+
+// One-line summary shared by the vuln and deprecation sections (scanned/flagged/…).
+function scanSummary(r, flaggedKey, flaggedLabel) {
+  const bits = [`${r.scanned} scanned`];
+  if (r[flaggedKey]) bits.push(`${r[flaggedKey]} ${flaggedLabel}`);
+  if (r.unresolved) bits.push(`${r.unresolved} unresolved`);
+  if (r.skipped) bits.push(`${r.skipped} skipped`);
+  return bits.join(' · ');
+}
+
+// One-line summary for the license section's count bits.
+function licenseSummary(r) {
+  const bits = [`${r.approved} ok`];
+  if (r.rejected) bits.push(`${r.rejected} rejected`);
+  if (r.unknown) bits.push(`${r.unknown} unknown`);
+  return bits.join(' · ');
+}
+
+// One-line summary for the install-scripts section, reconciled against allowScripts.
+function installScriptsSummary(tally) {
+  if (tally.total === 0) return 'none';
+  if (tally.v12Aware) {
+    return `${tally.total} ${tally.total === 1 ? 'script' : 'scripts'} · ${tally.allowed.length} allowed · ${tally.blocked.length} blocked`;
+  }
+  return `${tally.total} ${tally.total === 1 ? 'package' : 'packages'} (no allowScripts — all need review)`;
+}
+
+// Default pass-state summary for a generic section: count its findings or fall back.
+function genericSummary(id, findings) {
+  const sev = worstSeverity(findings);
+  if (sev) return `${findings.length} ${findings.length === 1 ? 'finding' : 'findings'}`;
+  return DEFAULT_PASS_SUMMARY[id] || 'pass';
+}
+
+// Resolve a section's { status, summary } from its findings and the run's results.
+function describeSection(id, findings, state) {
+  if (id === 'integrity') {
+    if (!state.integrity) return { status: 'skip', summary: 'skipped (--offline)' };
+    return { status: worstSeverity(findings) || 'pass', summary: integritySummary(state.integrityResult) };
+  }
+  if (id === 'vuln') {
+    if (!state.vuln) return { status: 'skip', summary: 'skipped (--offline)' };
+    return { status: worstSeverity(findings) || 'pass', summary: scanSummary(state.vulnResult, 'vulnerable', 'vulnerable') };
+  }
+  if (id === 'deprecated') {
+    if (!state.deprecated) return { status: 'skip', summary: 'skipped (--offline)' };
+    return { status: worstSeverity(findings) || 'pass', summary: scanSummary(state.deprecationResult, 'deprecated', 'deprecated') };
+  }
+  if (id === 'licenses') {
+    if (state.licenseSkip) return { status: 'skip', summary: `skipped (${state.licenseSkip})` };
+    return { status: worstSeverity(findings) || 'pass', summary: licenseSummary(state.licenseResult) };
+  }
+  if (id === 'install-scripts') {
+    return { status: worstSeverity(findings) || 'pass', summary: installScriptsSummary(state.scriptTally) };
+  }
+  return { status: worstSeverity(findings) || 'pass', summary: genericSummary(id, findings) };
+}
+
 /**
  * Run every available check and build a structured report.
  *
@@ -124,7 +248,7 @@ export async function runReport(target, options = {}) {
   const buckets = {};
   for (const f of audit.findings) {
     const id = RULE_SECTION[f.ruleId] || 'structure';
-    (buckets[id] = buckets[id] || []).push({ severity: f.severity, location: f.packagePath, message: f.message });
+    pushFinding(buckets, id, { severity: f.severity, location: f.packagePath, message: f.message });
   }
 
   // 2. Registry integrity verification (network).
@@ -134,15 +258,7 @@ export async function runReport(target, options = {}) {
       concurrency, timeoutMs, failOnUnresolved, fetchIntegrity, onProgress,
       ...(defaultRegistry ? { defaultRegistry } : {})
     });
-    const intFindings = buckets.integrity = buckets.integrity || [];
-    for (const err of integrityResult.errors) {
-      if (err.expected && err.actual) {
-        intFindings.push({ severity: 'error', location: err.packagePath, message: `lockfile hash differs from registry for ${err.package}` });
-      }
-    }
-    for (const item of integrityResult.unresolvedItems) {
-      intFindings.push({ severity: 'warn', location: item.packagePath, message: `${item.package}@${item.version}: ${item.reason}` });
-    }
+    collectIntegrityFindings(buckets, integrityResult);
   }
 
   // 3. Known-vulnerability scan (network; registry bulk advisory endpoint).
@@ -152,19 +268,7 @@ export async function runReport(target, options = {}) {
       concurrency, timeoutMs, minSeverity, failOnUnresolved, fetchAdvisories, onProgress,
       ...(defaultRegistry ? { defaultRegistry } : {})
     });
-    const vulnFindings = buckets.vuln = buckets.vuln || [];
-    // Only advisory findings are errors here; unresolved entries (which appear in
-    // `errors` too when failOnUnresolved) are rendered once, as warnings, below.
-    for (const err of vulnResult.errors) {
-      if (!err.advisoryId) continue;
-      vulnFindings.push({ severity: 'error', location: err.packagePath, message: `${err.package}@${err.version}: ${err.title} (${err.severity})` });
-    }
-    for (const warn of vulnResult.warnings) {
-      vulnFindings.push({ severity: 'warn', location: warn.packagePath, message: `${warn.package}@${warn.version}: ${warn.title} (${warn.severity})` });
-    }
-    for (const item of vulnResult.unresolvedItems) {
-      vulnFindings.push({ severity: 'warn', location: item.packagePath, message: `${item.package}@${item.version}: ${item.reason}` });
-    }
+    collectVulnFindings(buckets, vulnResult);
   }
 
   // 3b. Deprecation scan (network; registry version manifest `deprecated` field).
@@ -174,19 +278,7 @@ export async function runReport(target, options = {}) {
       concurrency, timeoutMs, failOnDeprecated, failOnUnresolved, fetchManifest, onProgress,
       ...(defaultRegistry ? { defaultRegistry } : {})
     });
-    const depFindings = buckets.deprecated = buckets.deprecated || [];
-    for (const err of deprecationResult.errors) {
-      // Unresolved entries also land in `errors` when failOnUnresolved; render those
-      // once, as warnings, below — only deprecation findings carry a `message`.
-      if (!err.message) continue;
-      depFindings.push({ severity: 'error', location: err.packagePath, message: `${err.package}@${err.version}: ${err.message}` });
-    }
-    for (const warn of deprecationResult.warnings) {
-      depFindings.push({ severity: 'warn', location: warn.packagePath, message: `${warn.package}@${warn.version}: ${warn.message}` });
-    }
-    for (const item of deprecationResult.unresolvedItems) {
-      depFindings.push({ severity: 'warn', location: item.packagePath, message: `${item.package}@${item.version}: ${item.reason}` });
-    }
+    collectDeprecationFindings(buckets, deprecationResult);
   }
 
   // 4. License validation (filesystem; needs node_modules + an approved list).
@@ -201,79 +293,20 @@ export async function runReport(target, options = {}) {
   } else {
     try {
       licenseResult = await checkLicenses(lockfile, { csvPath: licensesCsv, nodeModulesPath, strict });
-      const licFindings = buckets.licenses = buckets.licenses || [];
-      for (const err of licenseResult.errors) {
-        licFindings.push({ severity: 'error', location: err.package, message: `license "${err.license || 'UNKNOWN'}" not approved` });
-      }
-      for (const warn of licenseResult.warnings) {
-        licFindings.push({ severity: 'warn', location: warn.package, message: `license "${warn.license || 'UNKNOWN'}" unknown` });
-      }
+      collectLicenseFindings(buckets, licenseResult);
     } catch (e) {
       licenseSkip = e.message;
     }
   }
 
   // Assemble ordered sections with status + one-line summary.
+  const sectionState = {
+    integrity, integrityResult, vuln, vulnResult,
+    deprecated, deprecationResult, licenseSkip, licenseResult, scriptTally
+  };
   const sections = SECTIONS.map(({ id, title }) => {
     const findings = buckets[id] || [];
-    let status;
-    let summary;
-
-    if (id === 'integrity' && !integrity) {
-      status = 'skip'; summary = 'skipped (--offline)';
-    } else if (id === 'integrity') {
-      const sev = worstSeverity(findings);
-      status = sev || 'pass';
-      const bits = [`${integrityResult.passed} verified`];
-      if (integrityResult.failed) bits.push(`${integrityResult.failed} mismatched`);
-      if (integrityResult.unresolved) bits.push(`${integrityResult.unresolved} unresolved`);
-      if (integrityResult.skipped) bits.push(`${integrityResult.skipped} skipped`);
-      summary = bits.join(' · ');
-    } else if (id === 'vuln' && !vuln) {
-      status = 'skip'; summary = 'skipped (--offline)';
-    } else if (id === 'vuln') {
-      const sev = worstSeverity(findings);
-      status = sev || 'pass';
-      const bits = [`${vulnResult.scanned} scanned`];
-      if (vulnResult.vulnerable) bits.push(`${vulnResult.vulnerable} vulnerable`);
-      if (vulnResult.unresolved) bits.push(`${vulnResult.unresolved} unresolved`);
-      if (vulnResult.skipped) bits.push(`${vulnResult.skipped} skipped`);
-      summary = bits.join(' · ');
-    } else if (id === 'deprecated' && !deprecated) {
-      status = 'skip'; summary = 'skipped (--offline)';
-    } else if (id === 'deprecated') {
-      const sev = worstSeverity(findings);
-      status = sev || 'pass';
-      const bits = [`${deprecationResult.scanned} scanned`];
-      if (deprecationResult.deprecated) bits.push(`${deprecationResult.deprecated} deprecated`);
-      if (deprecationResult.unresolved) bits.push(`${deprecationResult.unresolved} unresolved`);
-      if (deprecationResult.skipped) bits.push(`${deprecationResult.skipped} skipped`);
-      summary = bits.join(' · ');
-    } else if (id === 'licenses' && licenseSkip) {
-      status = 'skip'; summary = `skipped (${licenseSkip})`;
-    } else if (id === 'licenses') {
-      const sev = worstSeverity(findings);
-      status = sev || 'pass';
-      const bits = [`${licenseResult.approved} ok`];
-      if (licenseResult.rejected) bits.push(`${licenseResult.rejected} rejected`);
-      if (licenseResult.unknown) bits.push(`${licenseResult.unknown} unknown`);
-      summary = bits.join(' · ');
-    } else if (id === 'install-scripts') {
-      const sev = worstSeverity(findings);
-      status = sev || 'pass';
-      if (scriptTally.total === 0) {
-        summary = 'none';
-      } else if (scriptTally.v12Aware) {
-        summary = `${scriptTally.total} ${scriptTally.total === 1 ? 'script' : 'scripts'} · ${scriptTally.allowed.length} allowed · ${scriptTally.blocked.length} blocked`;
-      } else {
-        summary = `${scriptTally.total} ${scriptTally.total === 1 ? 'package' : 'packages'} (no allowScripts — all need review)`;
-      }
-    } else {
-      const sev = worstSeverity(findings);
-      status = sev || 'pass';
-      summary = sev ? `${findings.length} ${findings.length === 1 ? 'finding' : 'findings'}` : DEFAULT_PASS_SUMMARY[id] || 'pass';
-    }
-
+    const { status, summary } = describeSection(id, findings, sectionState);
     return { id, title, status, summary, findings };
   });
 
@@ -320,35 +353,39 @@ export function formatReport(report, options = {}) {
   const lines = [];
   lines.push(`npm-check report — ${report.filePath}`);
   lines.push('');
-
-  // Section summary table.
-  const titleWidth = Math.max(...report.sections.map((s) => s.title.length));
+  lines.push(...renderSummaryTable(report.sections));
   for (const s of report.sections) {
-    lines.push(`  ${ICON[s.status]}  ${s.title.padEnd(titleWidth)}   ${s.summary}`);
+    lines.push(...renderSectionDetail(s));
   }
-
-  // Detail blocks for sections that have findings.
-  for (const s of report.sections) {
-    if (s.findings.length === 0) continue;
-    lines.push('');
-    lines.push(`${s.title} (${s.findings.length})`);
-    const shown = s.findings.slice(0, MAX_DETAIL);
-    for (const f of shown) {
-      const loc = f.location ? `${f.location}  ` : '';
-      lines.push(`  ${ICON[f.severity] || '·'}  ${loc}${f.message}`);
-    }
-    if (s.findings.length > shown.length) {
-      lines.push(`  …and ${s.findings.length - shown.length} more`);
-    }
-  }
-
   lines.push('');
-  const { errors, warnings, total } = report.summary;
-  if (total === 0) {
-    lines.push('✔ all checks passed');
-  } else {
-    const word = total === 1 ? 'problem' : 'problems';
-    lines.push(`✖ ${total} ${word} (${errors} error${errors === 1 ? '' : 's'}, ${warnings} warning${warnings === 1 ? '' : 's'})`);
-  }
+  lines.push(renderFooter(report.summary));
   return lines.join('\n');
+}
+
+// Section summary table: one aligned status line per section.
+function renderSummaryTable(sections) {
+  const titleWidth = Math.max(...sections.map((s) => s.title.length));
+  return sections.map((s) => `  ${ICON[s.status]}  ${s.title.padEnd(titleWidth)}   ${s.summary}`);
+}
+
+// Detail block for a single section — empty unless it has findings.
+function renderSectionDetail(s) {
+  if (s.findings.length === 0) return [];
+  const lines = ['', `${s.title} (${s.findings.length})`];
+  const shown = s.findings.slice(0, MAX_DETAIL);
+  for (const f of shown) {
+    const loc = f.location ? `${f.location}  ` : '';
+    lines.push(`  ${ICON[f.severity] || '·'}  ${loc}${f.message}`);
+  }
+  if (s.findings.length > shown.length) {
+    lines.push(`  …and ${s.findings.length - shown.length} more`);
+  }
+  return lines;
+}
+
+// Closing totals line: an all-clear, or an error/warning count.
+function renderFooter({ errors, warnings, total }) {
+  if (total === 0) return '✔ all checks passed';
+  const word = total === 1 ? 'problem' : 'problems';
+  return `✖ ${total} ${word} (${errors} error${errors === 1 ? '' : 's'}, ${warnings} warning${warnings === 1 ? '' : 's'})`;
 }

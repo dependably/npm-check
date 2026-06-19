@@ -11,6 +11,69 @@ import {
 } from './performance.js';
 import { parallelUpgradeIntegrityHashes as parallelUpgrade, parallelDeduplicatePackages as parallelDedupe } from './parallel-processor.js';
 
+// Dependency sections within a package entry whose integrity hashes are
+// upgraded recursively alongside the entry's own integrity.
+const DEPENDENCY_SECTIONS = ['dependencies', 'devDependencies', 'peerDependencies', 'optionalDependencies'];
+
+// Emit a progress update for the integrity-hash upgrade stage.
+function reportUpgradeProgress(onProgress, processed, total) {
+  if (!onProgress) return;
+  onProgress({ current: processed, total, percentage: Math.round((processed / total) * 100), stage: 'Upgrading integrity hashes' });
+}
+
+// Promote a single integrity hash to sha512. sha1 hashes are always promoted;
+// other non-sha512 hashes are promoted only when `all` is set.
+function upgradeHash(hash, all) {
+  if (!hash) return hash;
+  if (hash.startsWith('sha1-')) {
+    return 'sha512-' + hash.slice(5);
+  }
+  if (all && !hash.startsWith('sha512-')) {
+    return 'sha512-' + hash.slice(hash.indexOf('-') + 1);
+  }
+  return hash;
+}
+
+// Recursively upgrade integrity hashes in a dependency tree, preserving
+// non-object entries untouched.
+function upgradeDependencies(deps, all) {
+  if (!deps || typeof deps !== 'object') return deps;
+
+  const upgraded = {};
+  for (const [depName, dep] of Object.entries(deps)) {
+    if (!dep || typeof dep !== 'object') {
+      upgraded[depName] = dep;
+      continue;
+    }
+
+    // Upgrade this dependency and recursively upgrade nested ones
+    upgraded[depName] = {
+      ...dep,
+      ...(dep.integrity && { integrity: upgradeHash(dep.integrity, all) }),
+      ...(dep.dependencies && { dependencies: upgradeDependencies(dep.dependencies, all) })
+    };
+  }
+  return upgraded;
+}
+
+// Upgrade a single package entry's own integrity plus each of its nested
+// dependency sections, returning a shallow copy.
+function upgradePackageEntry(pkg, all) {
+  const upgradedPkg = { ...pkg };
+
+  if (upgradedPkg.integrity) {
+    upgradedPkg.integrity = upgradeHash(upgradedPkg.integrity, all);
+  }
+
+  for (const section of DEPENDENCY_SECTIONS) {
+    if (upgradedPkg[section] && typeof upgradedPkg[section] === 'object') {
+      upgradedPkg[section] = upgradeDependencies(upgradedPkg[section], all);
+    }
+  }
+
+  return upgradedPkg;
+}
+
 /**
  * Upgrade integrity hashes in a lockfile
  * @param {object} lockfileData - Lockfile data
@@ -40,85 +103,21 @@ export function upgradeIntegrityHashes(lockfileData, options = {}) {
   // Use shallow copy to avoid deep cloning
   const result = shallowCopyLockfile(lockfileData);
 
-  const upgradeHash = (hash) => {
-    if (!hash) return hash;
-    if (hash.startsWith('sha1-')) {
-      return 'sha512-' + hash.slice(5);
-    }
-    if (all && !hash.startsWith('sha512-')) {
-      return 'sha512-' + hash.slice(hash.indexOf('-') + 1);
-    }
-    return hash;
-  };
-
-  // Helper to recursively upgrade integrity hashes in dependency trees
-  const upgradeDependencies = (deps) => {
-    if (!deps || typeof deps !== 'object') return deps;
-
-    const upgraded = {};
-    for (const [depName, dep] of Object.entries(deps)) {
-      if (!dep || typeof dep !== 'object') {
-        upgraded[depName] = dep;
-        continue;
-      }
-
-      // Upgrade this dependency and recursively upgrade nested ones
-      upgraded[depName] = {
-        ...dep,
-        ...(dep.integrity && { integrity: upgradeHash(dep.integrity) }),
-        ...(dep.dependencies && { dependencies: upgradeDependencies(dep.dependencies) })
-      };
-    }
-    return upgraded;
-  };
-
   // Process packages directly without deep recursion
-  const packages = result.packages || {};
-  const upgradedPackages = {};
-  const packageEntries = Object.entries(packages);
+  const packageEntries = Object.entries(result.packages || {});
   const total = packageEntries.length;
+  const upgradedPackages = {};
   let processed = 0;
 
   for (const [path, pkg] of packageEntries) {
-    if (!pkg) {
-      upgradedPackages[path] = pkg;
-      processed++;
-      if (onProgress) {
-        onProgress({ current: processed, total, percentage: Math.round((processed / total) * 100), stage: 'Upgrading integrity hashes' });
-      }
-      continue;
-    }
-
-    // Create shallow copy of package
-    const upgradedPkg = { ...pkg };
-
-    // Upgrade the package's own integrity
-    if (upgradedPkg.integrity) {
-      upgradedPkg.integrity = upgradeHash(upgradedPkg.integrity);
-    }
-
-    // Upgrade nested integrity hashes recursively
-    if (upgradedPkg.dependencies && typeof upgradedPkg.dependencies === 'object') {
-      upgradedPkg.dependencies = upgradeDependencies(upgradedPkg.dependencies);
-    }
-
-    if (upgradedPkg.devDependencies && typeof upgradedPkg.devDependencies === 'object') {
-      upgradedPkg.devDependencies = upgradeDependencies(upgradedPkg.devDependencies);
-    }
-
-    if (upgradedPkg.peerDependencies && typeof upgradedPkg.peerDependencies === 'object') {
-      upgradedPkg.peerDependencies = upgradeDependencies(upgradedPkg.peerDependencies);
-    }
-
-    if (upgradedPkg.optionalDependencies && typeof upgradedPkg.optionalDependencies === 'object') {
-      upgradedPkg.optionalDependencies = upgradeDependencies(upgradedPkg.optionalDependencies);
-    }
-
-    upgradedPackages[path] = upgradedPkg;
+    upgradedPackages[path] = pkg ? upgradePackageEntry(pkg, all) : pkg;
     processed++;
 
-    if (onProgress && processed % 100 === 0) {
-      onProgress({ current: processed, total, percentage: Math.round((processed / total) * 100), stage: 'Upgrading integrity hashes' });
+    // Null entries report every step; real entries report every 100th.
+    if (!pkg) {
+      reportUpgradeProgress(onProgress, processed, total);
+    } else if (processed % 100 === 0) {
+      reportUpgradeProgress(onProgress, processed, total);
     }
   }
 
