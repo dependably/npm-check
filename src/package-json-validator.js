@@ -30,23 +30,14 @@ function isValidRange(range) {
   if (/^[\w.-]+\/[\w.#/-]+$/.test(r)) return true; // owner/repo[#ref] shorthand
   if (/^[a-z][a-z0-9._-]*$/i.test(r)) return true; // dist-tag (latest, next, beta, canary, ...)
   // caret/tilde/comparator/exact/x-ranges/||/hyphen/v-prefixed ranges
-  return /^[v\d~^<>=*xX][\w.\-+~^<>=|\sxX*]*$/.test(r);
+  return /^[v\d~^<>=*xX][\w.\-+~^<>=|\s*]*$/.test(r);
 }
 
-export function validatePackageJson(packageJson, options = {}) {
-  const errors = [];
-  const warnings = [];
-  const info = {};
+// Each section helper takes the manifest plus the shared { errors, warnings }
+// sink and pushes its findings, keeping validatePackageJson a flat checklist.
 
-  if (!packageJson || typeof packageJson !== 'object' || Array.isArray(packageJson)) {
-    errors.push(new PackageJsonValidationError('package.json is not an object', 'PJ_NOT_OBJECT'));
-    return { valid: false, errors, warnings, info };
-  }
-
-  const isPrivate = packageJson.private === true;
-  info.private = isPrivate;
-
-  // --- name ---
+// --- name ---
+function validateName(packageJson, isPrivate, errors, warnings) {
   if (packageJson.name === undefined) {
     // private / workspace-root packages may legitimately omit name → warn, not error
     if (isPrivate) {
@@ -59,8 +50,10 @@ export function validatePackageJson(packageJson, options = {}) {
   } else if (packageJson.name.length > 214) {
     errors.push(new PackageJsonValidationError('package name exceeds 214 characters', 'PJ_NAME_TOO_LONG'));
   }
+}
 
-  // --- version ---
+// --- version ---
+function validateVersion(packageJson, isPrivate, errors, warnings) {
   if (packageJson.version === undefined) {
     if (isPrivate) {
       warnings.push({ code: 'PJ_MISSING_VERSION', message: 'no "version" field (allowed for private packages)' });
@@ -70,13 +63,10 @@ export function validatePackageJson(packageJson, options = {}) {
   } else if (typeof packageJson.version !== 'string' || !SEMVER_RE.test(packageJson.version)) {
     errors.push(new PackageJsonValidationError(`invalid version "${packageJson.version}" (expected semver)`, 'PJ_INVALID_VERSION'));
   }
+}
 
-  // --- private flag type ---
-  if (packageJson.private !== undefined && typeof packageJson.private !== 'boolean') {
-    errors.push(new PackageJsonValidationError('"private" must be a boolean', 'PJ_INVALID_PRIVATE'));
-  }
-
-  // --- dependency ranges across all four sections ---
+// --- dependency names + ranges across all four sections ---
+function validateDependencySections(packageJson, errors) {
   for (const section of DEP_SECTIONS) {
     const deps = packageJson[section];
     if (deps === undefined) continue;
@@ -93,21 +83,24 @@ export function validatePackageJson(packageJson, options = {}) {
       }
     }
   }
+}
 
-  // --- scripts shape ---
-  if (packageJson.scripts !== undefined) {
-    if (typeof packageJson.scripts !== 'object' || packageJson.scripts === null || Array.isArray(packageJson.scripts)) {
-      errors.push(new PackageJsonValidationError('"scripts" must be an object', 'PJ_INVALID_SCRIPTS'));
-    } else {
-      for (const [k, v] of Object.entries(packageJson.scripts)) {
-        if (typeof v !== 'string') {
-          errors.push(new PackageJsonValidationError(`script "${k}" must be a string`, 'PJ_INVALID_SCRIPT_VALUE'));
-        }
-      }
+// --- scripts shape (object of string commands) ---
+function validateScripts(packageJson, errors) {
+  if (packageJson.scripts === undefined) return;
+  if (typeof packageJson.scripts !== 'object' || packageJson.scripts === null || Array.isArray(packageJson.scripts)) {
+    errors.push(new PackageJsonValidationError('"scripts" must be an object', 'PJ_INVALID_SCRIPTS'));
+    return;
+  }
+  for (const [k, v] of Object.entries(packageJson.scripts)) {
+    if (typeof v !== 'string') {
+      errors.push(new PackageJsonValidationError(`script "${k}" must be a string`, 'PJ_INVALID_SCRIPT_VALUE'));
     }
   }
+}
 
-  // --- license (warn-level) ---
+// --- license (warn-level) ---
+function validateLicense(packageJson, isPrivate, warnings) {
   if (packageJson.license === undefined && packageJson.licenses === undefined) {
     if (!isPrivate) {
       warnings.push({ code: 'PJ_MISSING_LICENSE', message: 'no "license" field (use a valid SPDX identifier)' });
@@ -117,8 +110,10 @@ export function validatePackageJson(packageJson, options = {}) {
   } else if (typeof packageJson.license === 'string' && /^see\s+license/i.test(packageJson.license)) {
     warnings.push({ code: 'PJ_NONSTANDARD_LICENSE', message: `non-SPDX license "${packageJson.license}"` });
   }
+}
 
-  // --- bin / main / exports sanity (types only; FS existence is out of scope) ---
+// --- bin / main / exports sanity (types only; FS existence is out of scope) ---
+function validateEntryPoints(packageJson, errors) {
   if (packageJson.main !== undefined && typeof packageJson.main !== 'string') {
     errors.push(new PackageJsonValidationError('"main" must be a string', 'PJ_INVALID_MAIN'));
   }
@@ -130,17 +125,52 @@ export function validatePackageJson(packageJson, options = {}) {
       typeof packageJson.exports !== 'object' && typeof packageJson.exports !== 'string') {
     errors.push(new PackageJsonValidationError('"exports" must be a string or an object', 'PJ_INVALID_EXPORTS'));
   }
+}
 
-  // --- workspaces shape (array of strings, or { packages: [...] }) ---
-  if (packageJson.workspaces !== undefined) {
-    const ws = packageJson.workspaces;
-    const arr = Array.isArray(ws) ? ws : (ws && typeof ws === 'object' && Array.isArray(ws.packages) ? ws.packages : null);
-    if (!arr) {
-      errors.push(new PackageJsonValidationError('"workspaces" must be an array or { packages: [] }', 'PJ_INVALID_WORKSPACES'));
-    } else if (!arr.every((p) => typeof p === 'string')) {
-      errors.push(new PackageJsonValidationError('"workspaces" entries must be strings (glob patterns)', 'PJ_INVALID_WORKSPACE_ENTRY'));
-    }
+// Pull the glob list out of a workspaces field: a bare array, or { packages: [] }.
+function workspaceGlobs(ws) {
+  if (Array.isArray(ws)) return ws;
+  if (ws && typeof ws === 'object' && Array.isArray(ws.packages)) return ws.packages;
+  return null;
+}
+
+// --- workspaces shape (array of strings, or { packages: [...] }) ---
+function validateWorkspaces(packageJson, errors) {
+  if (packageJson.workspaces === undefined) return;
+  const arr = workspaceGlobs(packageJson.workspaces);
+  if (!arr) {
+    errors.push(new PackageJsonValidationError('"workspaces" must be an array or { packages: [] }', 'PJ_INVALID_WORKSPACES'));
+  } else if (!arr.every((p) => typeof p === 'string')) {
+    errors.push(new PackageJsonValidationError('"workspaces" entries must be strings (glob patterns)', 'PJ_INVALID_WORKSPACE_ENTRY'));
   }
+}
+
+export function validatePackageJson(packageJson, options = {}) {
+  const errors = [];
+  const warnings = [];
+  const info = {};
+
+  if (!packageJson || typeof packageJson !== 'object' || Array.isArray(packageJson)) {
+    errors.push(new PackageJsonValidationError('package.json is not an object', 'PJ_NOT_OBJECT'));
+    return { valid: false, errors, warnings, info };
+  }
+
+  const isPrivate = packageJson.private === true;
+  info.private = isPrivate;
+
+  validateName(packageJson, isPrivate, errors, warnings);
+  validateVersion(packageJson, isPrivate, errors, warnings);
+
+  // --- private flag type ---
+  if (packageJson.private !== undefined && typeof packageJson.private !== 'boolean') {
+    errors.push(new PackageJsonValidationError('"private" must be a boolean', 'PJ_INVALID_PRIVATE'));
+  }
+
+  validateDependencySections(packageJson, errors);
+  validateScripts(packageJson, errors);
+  validateLicense(packageJson, isPrivate, warnings);
+  validateEntryPoints(packageJson, errors);
+  validateWorkspaces(packageJson, errors);
 
   const valid = errors.length === 0 && !(options.strictMode && warnings.length > 0);
   return { valid, errors, warnings, info };

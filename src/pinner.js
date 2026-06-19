@@ -42,6 +42,72 @@ export function classifyRange(range) {
 const DEFAULT_SECTIONS = ['dependencies', 'devDependencies', 'optionalDependencies'];
 
 /**
+ * Look up the version a package resolved to in the lockfile.
+ * v2/v3 use the packages map keyed by install path; v1 uses the dependencies tree.
+ * @param {object} lockfile - Parsed lockfile
+ * @param {string} name - Package name
+ * @param {boolean} hasPackages - Whether the lockfile has a packages map (v2/v3)
+ * @returns {string|undefined} The resolved version, or undefined if absent
+ */
+function resolvedVersionFor(lockfile, name, hasPackages) {
+  if (hasPackages) {
+    const entry = lockfile.packages && lockfile.packages[`node_modules/${name}`];
+    return entry && entry.version;
+  }
+  const entry = lockfile.dependencies && lockfile.dependencies[name];
+  return entry && entry.version;
+}
+
+/**
+ * Keep the lockfile root entry (packages['']) in sync after pinning (v2/v3 only).
+ * Only rewrites a range that's already present in the matching root section.
+ * @param {object} lockfile - The (cloned) lockfile being mutated
+ * @param {string} section - The dependency section
+ * @param {string} name - Package name
+ * @param {string} resolvedVersion - The exact version to pin to
+ */
+function syncLockfileRoot(lockfile, section, name, resolvedVersion) {
+  if (!lockfile.packages || !lockfile.packages['']) return;
+  const rootSection = lockfile.packages[''][section];
+  if (rootSection && Object.prototype.hasOwnProperty.call(rootSection, name)) {
+    rootSection[name] = resolvedVersion;
+  }
+}
+
+/**
+ * Pin a single dependency's range to the lockfile-resolved version, recording
+ * the result into changes/skipped and syncing the lockfile root on success.
+ * @param {object} ctx - { sourceLockfile, newLockfile, hasPackages, changes, skipped }
+ * @param {object} deps - The (cloned) package.json section being mutated
+ * @param {string} section - The dependency section
+ * @param {string} name - Package name
+ * @param {string} range - The original range
+ */
+function pinDependency(ctx, deps, section, name, range) {
+  const kind = classifyRange(range);
+
+  if (kind === 'exact') return;
+  if (kind !== 'caret' && kind !== 'tilde') {
+    ctx.skipped.push({ section, name, range, reason: `${kind}-range` });
+    return;
+  }
+
+  const resolvedVersion = resolvedVersionFor(ctx.sourceLockfile, name, ctx.hasPackages);
+  if (!resolvedVersion) {
+    ctx.skipped.push({ section, name, range, reason: 'not-in-lockfile' });
+    return;
+  }
+
+  deps[name] = resolvedVersion;
+  ctx.changes.push({ section, name, from: range, to: resolvedVersion });
+
+  // Keep the lockfile root entry in sync (v2/v3)
+  if (ctx.hasPackages) {
+    syncLockfileRoot(ctx.newLockfile, section, name, resolvedVersion);
+  }
+}
+
+/**
  * Pin caret/tilde ranges in package.json to the exact versions resolved in
  * the lockfile, and keep the lockfile's root entry (packages['']) in sync.
  * All other range forms are left alone and reported in `skipped`.
@@ -61,9 +127,7 @@ export function pinVersions(packageJson, lockfile, options = {}) {
     throw new PinnerError('lockfile data is required', 'MISSING_LOCKFILE');
   }
 
-  const version = detectLockfileVersion(lockfile);
-  const hasPackages = version !== LOCKFILE_VERSIONS.V1;
-
+  const hasPackages = detectLockfileVersion(lockfile) !== LOCKFILE_VERSIONS.V1;
   const activeSections = includePeer ? [...sections, 'peerDependencies'] : sections;
 
   const newPackageJson = JSON.parse(JSON.stringify(packageJson));
@@ -77,38 +141,14 @@ export function pinVersions(packageJson, lockfile, options = {}) {
     warnings.push('v1 lockfile has no packages map; pinned package.json only — consider `npm-check migrate 3`');
   }
 
+  const ctx = { sourceLockfile: lockfile, newLockfile, hasPackages, changes, skipped };
+
   for (const section of activeSections) {
     const deps = newPackageJson[section];
     if (!deps || typeof deps !== 'object') continue;
 
     for (const [name, range] of Object.entries(deps)) {
-      const kind = classifyRange(range);
-
-      if (kind === 'exact') continue;
-      if (kind !== 'caret' && kind !== 'tilde') {
-        skipped.push({ section, name, range, reason: `${kind}-range` });
-        continue;
-      }
-
-      const resolvedVersion = hasPackages
-        ? lockfile.packages && lockfile.packages[`node_modules/${name}`] && lockfile.packages[`node_modules/${name}`].version
-        : lockfile.dependencies && lockfile.dependencies[name] && lockfile.dependencies[name].version;
-
-      if (!resolvedVersion) {
-        skipped.push({ section, name, range, reason: 'not-in-lockfile' });
-        continue;
-      }
-
-      deps[name] = resolvedVersion;
-      changes.push({ section, name, from: range, to: resolvedVersion });
-
-      // Keep the lockfile root entry in sync (v2/v3)
-      if (hasPackages && newLockfile.packages && newLockfile.packages['']) {
-        const rootSection = newLockfile.packages[''][section];
-        if (rootSection && Object.prototype.hasOwnProperty.call(rootSection, name)) {
-          rootSection[name] = resolvedVersion;
-        }
-      }
+      pinDependency(ctx, deps, section, name, range);
     }
   }
 

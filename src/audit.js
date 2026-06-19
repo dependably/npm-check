@@ -118,6 +118,37 @@ const integrityHygieneRule = {
   }
 };
 
+// Validate a single non-registry resolved URL (git/file), returning a finding
+// message when the dependency type is disallowed, otherwise null.
+function checkSpecialResolved(resolved, { isGitDep, isFileDep, allowGit, allowFile }) {
+  if (isGitDep) {
+    return allowGit ? null : `git dependency not allowed: ${resolved}`;
+  }
+  if (isFileDep) {
+    return allowFile ? null : `file dependency not allowed: ${resolved}`;
+  }
+  return undefined; // not a special dep — caller handles registry URL
+}
+
+// Validate a registry/tarball resolved URL for TLS and trusted host, returning
+// a finding message when it fails, otherwise null.
+function checkRegistryResolved(resolved, { allowHttp, allowedHosts }) {
+  let url;
+  try {
+    url = new URL(resolved);
+  } catch {
+    return `unparseable resolved URL: ${resolved}`;
+  }
+  if (url.protocol === 'http:' && !allowHttp) {
+    return `insecure (non-TLS) resolved URL: ${resolved}`;
+  }
+  const isHttp = url.protocol === 'https:' || url.protocol === 'http:';
+  if (isHttp && !allowedHosts.includes(url.hostname)) {
+    return `resolved from untrusted registry host "${url.hostname}" (allowed: ${allowedHosts.join(', ')})`;
+  }
+  return null;
+}
+
 const secureResolvedRule = {
   id: 'secure-resolved',
   description: 'Resolved URLs must use TLS and trusted registries',
@@ -137,34 +168,11 @@ const secureResolvedRule = {
       const resolved = entry.resolved;
       if (!resolved) return;
 
-      if (isGitDep) {
-        if (!allowGit) {
-          findings.push({ packagePath: key, message: `git dependency not allowed: ${resolved}` });
-        }
-        return;
-      }
-      if (isFileDep) {
-        if (!allowFile) {
-          findings.push({ packagePath: key, message: `file dependency not allowed: ${resolved}` });
-        }
-        return;
-      }
-
-      let url;
-      try {
-        url = new URL(resolved);
-      } catch {
-        findings.push({ packagePath: key, message: `unparseable resolved URL: ${resolved}` });
-        return;
-      }
-
-      if (url.protocol === 'http:' && !allowHttp) {
-        findings.push({ packagePath: key, message: `insecure (non-TLS) resolved URL: ${resolved}` });
-        return;
-      }
-      if ((url.protocol === 'https:' || url.protocol === 'http:') && !allowedHosts.includes(url.hostname)) {
-        findings.push({ packagePath: key, message: `resolved from untrusted registry host "${url.hostname}" (allowed: ${allowedHosts.join(', ')})` });
-      }
+      const special = checkSpecialResolved(resolved, { isGitDep, isFileDep, allowGit, allowFile });
+      const message = special === undefined
+        ? checkRegistryResolved(resolved, { allowHttp, allowedHosts })
+        : special;
+      if (message) findings.push({ packagePath: key, message });
     });
     return findings;
   }
@@ -179,6 +187,16 @@ const secureResolvedRule = {
  *
  * @returns {{ total, allowed: object[], blocked: object[], v12Aware: boolean }}
  */
+// Resolve a package's npm v12 `allowScripts` approval state — pinned
+// `name@version` takes precedence over a bare `name` key.
+function resolveScriptApproval(allowScripts, name, version) {
+  if (!allowScripts || !name) return 'pending';
+  const pinned = `${name}@${version}`;
+  if (pinned in allowScripts) return allowScripts[pinned] ? 'allowed' : 'denied';
+  if (name in allowScripts) return allowScripts[name] ? 'allowed' : 'denied';
+  return 'pending'; // pending | allowed | denied
+}
+
 export function classifyInstallScripts(lockfile, packageJson, options = {}) {
   const { allow = [] } = options;
   const allowScripts = packageJson && packageJson.allowScripts;
@@ -191,12 +209,7 @@ export function classifyInstallScripts(lockfile, packageJson, options = {}) {
     if (isRoot || isWorkspaceSource || isLink) return;
     if (!entry || entry.hasInstallScript !== true) return;
 
-    let approval = 'pending'; // pending | allowed | denied
-    if (v12Aware && name) {
-      const pinned = `${name}@${entry.version}`;
-      if (pinned in allowScripts) approval = allowScripts[pinned] ? 'allowed' : 'denied';
-      else if (name in allowScripts) approval = allowScripts[name] ? 'allowed' : 'denied';
-    }
+    const approval = v12Aware ? resolveScriptApproval(allowScripts, name, entry.version) : 'pending';
     const viaRuleAllow = Boolean(name && allow.includes(name));
     const rec = { key, name, version: entry.version, approval, viaRuleAllow };
     if (viaRuleAllow || approval === 'allowed') allowed.push(rec);
@@ -204,6 +217,19 @@ export function classifyInstallScripts(lockfile, packageJson, options = {}) {
   });
 
   return { total: allowed.length + blocked.length, allowed, blocked, v12Aware };
+}
+
+// Compose the finding message for a blocked install-script package, varying by
+// whether it is explicitly denied, pending under an allowScripts-aware project,
+// or simply unreviewed in a pre-v12 project.
+function installScriptMessage(label, approval, v12Aware) {
+  if (approval === 'denied') {
+    return `${label} runs an install script but is denied in package.json "allowScripts" — npm v12 will not run it`;
+  }
+  if (v12Aware) {
+    return `${label} runs an install script not yet approved in package.json "allowScripts" — npm v12 will not run it (\`npm approve-scripts\`)`;
+  }
+  return `${label} runs a lifecycle install script (preinstall/install/postinstall) — review and add to this rule's "allow" list if trusted, or install with \`--ignore-scripts\``;
 }
 
 const installScriptsRule = {
@@ -214,11 +240,7 @@ const installScriptsRule = {
     const { blocked, v12Aware } = classifyInstallScripts(lockfile, packageJson, options);
     return blocked.map(({ key, name, approval }) => ({
       packagePath: key,
-      message: approval === 'denied'
-        ? `${name || key} runs an install script but is denied in package.json "allowScripts" — npm v12 will not run it`
-        : v12Aware
-          ? `${name || key} runs an install script not yet approved in package.json "allowScripts" — npm v12 will not run it (\`npm approve-scripts\`)`
-          : `${name || key} runs a lifecycle install script (preinstall/install/postinstall) — review and add to this rule's "allow" list if trusted, or install with \`--ignore-scripts\``
+      message: installScriptMessage(name || key, approval, v12Aware)
     }));
   }
 };
@@ -263,6 +285,25 @@ const noRemoteDepsRule = {
   }
 };
 
+// Collect unpinned (caret/tilde) ranges from one package.json section.
+function collectUnpinnedRanges(lockfile, deps, section, ignore) {
+  if (!deps || typeof deps !== 'object') return [];
+  const findings = [];
+  for (const [name, range] of Object.entries(deps)) {
+    if (ignore.includes(name)) continue;
+    const kind = classifyRange(range);
+    if (kind !== 'caret' && kind !== 'tilde') continue;
+
+    const entry = lockfile.packages && lockfile.packages[`node_modules/${name}`];
+    const resolvedNote = entry && entry.version ? ` (resolved: ${entry.version})` : '';
+    findings.push({
+      packagePath: `package.json#${section}/${name}`,
+      message: `range "${range}" is not pinned${resolvedNote} (run \`npm-check pin\`)`
+    });
+  }
+  return findings;
+}
+
 const pinnedVersionsRule = {
   id: 'pinned-versions',
   description: 'package.json dependency ranges must be exact versions',
@@ -283,27 +324,63 @@ const pinnedVersionsRule = {
     const findings = [];
 
     for (const section of sections) {
-      const deps = packageJson[section];
-      if (!deps || typeof deps !== 'object') continue;
-
-      for (const [name, range] of Object.entries(deps)) {
-        if (ignore.includes(name)) continue;
-        const kind = classifyRange(range);
-        if (kind !== 'caret' && kind !== 'tilde') continue;
-
-        const entry = lockfile.packages && lockfile.packages[`node_modules/${name}`];
-        const resolvedNote = entry && entry.version ? ` (resolved: ${entry.version})` : '';
-        findings.push({
-          packagePath: `package.json#${section}/${name}`,
-          message: `range "${range}" is not pinned${resolvedNote} (run \`npm-check pin\`)`
-        });
-      }
+      findings.push(...collectUnpinnedRanges(lockfile, packageJson[section], section, ignore));
     }
     return findings;
   }
 };
 
 const SYNC_SECTIONS = ['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies'];
+
+// Compare the top-level name/version of package.json against the lockfile.
+function checkRootMetadataSync(lockfile, packageJson) {
+  const findings = [];
+  if (packageJson.name && lockfile.name && packageJson.name !== lockfile.name) {
+    findings.push({ packagePath: '', message: `name mismatch: package.json says "${packageJson.name}", lockfile says "${lockfile.name}"` });
+  }
+  if (packageJson.version && lockfile.version && packageJson.version !== lockfile.version) {
+    findings.push({ packagePath: '', message: `version mismatch: package.json says "${packageJson.version}", lockfile says "${lockfile.version}" (run \`npm install\`)` });
+  }
+  return findings;
+}
+
+// Reconcile one dependency section between package.json and the lockfile root
+// entry (and the packages map), both directions.
+function checkSectionSync(lockfile, section, declared, locked) {
+  const findings = [];
+
+  for (const [name, range] of Object.entries(declared)) {
+    if (locked[name] === undefined) {
+      findings.push({
+        packagePath: `package.json#${section}/${name}`,
+        message: `declared in package.json but missing from the lockfile root entry (run \`npm install\`)`
+      });
+    } else if (locked[name] !== range) {
+      findings.push({
+        packagePath: `package.json#${section}/${name}`,
+        message: `range mismatch: package.json has "${range}", lockfile root has "${locked[name]}" (run \`npm install\`)`
+      });
+    }
+    // peers aren't necessarily installed as their own entries
+    if (section !== 'peerDependencies' && lockfile.packages[`node_modules/${name}`] === undefined) {
+      findings.push({
+        packagePath: `package.json#${section}/${name}`,
+        message: `declared in package.json but not installed in the lockfile packages map (run \`npm install\`)`
+      });
+    }
+  }
+
+  for (const name of Object.keys(locked)) {
+    if (declared[name] === undefined) {
+      findings.push({
+        packagePath: `package-lock.json#${section}/${name}`,
+        message: `present in the lockfile root entry but not declared in package.json (run \`npm install\`)`
+      });
+    }
+  }
+
+  return findings;
+}
 
 const lockfileSyncRule = {
   id: 'lockfile-sync',
@@ -318,14 +395,7 @@ const lockfileSyncRule = {
       }];
     }
 
-    const findings = [];
-
-    if (packageJson.name && lockfile.name && packageJson.name !== lockfile.name) {
-      findings.push({ packagePath: '', message: `name mismatch: package.json says "${packageJson.name}", lockfile says "${lockfile.name}"` });
-    }
-    if (packageJson.version && lockfile.version && packageJson.version !== lockfile.version) {
-      findings.push({ packagePath: '', message: `version mismatch: package.json says "${packageJson.version}", lockfile says "${lockfile.version}" (run \`npm install\`)` });
-    }
+    const findings = checkRootMetadataSync(lockfile, packageJson);
 
     const root = lockfile.packages && lockfile.packages[''];
     if (!root) return findings;
@@ -333,36 +403,7 @@ const lockfileSyncRule = {
     for (const section of SYNC_SECTIONS) {
       const declared = packageJson[section] || {};
       const locked = root[section] || {};
-
-      for (const [name, range] of Object.entries(declared)) {
-        if (locked[name] === undefined) {
-          findings.push({
-            packagePath: `package.json#${section}/${name}`,
-            message: `declared in package.json but missing from the lockfile root entry (run \`npm install\`)`
-          });
-        } else if (locked[name] !== range) {
-          findings.push({
-            packagePath: `package.json#${section}/${name}`,
-            message: `range mismatch: package.json has "${range}", lockfile root has "${locked[name]}" (run \`npm install\`)`
-          });
-        }
-        // peers aren't necessarily installed as their own entries
-        if (section !== 'peerDependencies' && lockfile.packages[`node_modules/${name}`] === undefined) {
-          findings.push({
-            packagePath: `package.json#${section}/${name}`,
-            message: `declared in package.json but not installed in the lockfile packages map (run \`npm install\`)`
-          });
-        }
-      }
-
-      for (const name of Object.keys(locked)) {
-        if (declared[name] === undefined) {
-          findings.push({
-            packagePath: `package-lock.json#${section}/${name}`,
-            message: `present in the lockfile root entry but not declared in package.json (run \`npm install\`)`
-          });
-        }
-      }
+      findings.push(...checkSectionSync(lockfile, section, declared, locked));
     }
 
     return findings;
@@ -382,10 +423,13 @@ const noOrphanPackagesRule = {
       // v1 lockfiles: lockfile-version rule already covers this
       return [];
     }
-    return orphans.map((orphan) => ({
-      packagePath: orphan.key,
-      message: `orphaned package${orphan.version ? ` (${orphan.name}@${orphan.version})` : ''} unreachable from the dependency graph (run \`npm-check prune\`)`
-    }));
+    return orphans.map((orphan) => {
+      const detail = orphan.version ? ` (${orphan.name}@${orphan.version})` : '';
+      return {
+        packagePath: orphan.key,
+        message: `orphaned package${detail} unreachable from the dependency graph (run \`npm-check prune\`)`
+      };
+    });
   }
 };
 
@@ -528,41 +572,57 @@ export const rules = [
  *                          or a raw user config object (will be merged over defaults)
  * @returns {{findings, summary, pass}}
  */
+// Resolve the audit config, accepting either an already-normalized config or a
+// raw user config that needs merging over the defaults.
+function resolveAuditConfig(config) {
+  const alreadyNormalized = config.rules
+    && config.rules[rules[0].id]
+    && config.rules[rules[0].id].severity;
+  return alreadyNormalized ? config : mergeConfig(config);
+}
+
+// Run a single rule and map its raw findings into stamped findings (ruleId +
+// resolved severity, honoring a finding's forcedSeverity).
+function collectRuleFindings(rule, ruleConfig, context) {
+  const raw = rule.check(context);
+  return raw.map((finding) => ({
+    ruleId: rule.id,
+    severity: (finding.data && finding.data.forcedSeverity) || ruleConfig.severity,
+    packagePath: finding.packagePath,
+    message: finding.message
+  }));
+}
+
+// Tally findings into the summary's per-rule error/warning breakdown.
+function summarizeByRule(findings) {
+  const byRule = {};
+  for (const finding of findings) {
+    byRule[finding.ruleId] = byRule[finding.ruleId] || { errors: 0, warnings: 0 };
+    byRule[finding.ruleId][finding.severity === 'error' ? 'errors' : 'warnings']++;
+  }
+  return byRule;
+}
+
 export function runAudit(target, config = {}) {
   const { lockfile, packageJson = null, filePath = 'package-lock.json' } = target;
   if (!lockfile || typeof lockfile !== 'object') {
     throw new AuditError('lockfile data is required', 'MISSING_LOCKFILE');
   }
 
-  const resolved = config.rules && config.rules[rules[0].id] && config.rules[rules[0].id].severity
-    ? config // already normalized
-    : mergeConfig(config);
+  const resolved = resolveAuditConfig(config);
 
   const findings = [];
   for (const rule of rules) {
     const ruleConfig = resolved.rules[rule.id];
     if (!ruleConfig || ruleConfig.severity === 'off') continue;
 
-    const raw = rule.check({ lockfile, packageJson, options: ruleConfig.options || {}, filePath });
-    for (const finding of raw) {
-      const severity = (finding.data && finding.data.forcedSeverity) || ruleConfig.severity;
-      findings.push({
-        ruleId: rule.id,
-        severity,
-        packagePath: finding.packagePath,
-        message: finding.message
-      });
-    }
+    const context = { lockfile, packageJson, options: ruleConfig.options || {}, filePath };
+    findings.push(...collectRuleFindings(rule, ruleConfig, context));
   }
 
   const errors = findings.filter((f) => f.severity === 'error').length;
   const warnings = findings.filter((f) => f.severity === 'warn').length;
-
-  const byRule = {};
-  for (const finding of findings) {
-    byRule[finding.ruleId] = byRule[finding.ruleId] || { errors: 0, warnings: 0 };
-    byRule[finding.ruleId][finding.severity === 'error' ? 'errors' : 'warnings']++;
-  }
+  const byRule = summarizeByRule(findings);
 
   const maxWarnings = resolved.maxWarnings !== undefined ? resolved.maxWarnings : -1;
   const pass = errors === 0 && (maxWarnings < 0 || warnings <= maxWarnings);

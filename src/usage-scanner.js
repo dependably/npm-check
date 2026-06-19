@@ -100,6 +100,36 @@ export function scanUsedPackages(dir, options = {}) {
 }
 
 /**
+ * Decide whether a declared dependency counts as "used" — by an explicit
+ * ignore-list entry, a real import, an npm-script mention, or the
+ * @types/foo-follows-foo heuristic.
+ */
+function isDependencyUsed(name, { used, scriptsText, ignore }) {
+  if (ignore.includes(name)) return true;
+  if (used.has(name)) return true;
+  // CLI tools invoked from npm scripts (eslint, jest, …) are used even
+  // though nothing imports them
+  if (scriptsText.includes(name)) return true;
+  // @types/foo is "used" when foo itself is
+  if (name.startsWith('@types/') && used.has(name.slice('@types/'.length))) return true;
+  return false;
+}
+
+/**
+ * Collect the unused entries from a single package.json dependency section.
+ */
+function collectUnusedInSection(deps, section, context) {
+  const unused = [];
+  if (!deps || typeof deps !== 'object') return unused;
+
+  for (const [name, version] of Object.entries(deps)) {
+    if (isDependencyUsed(name, context)) continue;
+    unused.push({ name, section, version });
+  }
+  return unused;
+}
+
+/**
  * Find dependencies declared in package.json that the application never
  * imports. Heuristic — results are flagged for removal, never auto-removed:
  * packages used only via CLI, config files, or runtime magic can appear
@@ -119,25 +149,14 @@ export function findUnusedDependencies(packageJson, dir, options = {}) {
 
   const { used, scannedFiles } = scanUsedPackages(dir, options);
 
-  // CLI tools invoked from npm scripts (eslint, jest, …) are used even
-  // though nothing imports them
   const scriptsText = Object.values(packageJson.scripts || {}).join('\n');
+  const context = { used, scriptsText, ignore };
 
   const sectionsChecked = includeDev ? ['dependencies', 'devDependencies'] : ['dependencies'];
   const unused = [];
 
   for (const section of sectionsChecked) {
-    const deps = packageJson[section];
-    if (!deps || typeof deps !== 'object') continue;
-
-    for (const [name, version] of Object.entries(deps)) {
-      if (ignore.includes(name)) continue;
-      if (used.has(name)) continue;
-      if (scriptsText.includes(name)) continue;
-      // @types/foo is "used" when foo itself is
-      if (name.startsWith('@types/') && used.has(name.slice('@types/'.length))) continue;
-      unused.push({ name, section, version });
-    }
+    unused.push(...collectUnusedInSection(packageJson[section], section, context));
   }
 
   return { unused, used, scannedFiles, sectionsChecked };

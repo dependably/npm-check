@@ -274,6 +274,111 @@ export async function parseLicensesCsv(csvPath) {
 }
 
 /**
+ * Decide whether a package entry can be verified against the registry.
+ * Returns true for verifiable entries; non-verifiable entries are counted as
+ * skipped (root/workspace/link/git/file/bundled, missing integrity/version, or
+ * a legacy sha1 hash that can't be compared to the registry's sha512).
+ * @param {object} info - Entry classification from forEachPackageEntry
+ * @returns {boolean} True if the entry should be verified
+ */
+function isVerifiableEntry(info) {
+  const { entry, isRoot, isWorkspaceSource, isLink, isBundled, isGitDep, isFileDep } = info;
+  if (isRoot || isWorkspaceSource || isLink) return false;
+  if (!entry.integrity) return false; // nothing locked to verify (integrity-hygiene flags this)
+  if (isBundled || isGitDep || isFileDep) return false; // no registry tarball integrity
+  // legacy sha1 can't be compared to the registry's sha512 — upgrade first
+  if (typeof entry.integrity === 'string' && entry.integrity.startsWith('sha1-')) return false;
+  if (!entry.version) return false;
+  return true;
+}
+
+/**
+ * Collect the entries that are verifiable against the registry, tallying every
+ * non-verifiable entry into results.skipped.
+ * @param {object} lockfileData - Parsed lockfile data
+ * @param {object} results - Results accumulator (skipped is incremented)
+ * @returns {Array<object>} Candidate entries ({ key, entry, name })
+ */
+function collectIntegrityCandidates(lockfileData, results) {
+  const candidates = [];
+  forEachPackageEntry(lockfileData, (info) => {
+    if (!isVerifiableEntry(info)) {
+      results.skipped++;
+      return;
+    }
+    candidates.push({ key: info.key, entry: info.entry, name: info.name });
+  });
+  return candidates;
+}
+
+/**
+ * Resolve the host from a registry base for allowlist enforcement.
+ * @param {string} registryBase - Registry base URL
+ * @returns {string|null} Host, or null if unparseable
+ */
+function resolveRegistryHost(registryBase) {
+  try {
+    return new URL(registryBase).host;
+  } catch {
+    return null; // unparseable → treat as untrusted
+  }
+}
+
+/**
+ * Record an integrity failure (mismatch or untrusted host) into the results.
+ * @param {object} results - Results accumulator
+ * @param {object} item - Failure detail (already includes valid: false)
+ */
+function recordIntegrityFailure(results, item) {
+  results.failed++;
+  results.valid = false;
+  results.errors.push(item);
+  results.details.push(item);
+}
+
+/**
+ * Record an unresolved entry (registry unreachable or no sha512 published).
+ * Unresolved entries don't fail the run unless failOnUnresolved is set.
+ * @param {object} results - Results accumulator
+ * @param {object} item - Unresolved detail ({ package, version, packagePath, reason })
+ * @param {boolean} failOnUnresolved - Promote unresolved entries to failures
+ */
+function recordIntegrityUnresolved(results, item, failOnUnresolved) {
+  results.unresolved++;
+  results.unresolvedItems.push(item);
+  results.details.push({ valid: !failOnUnresolved, unresolved: true, ...item });
+  if (failOnUnresolved) {
+    results.failed++;
+    results.valid = false;
+    results.errors.push(item);
+  }
+}
+
+/**
+ * Classify a fetched registry hash for a candidate and record the outcome.
+ * @param {object} results - Results accumulator
+ * @param {object} candidate - { key, entry, name }
+ * @param {string|null} registryHash - Hash fetched from the registry
+ * @param {Error|null} networkError - Error thrown by the fetcher, if any
+ * @param {boolean} failOnUnresolved - Promote unresolved entries to failures
+ */
+function recordIntegrityResult(results, candidate, registryHash, networkError, failOnUnresolved) {
+  const { key, entry, name } = candidate;
+  const base = { package: name, version: entry.version, packagePath: key };
+
+  if (networkError) {
+    recordIntegrityUnresolved(results, { ...base, reason: `registry unreachable (${networkError.message})` }, failOnUnresolved);
+  } else if (!registryHash) {
+    recordIntegrityUnresolved(results, { ...base, reason: `registry has no sha512 integrity for ${name}@${entry.version}` }, failOnUnresolved);
+  } else if (registryHash === entry.integrity) {
+    results.passed++;
+    results.details.push({ valid: true, package: name, packagePath: key, expected: registryHash, actual: entry.integrity });
+  } else {
+    recordIntegrityFailure(results, { valid: false, package: name, packagePath: key, expected: registryHash, actual: entry.integrity });
+  }
+}
+
+/**
  * Verify lockfile integrity hashes against the authoritative registry.
  *
  * For each registry-resolved package entry, the locked `integrity` is compared
@@ -343,23 +448,7 @@ export async function checkIntegrity(lockfileData, options = {}) {
     details: []
   };
 
-  const candidates = [];
-
-  forEachPackageEntry(lockfileData, (info) => {
-    const { key, entry, name, isRoot, isWorkspaceSource, isLink, isBundled, isGitDep, isFileDep } = info;
-    if (isRoot) return results.skipped++;
-    if (isWorkspaceSource) return results.skipped++;
-    if (isLink) return results.skipped++;
-    if (!entry.integrity) return results.skipped++; // nothing locked to verify (integrity-hygiene flags this)
-    if (isBundled || isGitDep || isFileDep) return results.skipped++; // no registry tarball integrity
-    if (typeof entry.integrity === 'string' && entry.integrity.startsWith('sha1-')) {
-      // legacy sha1 can't be compared to the registry's sha512 — upgrade first
-      results.skipped++;
-      return;
-    }
-    if (!entry.version) return results.skipped++;
-    candidates.push({ key, entry, name });
-  });
+  const candidates = collectIntegrityCandidates(lockfileData, results);
 
   const total = candidates.length;
   const reporter = onProgress ? createProgressReporter(total, {
@@ -368,24 +457,23 @@ export async function checkIntegrity(lockfileData, options = {}) {
   }) : null;
 
   let completed = 0;
+  const markCompleted = () => {
+    completed++;
+    results.checked = completed;
+    if (reporter) reporter.update(completed);
+  };
 
-  await mapWithConcurrency(candidates, concurrency, async ({ key, entry, name }) => {
+  await mapWithConcurrency(candidates, concurrency, async (candidate) => {
+    const { key, entry, name } = candidate;
     const registryBase = deriveRegistryBase(entry.resolved, name) || defaultRegistry;
 
     // Trust-anchor enforcement: never verify a hash against a host the operator
     // hasn't trusted — a tampered lockfile would just point `resolved` at its own server.
     if (hostAllowlist) {
-      let host = null;
-      try { host = new URL(registryBase).host; } catch { /* unparseable → treat as untrusted */ }
+      const host = resolveRegistryHost(registryBase);
       if (!host || !hostAllowlist.has(host)) {
-        const item = { valid: false, package: name, version: entry.version, packagePath: key, reason: `untrusted registry host "${host || registryBase}" (not in allowedHosts) — refusing to trust its integrity hash` };
-        results.failed++;
-        results.valid = false;
-        results.errors.push(item);
-        results.details.push(item);
-        completed++;
-        results.checked = completed;
-        if (reporter) reporter.update(completed);
+        recordIntegrityFailure(results, { valid: false, package: name, version: entry.version, packagePath: key, reason: `untrusted registry host "${host || registryBase}" (not in allowedHosts) — refusing to trust its integrity hash` });
+        markCompleted();
         return;
       }
     }
@@ -398,37 +486,50 @@ export async function checkIntegrity(lockfileData, options = {}) {
       networkError = e;
     }
 
-    if (networkError) {
-      const item = { package: name, version: entry.version, packagePath: key, reason: `registry unreachable (${networkError.message})` };
-      results.unresolved++;
-      results.unresolvedItems.push(item);
-      results.details.push({ valid: failOnUnresolved ? false : true, unresolved: true, ...item });
-      if (failOnUnresolved) { results.failed++; results.valid = false; results.errors.push(item); }
-    } else if (!registryHash) {
-      const item = { package: name, version: entry.version, packagePath: key, reason: `registry has no sha512 integrity for ${name}@${entry.version}` };
-      results.unresolved++;
-      results.unresolvedItems.push(item);
-      results.details.push({ valid: failOnUnresolved ? false : true, unresolved: true, ...item });
-      if (failOnUnresolved) { results.failed++; results.valid = false; results.errors.push(item); }
-    } else if (registryHash === entry.integrity) {
-      results.passed++;
-      results.details.push({ valid: true, package: name, packagePath: key, expected: registryHash, actual: entry.integrity });
-    } else {
-      const item = { valid: false, package: name, packagePath: key, expected: registryHash, actual: entry.integrity };
-      results.failed++;
-      results.valid = false;
-      results.errors.push(item);
-      results.details.push(item);
-    }
-
-    completed++;
-    results.checked = completed;
-    if (reporter) reporter.update(completed);
+    recordIntegrityResult(results, candidate, registryHash, networkError, failOnUnresolved);
+    markCompleted();
   });
 
   if (reporter) reporter.finish();
 
   return results;
+}
+
+/**
+ * Classify a single package's license verification result into the running
+ * tallies (approved/rejected/unknown) and the error/warning lists.
+ * @param {object} results - Results accumulator
+ * @param {object} result - Per-package result from verifyPackageLicense
+ * @param {boolean} strict - Treat unknown licenses as errors
+ */
+function classifyLicenseResult(results, result, strict) {
+  results.details.push(result);
+  results.checked++;
+
+  if (result.skipped) {
+    return; // root/workspace-link packages aren't counted
+  }
+
+  if (result.license === 'UNKNOWN' || result.reason === 'no-license') {
+    // Handle unknown/missing licenses
+    results.unknown++;
+    if (strict) {
+      results.valid = false;
+      results.errors.push(result);
+    } else {
+      results.warnings.push(result);
+    }
+    return;
+  }
+
+  if (result.valid) {
+    results.approved++;
+    return;
+  }
+
+  results.rejected++;
+  results.valid = false;
+  results.errors.push(result);
 }
 
 /**
@@ -485,27 +586,7 @@ export async function checkLicenses(lockfileData, options = {}) {
   for (const [pkgPath, pkgData] of entries) {
     const result = await verifyPackageLicense(pkgPath, approvedLicenses, nodeModulesPath, strict, pkgData);
 
-    if (result.skipped) {
-      // Skip root package
-    } else if (result.license === 'UNKNOWN' || result.reason === 'no-license') {
-      // Handle unknown/missing licenses
-      results.unknown++;
-      if (strict) {
-        results.valid = false;
-        results.errors.push(result);
-      } else {
-        results.warnings.push(result);
-      }
-    } else if (result.valid) {
-      results.approved++;
-    } else {
-      results.rejected++;
-      results.valid = false;
-      results.errors.push(result);
-    }
-
-    results.details.push(result);
-    results.checked++;
+    classifyLicenseResult(results, result, strict);
 
     if (reporter) {
       reporter.update(results.checked);

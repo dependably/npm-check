@@ -54,6 +54,133 @@ function deprecationMessage(raw) {
 }
 
 /**
+ * Build a fresh, empty results accumulator with the public return shape.
+ */
+function createResults() {
+  return {
+    valid: true,
+    scanned: 0,
+    deprecated: 0,
+    clean: 0,
+    unresolved: 0,
+    skipped: 0,
+    errors: [],
+    warnings: [],
+    unresolvedItems: [],
+    details: []
+  };
+}
+
+/**
+ * Collect the verifiable candidates from the lockfile, counting everything that
+ * can't be checked this way as skipped (mirror checker.js / vuln.js skip logic).
+ */
+function collectCandidates(lockfileData, defaultRegistry, results) {
+  const candidates = [];
+  forEachPackageEntry(lockfileData, (info) => {
+    const { key, entry, name, isRoot, isWorkspaceSource, isLink, isBundled, isGitDep, isFileDep } = info;
+    if (isRoot) return results.skipped++;
+    if (isWorkspaceSource) return results.skipped++;
+    if (isLink) return results.skipped++;
+    if (isBundled || isGitDep || isFileDep) return results.skipped++; // no registry manifest to check
+    if (!entry.version) return results.skipped++;
+    const registryBase = deriveRegistryBase(entry.resolved, name) || defaultRegistry;
+    candidates.push({ key, name, version: entry.version, registryBase });
+  });
+  return candidates;
+}
+
+/**
+ * Dedupe identical name@version@registry candidates into fetch units; each unit
+ * is fetched once and its result is attributed to every entry that shares it.
+ */
+function groupCandidates(candidates) {
+  const groups = new Map();
+  for (const c of candidates) {
+    const dedupeKey = `${c.registryBase}\n${c.name}\n${c.version}`;
+    if (!groups.has(dedupeKey)) {
+      groups.set(dedupeKey, { name: c.name, version: c.version, registryBase: c.registryBase, entries: [] });
+    }
+    groups.get(dedupeKey).entries.push(c);
+  }
+  return [...groups.values()];
+}
+
+/**
+ * Record an unresolved unit — registry unreachable or version not found — against
+ * every lockfile entry that shares it (non-fatal unless failOnUnresolved).
+ */
+function recordUnresolved(unit, networkError, failOnUnresolved, results) {
+  const reason = networkError
+    ? `registry unreachable (${networkError.message})`
+    : `registry has no manifest for ${unit.name}@${unit.version}`;
+  for (const cand of unit.entries) {
+    const item = { package: unit.name, version: unit.version, packagePath: cand.key, reason };
+    results.unresolved++;
+    results.unresolvedItems.push(item);
+    results.details.push({ unresolved: true, ...item });
+    if (failOnUnresolved) {
+      results.valid = false;
+      results.errors.push(item);
+    }
+  }
+}
+
+/**
+ * Record a deprecated unit against every lockfile entry that shares it; findings
+ * are warnings by default and errors when failOnDeprecated is set.
+ */
+function recordDeprecated(unit, message, failOnDeprecated, results) {
+  for (const cand of unit.entries) {
+    results.deprecated++;
+    const finding = { package: unit.name, version: unit.version, packagePath: cand.key, message };
+    if (failOnDeprecated) {
+      results.errors.push(finding);
+      results.valid = false;
+    } else {
+      results.warnings.push(finding);
+    }
+    results.details.push({ deprecated: true, ...finding });
+  }
+}
+
+/**
+ * Record a clean unit (manifest fetched, not deprecated) against every entry.
+ */
+function recordClean(unit, results) {
+  for (const cand of unit.entries) {
+    results.clean++;
+    results.details.push({ deprecated: false, package: unit.name, version: unit.version, packagePath: cand.key });
+  }
+}
+
+/**
+ * Resolve a single fetch unit's manifest and fold its outcome into results.
+ */
+async function processUnit(unit, fetcher, failOnDeprecated, failOnUnresolved, results) {
+  let manifest = null;
+  let networkError = null;
+  try {
+    manifest = await fetcher(unit.name, unit.version, unit.registryBase);
+  } catch (e) {
+    networkError = e;
+  }
+
+  if (networkError || manifest === null) {
+    recordUnresolved(unit, networkError, failOnUnresolved, results);
+  } else {
+    const message = deprecationMessage(manifest.deprecated);
+    if (message) {
+      recordDeprecated(unit, message, failOnDeprecated, results);
+    } else {
+      recordClean(unit, results);
+    }
+  }
+
+  results.scanned += unit.entries.length;
+}
+
+/**
  * Scan locked packages for deprecation notices via the registry version manifest.
  *
  * Outcomes per entry:
@@ -95,31 +222,10 @@ export async function checkDeprecations(lockfileData, options = {}) {
     );
   }
 
-  const results = {
-    valid: true,
-    scanned: 0,
-    deprecated: 0,
-    clean: 0,
-    unresolved: 0,
-    skipped: 0,
-    errors: [],
-    warnings: [],
-    unresolvedItems: [],
-    details: []
-  };
+  const results = createResults();
 
   // Collect verifiable candidates (mirror checker.js / vuln.js skip logic).
-  const candidates = [];
-  forEachPackageEntry(lockfileData, (info) => {
-    const { key, entry, name, isRoot, isWorkspaceSource, isLink, isBundled, isGitDep, isFileDep } = info;
-    if (isRoot) return results.skipped++;
-    if (isWorkspaceSource) return results.skipped++;
-    if (isLink) return results.skipped++;
-    if (isBundled || isGitDep || isFileDep) return results.skipped++; // no registry manifest to check
-    if (!entry.version) return results.skipped++;
-    const registryBase = deriveRegistryBase(entry.resolved, name) || defaultRegistry;
-    candidates.push({ key, name, version: entry.version, registryBase });
-  });
+  const candidates = collectCandidates(lockfileData, defaultRegistry, results);
 
   // Offline: nothing left to do — count remaining candidates as skipped.
   if (offline) {
@@ -132,15 +238,7 @@ export async function checkDeprecations(lockfileData, options = {}) {
 
   // Dedupe identical name@version@registry so each unique version is fetched once;
   // the single manifest result is attributed to every lockfile entry that shares it.
-  const groups = new Map();
-  for (const c of candidates) {
-    const dedupeKey = `${c.registryBase}\n${c.name}\n${c.version}`;
-    if (!groups.has(dedupeKey)) {
-      groups.set(dedupeKey, { name: c.name, version: c.version, registryBase: c.registryBase, entries: [] });
-    }
-    groups.get(dedupeKey).entries.push(c);
-  }
-  const units = [...groups.values()];
+  const units = groupCandidates(candidates);
 
   const reporter = onProgress ? createProgressReporter(units.length, {
     onProgress,
@@ -149,51 +247,7 @@ export async function checkDeprecations(lockfileData, options = {}) {
   let completed = 0;
 
   await mapWithConcurrency(units, concurrency, async (unit) => {
-    let manifest = null;
-    let networkError = null;
-    try {
-      manifest = await fetcher(unit.name, unit.version, unit.registryBase);
-    } catch (e) {
-      networkError = e;
-    }
-
-    if (networkError || manifest === null) {
-      const reason = networkError
-        ? `registry unreachable (${networkError.message})`
-        : `registry has no manifest for ${unit.name}@${unit.version}`;
-      for (const cand of unit.entries) {
-        const item = { package: unit.name, version: unit.version, packagePath: cand.key, reason };
-        results.unresolved++;
-        results.unresolvedItems.push(item);
-        results.details.push({ unresolved: true, ...item });
-        if (failOnUnresolved) {
-          results.valid = false;
-          results.errors.push(item);
-        }
-      }
-    } else {
-      const message = deprecationMessage(manifest.deprecated);
-      if (message) {
-        for (const cand of unit.entries) {
-          results.deprecated++;
-          const finding = { package: unit.name, version: unit.version, packagePath: cand.key, message };
-          if (failOnDeprecated) {
-            results.errors.push(finding);
-            results.valid = false;
-          } else {
-            results.warnings.push(finding);
-          }
-          results.details.push({ deprecated: true, ...finding });
-        }
-      } else {
-        for (const cand of unit.entries) {
-          results.clean++;
-          results.details.push({ deprecated: false, package: unit.name, version: unit.version, packagePath: cand.key });
-        }
-      }
-    }
-
-    results.scanned += unit.entries.length;
+    await processUnit(unit, fetcher, failOnDeprecated, failOnUnresolved, results);
     completed++;
     if (reporter) reporter.update(completed);
   });

@@ -52,6 +52,162 @@ function topLevelVersions(lockfile) {
 }
 
 /**
+ * Validate inputs, throwing the appropriate RemediationError on failure.
+ */
+function assertValidInputs(lockfile, packageJson) {
+  if (!lockfile || typeof lockfile !== 'object') {
+    throw new RemediationError('lockfile data is required', 'MISSING_LOCKFILE');
+  }
+  if (!packageJson || typeof packageJson !== 'object') {
+    throw new RemediationError('package.json data is required', 'MISSING_PACKAGE_JSON');
+  }
+  if (lockfile.lockfileVersion === 1) {
+    throw new RemediationError('v1 lockfiles are not supported; run `npm-check migrate 3` first', 'UNSUPPORTED_VERSION');
+  }
+}
+
+/**
+ * Run the deprecation + vulnerability scanners and collapse their findings into
+ * a map of flagged package name → Set of reasons. Deprecated (any) + vulnerable
+ * at/above threshold (vuln errors carry an advisoryId; below-threshold ones are
+ * warnings and skipped).
+ */
+async function gatherFlagged(lockfile, options) {
+  const { includeDeprecated, timeoutMs, concurrency, defaultRegistry, minSeverity, fetchManifest, fetchAdvisories, onProgress } = options;
+
+  const [deprecationResult, vulnResult] = await Promise.all([
+    includeDeprecated
+      ? checkDeprecations(lockfile, { timeoutMs, concurrency, defaultRegistry, fetchManifest, onProgress })
+      : Promise.resolve({ warnings: [], errors: [] }),
+    checkVulnerabilities(lockfile, { timeoutMs, concurrency, defaultRegistry, minSeverity, fetchAdvisories, onProgress })
+  ]);
+
+  const flagged = new Map(); // name -> Set of reasons
+  const flag = (name, reason) => {
+    if (!flagged.has(name)) flagged.set(name, new Set());
+    flagged.get(name).add(reason);
+  };
+  if (includeDeprecated) {
+    for (const w of [...deprecationResult.warnings, ...deprecationResult.errors]) {
+      if (w.package) flag(w.package, 'deprecated');
+    }
+  }
+  for (const e of vulnResult.errors) {
+    if (e.advisoryId && e.package) flag(e.package, 'vulnerable');
+  }
+  return flagged;
+}
+
+/**
+ * Map package.json's declared dependencies (across all sections) to their
+ * first-seen { section, range }, keyed by name.
+ */
+function indexDirectDeps(packageJson) {
+  const directDeps = new Map(); // name -> { section, range }
+  for (const section of DEP_SECTIONS) {
+    const deps = packageJson[section];
+    if (!deps || typeof deps !== 'object') continue;
+    for (const [name, range] of Object.entries(deps)) {
+      if (!directDeps.has(name)) directDeps.set(name, { section, range });
+    }
+  }
+  return directDeps;
+}
+
+/**
+ * Resolve the registry's latest version for a flagged dep, using the injected
+ * fetcher when provided. Returns { latest } on success, or { warning } when the
+ * registry is unreachable or has no latest version.
+ */
+async function resolveLatest(name, current, options) {
+  const { fetchLatest, defaultRegistry, timeoutMs } = options;
+  const registryBase = (current && deriveRegistryBase(current.resolved, name)) || defaultRegistry;
+  let latest;
+  try {
+    latest = fetchLatest
+      ? await fetchLatest(name, registryBase)
+      : await fetchLatestVersion(name, { registryBase, timeoutMs });
+  } catch (e) {
+    return { warning: { package: name, reason: `registry unreachable (${e.message})` } };
+  }
+  if (!latest) {
+    return { warning: { package: name, reason: 'registry has no latest version' } };
+  }
+  return { latest };
+}
+
+/**
+ * Decide what to do with a single flagged name and push the outcome onto the
+ * appropriate result bucket. Bumps a simple-ranged direct dep; otherwise records
+ * guidance (transitive / latest-still-affected), a skip, or a warning.
+ */
+async function processFlagged(name, reasons, ctx) {
+  const { directDeps, installed, buckets, options } = ctx;
+  const reasonList = [...reasons];
+  const direct = directDeps.get(name);
+
+  if (!direct) {
+    // Transitive — can't bump a range we don't own; report as guidance.
+    buckets.guidance.push({ package: name, reasons: reasonList, kind: 'transitive' });
+    return;
+  }
+
+  const rangeType = classifyRange(direct.range);
+  if (!['exact', 'caret', 'tilde'].includes(rangeType)) {
+    buckets.skipped.push({ package: name, section: direct.section, range: direct.range, reason: `${rangeType} range — bump manually` });
+    return;
+  }
+
+  const current = installed.get(name);
+  const { latest, warning } = await resolveLatest(name, current, options);
+  if (warning) {
+    buckets.warnings.push(warning);
+    return;
+  }
+
+  const newRange = rewriteRange(direct.range, latest, rangeType);
+  if (newRange === direct.range) {
+    // Already at latest yet still flagged → latest itself is affected; guide.
+    buckets.guidance.push({ package: name, reasons: reasonList, kind: 'latest-still-affected', range: direct.range });
+    return;
+  }
+
+  buckets.bumped.push({
+    package: name,
+    section: direct.section,
+    from: direct.range,
+    to: newRange,
+    latest,
+    fromVersion: current ? current.version : null,
+    reasons: reasonList
+  });
+  // `latest` is a mutable, maintainer-controlled pointer: the bump pulls a
+  // version that hasn't itself been scanned. Flag it so the caller re-runs the
+  // scanners after `npm install` rather than assuming the bump is clean.
+  buckets.warnings.push({ package: name, reason: `bumped to unvetted latest (${latest}) — re-run \`npm-check\` after \`npm install\` to confirm it isn't itself vulnerable/deprecated` });
+}
+
+/**
+ * Apply the planned bumps to a fresh package.json + a copied lockfile, syncing
+ * the lockfile root entry's ranges. Returns the new pair.
+ */
+function applyBumps(lockfile, packageJson, bumped) {
+  const newPackageJson = JSON.parse(JSON.stringify(packageJson));
+  const newLockfile = { ...lockfile };
+  if (bumped.length > 0 && newLockfile.packages && newLockfile.packages['']) {
+    newLockfile.packages = { ...newLockfile.packages, '': { ...newLockfile.packages[''] } };
+  }
+  for (const b of bumped) {
+    newPackageJson[b.section] = { ...newPackageJson[b.section], [b.package]: b.to };
+    const root = newLockfile.packages && newLockfile.packages[''];
+    if (root && root[b.section] && Object.prototype.hasOwnProperty.call(root[b.section], b.package)) {
+      root[b.section] = { ...root[b.section], [b.package]: b.to };
+    }
+  }
+  return { newPackageJson, newLockfile };
+}
+
+/**
  * Plan (and optionally apply) remediation bumps for flagged direct dependencies.
  *
  * @param {object} lockfile - Parsed lockfile (v2/v3)
@@ -77,140 +233,39 @@ export async function remediateDependencies(lockfile, packageJson, options = {})
     fetchLatest = null,
     onProgress = null
   } = options;
+  const resolved = { minSeverity, includeDeprecated, timeoutMs, concurrency, defaultRegistry, fetchManifest, fetchAdvisories, fetchLatest, onProgress };
 
-  if (!lockfile || typeof lockfile !== 'object') {
-    throw new RemediationError('lockfile data is required', 'MISSING_LOCKFILE');
-  }
-  if (!packageJson || typeof packageJson !== 'object') {
-    throw new RemediationError('package.json data is required', 'MISSING_PACKAGE_JSON');
-  }
-  if (lockfile.lockfileVersion === 1) {
-    throw new RemediationError('v1 lockfiles are not supported; run `npm-check migrate 3` first', 'UNSUPPORTED_VERSION');
-  }
+  assertValidInputs(lockfile, packageJson);
 
   // 1. Gather findings (reuse the existing scanners; transports are injectable for tests).
-  const [deprecationResult, vulnResult] = await Promise.all([
-    includeDeprecated
-      ? checkDeprecations(lockfile, { timeoutMs, concurrency, defaultRegistry, fetchManifest, onProgress })
-      : Promise.resolve({ warnings: [], errors: [] }),
-    checkVulnerabilities(lockfile, { timeoutMs, concurrency, defaultRegistry, minSeverity, fetchAdvisories, onProgress })
-  ]);
-
-  // Flagged package names → why. Deprecated (any) + vulnerable at/above threshold
-  // (vuln errors carry an advisoryId; below-threshold ones are warnings and skipped).
-  const flagged = new Map(); // name -> Set of reasons
-  const flag = (name, reason) => {
-    if (!flagged.has(name)) flagged.set(name, new Set());
-    flagged.get(name).add(reason);
-  };
-  if (includeDeprecated) {
-    for (const w of [...deprecationResult.warnings, ...deprecationResult.errors]) {
-      if (w.package) flag(w.package, 'deprecated');
-    }
-  }
-  for (const e of vulnResult.errors) {
-    if (e.advisoryId && e.package) flag(e.package, 'vulnerable');
-  }
+  const flagged = await gatherFlagged(lockfile, resolved);
 
   // 2. Map flagged names to direct dependencies in package.json.
-  const directDeps = new Map(); // name -> { section, range }
-  for (const section of DEP_SECTIONS) {
-    const deps = packageJson[section];
-    if (!deps || typeof deps !== 'object') continue;
-    for (const [name, range] of Object.entries(deps)) {
-      if (!directDeps.has(name)) directDeps.set(name, { section, range });
-    }
-  }
-
+  const directDeps = indexDirectDeps(packageJson);
   const installed = topLevelVersions(lockfile);
 
-  const bumped = [];
-  const guidance = [];
-  const skipped = [];
-  const warnings = [];
-
   // 3. For each flagged name: bump if it's a simple-ranged direct dep, else guide.
+  const buckets = { bumped: [], guidance: [], skipped: [], warnings: [] };
+  const ctx = { directDeps, installed, buckets, options: resolved };
   for (const [name, reasons] of flagged) {
-    const reasonList = [...reasons];
-    const direct = directDeps.get(name);
-
-    if (!direct) {
-      // Transitive — can't bump a range we don't own; report as guidance.
-      guidance.push({ package: name, reasons: reasonList, kind: 'transitive' });
-      continue;
-    }
-
-    const rangeType = classifyRange(direct.range);
-    if (!['exact', 'caret', 'tilde'].includes(rangeType)) {
-      skipped.push({ package: name, section: direct.section, range: direct.range, reason: `${rangeType} range — bump manually` });
-      continue;
-    }
-
-    const current = installed.get(name);
-    const registryBase = (current && deriveRegistryBase(current.resolved, name)) || defaultRegistry;
-    let latest;
-    try {
-      latest = fetchLatest
-        ? await fetchLatest(name, registryBase)
-        : await fetchLatestVersion(name, { registryBase, timeoutMs });
-    } catch (e) {
-      warnings.push({ package: name, reason: `registry unreachable (${e.message})` });
-      continue;
-    }
-
-    if (!latest) {
-      warnings.push({ package: name, reason: 'registry has no latest version' });
-      continue;
-    }
-
-    const newRange = rewriteRange(direct.range, latest, rangeType);
-    if (newRange === direct.range) {
-      // Already at latest yet still flagged → latest itself is affected; guide.
-      guidance.push({ package: name, reasons: reasonList, kind: 'latest-still-affected', range: direct.range });
-      continue;
-    }
-
-    bumped.push({
-      package: name,
-      section: direct.section,
-      from: direct.range,
-      to: newRange,
-      latest,
-      fromVersion: current ? current.version : null,
-      reasons: reasonList
-    });
-    // `latest` is a mutable, maintainer-controlled pointer: the bump pulls a
-    // version that hasn't itself been scanned. Flag it so the caller re-runs the
-    // scanners after `npm install` rather than assuming the bump is clean.
-    warnings.push({ package: name, reason: `bumped to unvetted latest (${latest}) — re-run \`npm-check\` after \`npm install\` to confirm it isn't itself vulnerable/deprecated` });
+    await processFlagged(name, reasons, ctx);
   }
 
   // 4. Apply bumps to a fresh package.json + sync the lockfile root entry.
-  const newPackageJson = JSON.parse(JSON.stringify(packageJson));
-  const newLockfile = { ...lockfile };
-  if (bumped.length > 0 && newLockfile.packages && newLockfile.packages['']) {
-    newLockfile.packages = { ...newLockfile.packages, '': { ...newLockfile.packages[''] } };
-  }
-  for (const b of bumped) {
-    newPackageJson[b.section] = { ...newPackageJson[b.section], [b.package]: b.to };
-    const root = newLockfile.packages && newLockfile.packages[''];
-    if (root && root[b.section] && Object.prototype.hasOwnProperty.call(root[b.section], b.package)) {
-      root[b.section] = { ...root[b.section], [b.package]: b.to };
-    }
-  }
+  const { newPackageJson, newLockfile } = applyBumps(lockfile, packageJson, buckets.bumped);
 
   // Stable ordering for readable output.
-  bumped.sort((a, b) => a.package.localeCompare(b.package));
-  guidance.sort((a, b) => a.package.localeCompare(b.package));
-  skipped.sort((a, b) => a.package.localeCompare(b.package));
+  buckets.bumped.sort((a, b) => a.package.localeCompare(b.package));
+  buckets.guidance.sort((a, b) => a.package.localeCompare(b.package));
+  buckets.skipped.sort((a, b) => a.package.localeCompare(b.package));
 
   return {
     packageJson: newPackageJson,
     lockfile: newLockfile,
-    bumped,
-    guidance,
-    skipped,
-    warnings,
-    changed: bumped.length > 0
+    bumped: buckets.bumped,
+    guidance: buckets.guidance,
+    skipped: buckets.skipped,
+    warnings: buckets.warnings,
+    changed: buckets.bumped.length > 0
   };
 }
