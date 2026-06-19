@@ -16,6 +16,9 @@
 #   dependencyTrack_token DT API key with BOM_UPLOAD + PROJECT_CREATION_UPLOAD perms
 #   SNYK_TOKEN            Snyk Code (SAST) auth token. Set UNPROTECTED + masked so
 #                         merge-request pipelines (unprotected branches) can scan.
+#   SONAR_HOST_URL        SonarQube server URL (not a secret)
+#   SONAR_PROJECT_KEY     SonarQube project key (not a secret)
+#   SONAR_TOKEN           SonarQube analysis token (masked)
 
 default:
   image: node:20
@@ -100,6 +103,44 @@ snyk-code:
   script:
     - snyk code test --severity-threshold=high
 
+# SonarQube static analysis + coverage (advisory). Main-only and
+# allow_failure:true, mirroring the dependably-community sonarqube-check job.
+# Runs in the default node:20 image and drives the analysis through the
+# `sonarqube-scanner` npm devDependency — its v3 line downloads the classic
+# SonarScanner CLI, which ships a bundled JRE (no system Java needed) and speaks
+# the legacy scanner API compatible with the SonarQube 9.9 server. Coverage comes
+# from Jest's lcov report; the `|| true` keeps a coverage-threshold miss (the
+# `unit-tests` job is the real gate) from aborting the scan. GIT_DEPTH:0 gives
+# Sonar full history for accurate new-code/blame attribution. The `rules` keep
+# the job out of the pipeline until SONAR_TOKEN exists, so it never errors before
+# setup. Token passed as `sonar.login` (the param the 9.9 server expects).
+#
+# Required CI/CD variables: SONAR_HOST_URL, SONAR_PROJECT_KEY (not secrets), and
+# SONAR_TOKEN (masked). Create the project on the server, then set these.
+sonarqube-check:
+  stage: test
+  variables:
+    GIT_DEPTH: "0"
+    SONAR_USER_HOME: "${CI_PROJECT_DIR}/.sonar"
+  cache:
+    - key:
+        files:
+          - package-lock.json
+      paths:
+        - .npm/
+    - key: "${CI_JOB_NAME}"
+      paths:
+        - .sonar/
+  rules:
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $SONAR_TOKEN'
+  before_script:
+    - npm ci --cache .npm --prefer-offline
+  script:
+    - npm test -- --testPathPattern=tests/unit --coverage || true
+    - VERSION=$(node -p "require('./package.json').version")
+    - npx sonar-scanner -Dsonar.host.url="$SONAR_HOST_URL" -Dsonar.projectKey="$SONAR_PROJECT_KEY" -Dsonar.login="$SONAR_TOKEN" -Dsonar.projectVersion="$VERSION"
+  allow_failure: true
+
 build:
   stage: build
   script:
@@ -128,18 +169,22 @@ sbom:
 
 # Publish the SBOM to Dependency-Track for continuous supply-chain monitoring.
 # Default branch only, and serialized so two uploads can't race. Uses the default
-# node:20 image (provides both `node` and `curl`). autoCreate stands the project
-# up on first upload; projectVersion tracks the package.json version so each
-# release is a distinct BOM. The job hard-fails when the Dependency-Track
-# variables aren't configured, mirroring `publish`'s REGISTRY_* guard.
+# node:20 image (provides `node` and `curl`). autoCreate stands the project up on
+# first upload; projectVersion tracks the package.json version so each release is
+# a distinct BOM. The job hard-fails when the Dependency-Track variables aren't
+# configured, mirroring `publish`'s REGISTRY_* guard.
+#
+# This job regenerates the SBOM itself (via `npm run sbom`) rather than consuming
+# the `sbom` job's artifact: a cross-job artifact hand-off between two jobs in the
+# same stage proved unreliable (the downloaded file wasn't present at curl time),
+# so the publish is kept self-contained. `sbom.json` is gitignored, so the freshly
+# generated file is exactly what we upload.
 #
 # Uses the group-level `dependencyTrack_url` / `dependencyTrack_token` CI/CD
 # variables (same names the dependably-community pipeline consumes).
 sbom-publish:
   stage: sbom
-  needs:
-    - job: sbom
-      artifacts: true
+  <<: *npm_install
   resource_group: sbom-publish
   rules:
     - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
@@ -149,6 +194,7 @@ sbom-publish:
         echo "ERROR: dependencyTrack_url and dependencyTrack_token must be set as CI/CD variables." >&2
         exit 1
       fi
+    - npm run sbom
     - |
       set -eu
       BASE="${dependencyTrack_url%/}"

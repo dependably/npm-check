@@ -13,5 +13,9 @@ coverage/
 sbom.json
 sbom-prod.json
 
+# SonarQube scanner working/cache dirs (generated in CI)
+.scannerwork/
+.sonar/
+
 # npm-check write backups (timestamped lockfile/package.json snapshots)
 .backups/
