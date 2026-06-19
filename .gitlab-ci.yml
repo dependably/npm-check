@@ -10,10 +10,12 @@
 #
 # Required CI/CD variables (Settings → CI/CD → Variables), set as "Protected"
 # and "Masked" so they're only exposed to protected branches:
-#   REGISTRY_URL   e.g. https://dependably.northwardlabs.ca/
-#   REGISTRY_KEY   auth token for that registry  (npm `_authToken`)
-#   DT_URL         Dependency-Track base URL, e.g. https://dtrack.example.com
-#   DT_API_KEY     DT API key with BOM_UPLOAD + PROJECT_CREATION_UPLOAD perms
+#   REGISTRY_URL          e.g. https://dependably.northwardlabs.ca/
+#   REGISTRY_KEY          auth token for that registry  (npm `_authToken`)
+#   dependencyTrack_url   Dependency-Track base URL, e.g. https://dtrack.example.com
+#   dependencyTrack_token DT API key with BOM_UPLOAD + PROJECT_CREATION_UPLOAD perms
+#   SNYK_TOKEN            Snyk Code (SAST) auth token. Set UNPROTECTED + masked so
+#                         merge-request pipelines (unprotected branches) can scan.
 
 default:
   image: node:20
@@ -74,6 +76,30 @@ secret-scan:
         trufflehog git file://. --since-commit "$BEFORE" --only-verified --fail
       fi
 
+# Snyk Code (SAST) — static analysis of the source for security bugs, using the
+# pinned-by-digest snyk/snyk image (same image the dependably-community pipeline
+# uses). This is the project's FIRST Snyk run, so it's deliberately advisory:
+# `allow_failure: true` lets findings surface as a signal without blocking merges
+# until they're triaged. Once reviewed, flip allow_failure to false to make it a
+# hard gate (dependably-community's snyk-code job shows the mature, baseline-gated
+# form). No `npm ci` needed — Snyk Code scans source directly, not node_modules.
+#
+# The `rules` keep the job out of the pipeline entirely until SNYK_TOKEN exists,
+# so it never shows a spurious auth failure before the operator configures it.
+# SNYK_TOKEN must be an UNPROTECTED, masked CI/CD variable — merge-request
+# pipelines run on unprotected branches, so a protected token would be absent
+# there and every MR scan would error. The Snyk CLI reads it from the env.
+snyk-code:
+  stage: test
+  image:
+    name: snyk/snyk:linux@sha256:aeb296d943659dccbc7464340bb8741f6e11999cd99644dc92e6d315d6eda3f4
+    entrypoint: [""]
+  allow_failure: true
+  rules:
+    - if: '$SNYK_TOKEN'
+  script:
+    - snyk code test --severity-threshold=high
+
 build:
   stage: build
   script:
@@ -104,8 +130,11 @@ sbom:
 # Default branch only, and serialized so two uploads can't race. Uses the default
 # node:20 image (provides both `node` and `curl`). autoCreate stands the project
 # up on first upload; projectVersion tracks the package.json version so each
-# release is a distinct BOM. The job hard-fails when DT_* aren't configured,
-# mirroring `publish`'s REGISTRY_* guard.
+# release is a distinct BOM. The job hard-fails when the Dependency-Track
+# variables aren't configured, mirroring `publish`'s REGISTRY_* guard.
+#
+# Uses the group-level `dependencyTrack_url` / `dependencyTrack_token` CI/CD
+# variables (same names the dependably-community pipeline consumes).
 sbom-publish:
   stage: sbom
   needs:
@@ -116,19 +145,19 @@ sbom-publish:
     - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
   script:
     - |
-      if [ -z "$DT_URL" ] || [ -z "$DT_API_KEY" ]; then
-        echo "ERROR: DT_URL and DT_API_KEY must be set as CI/CD variables." >&2
+      if [ -z "$dependencyTrack_url" ] || [ -z "$dependencyTrack_token" ]; then
+        echo "ERROR: dependencyTrack_url and dependencyTrack_token must be set as CI/CD variables." >&2
         exit 1
       fi
     - |
       set -eu
-      BASE="${DT_URL%/}"
+      BASE="${dependencyTrack_url%/}"
       PROJECT=$(node -p "require('./package.json').name")
       VERSION=$(node -p "require('./package.json').version")
       echo "Publishing SBOM for $PROJECT@$VERSION to $BASE"
       status=$(curl -sS -o /tmp/bom.out -w '%{http_code}' \
         -X POST "$BASE/api/v1/bom" \
-        -H "X-Api-Key: $DT_API_KEY" \
+        -H "X-Api-Key: $dependencyTrack_token" \
         -F "autoCreate=true" \
         -F "projectName=$PROJECT" \
         -F "projectVersion=$VERSION" \
