@@ -1,12 +1,13 @@
 # CI/CD pipeline for npm-check
 #
-# Flow:  test  →  build  →  sbom  →  publish (manual approval, default branch only)
+# Flow:  test  →  build  →  sbom  →  sbom-publish  →  publish (manual, default branch only)
 #
-#   test     lint + unit tests on every push/MR
-#   build    `npm pack` the publishable tarball, kept as a job artifact
-#   sbom     generate a CycloneDX SBOM (every pipeline); publish it to a
-#            Dependency-Track server on the default branch
-#   publish  manual gate that pushes the built tarball to the private registry
+#   test          lint + unit tests on every push/MR
+#   build         `npm pack` the publishable tarball, kept as a job artifact
+#   sbom          generate a CycloneDX SBOM (every pipeline), kept as an artifact
+#   sbom-publish  upload the SBOM to Dependency-Track on the default branch (its own
+#                 stage so it never races the `sbom` job in the shared build dir)
+#   publish       manual gate that pushes the built tarball to the private registry
 #
 # Required CI/CD variables (Settings → CI/CD → Variables), set as "Protected"
 # and "Masked" so they're only exposed to protected branches:
@@ -27,6 +28,7 @@ stages:
   - test
   - build
   - sbom
+  - sbom-publish
   - publish
 
 # Reusable npm dependency cache (keyed on the lockfile).
@@ -175,15 +177,19 @@ sbom:
 # configured, mirroring `publish`'s REGISTRY_* guard.
 #
 # This job regenerates the SBOM itself (via `npm run sbom`) rather than consuming
-# the `sbom` job's artifact: a cross-job artifact hand-off between two jobs in the
-# same stage proved unreliable (the downloaded file wasn't present at curl time),
-# so the publish is kept self-contained. `sbom.json` is gitignored, so the freshly
-# generated file is exactly what we upload.
+# the `sbom` job's artifact, and lives in its OWN stage *after* `sbom`. Both points
+# matter: this runner shares one working directory (/builds/<project>) across
+# concurrently-running jobs, so when `sbom` and `sbom-publish` sat in the same
+# stage they raced — one job's `git clean` wiped the gitignored `sbom.json` the
+# other had just written, and curl failed with "(26) Failed to open/read local
+# data". A dedicated later stage serializes them, and regenerating in-job keeps the
+# publish self-contained. The explicit `test -s` guard turns any future miss into a
+# clear error (with a directory listing) instead of an opaque curl failure.
 #
 # Uses the group-level `dependencyTrack_url` / `dependencyTrack_token` CI/CD
 # variables (same names the dependably-community pipeline consumes).
 sbom-publish:
-  stage: sbom
+  stage: sbom-publish
   <<: *npm_install
   resource_group: sbom-publish
   rules:
@@ -197,10 +203,15 @@ sbom-publish:
     - npm run sbom
     - |
       set -eu
+      if [ ! -s sbom.json ]; then
+        echo "ERROR: sbom.json was not generated (cwd=$(pwd)). Directory contents:" >&2
+        ls -la >&2
+        exit 1
+      fi
       BASE="${dependencyTrack_url%/}"
       PROJECT=$(node -p "require('./package.json').name")
       VERSION=$(node -p "require('./package.json').version")
-      echo "Publishing SBOM for $PROJECT@$VERSION to $BASE"
+      echo "Publishing SBOM ($(wc -c < sbom.json) bytes) for $PROJECT@$VERSION to $BASE"
       status=$(curl -sS -o /tmp/bom.out -w '%{http_code}' \
         -X POST "$BASE/api/v1/bom" \
         -H "X-Api-Key: $dependencyTrack_token" \
