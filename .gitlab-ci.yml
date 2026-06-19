@@ -113,15 +113,19 @@ snyk-code:
 # the legacy scanner API compatible with the SonarQube 9.9 server. Coverage comes
 # from Jest's lcov report; the `|| true` keeps a coverage-threshold miss (the
 # `unit-tests` job is the real gate) from aborting the scan. GIT_DEPTH:0 gives
-# Sonar full history for accurate new-code/blame attribution. The `rules` keep
-# the job out of the pipeline until SONAR_TOKEN exists, so it never errors before
-# setup. Token passed as `sonar.login` (the param the 9.9 server expects).
+# Sonar full history for accurate new-code/blame attribution. Token passed as
+# `sonar.login` (the param the 9.9 server expects). The project key and
+# `sonar.qualitygate.wait` live in sonar-project.properties; the project is
+# provisioned on the server (key moonlitlabs_npm-check_AZ7ghHwHena5TNZ7ZTSt).
+#
+# The job is advisory (allow_failure:true): with sonar.qualitygate.wait=true the
+# scanner blocks on the quality-gate result and exits non-zero if it fails, but
+# allow_failure keeps that from blocking the pipeline — the red icon is the signal.
+# Flip allow_failure to false to make the quality gate a hard merge gate.
 #
 # Required CI/CD variables: SONAR_HOST_URL (not a secret) and SONAR_TOKEN (masked).
-# SONAR_PROJECT_KEY is optional — it overrides the default key in
-# sonar-project.properties (moonlitlabs_npm-check) when a server-assigned key
-# differs. Passing an empty -Dsonar.projectKey would override that default with an
-# invalid "" key, so the job only adds the flag when the variable is non-empty.
+# SONAR_PROJECT_KEY is optional and overrides the key in sonar-project.properties
+# when set; the job only adds -Dsonar.projectKey when the variable is non-empty.
 sonarqube-check:
   stage: test
   variables:
