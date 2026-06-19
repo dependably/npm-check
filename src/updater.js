@@ -114,9 +114,7 @@ export function upgradeIntegrityHashes(lockfileData, options = {}) {
     processed++;
 
     // Null entries report every step; real entries report every 100th.
-    if (!pkg) {
-      reportUpgradeProgress(onProgress, processed, total);
-    } else if (processed % 100 === 0) {
+    if (!pkg || processed % 100 === 0) {
       reportUpgradeProgress(onProgress, processed, total);
     }
   }

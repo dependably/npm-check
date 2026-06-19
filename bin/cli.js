@@ -222,110 +222,190 @@ function makeProgressReporter() {
   };
 }
 
-async function runReportCommand() {
-  // `report` takes its file from argv[1] only when invoked explicitly.
-  const fileArg = argv[0] === 'report' ? argv[1] : undefined;
-  const filePath = getFilePath(fileArg);
+// Read the value that follows a flag in argv, or undefined when absent.
+function flagValue(name) {
+  const i = argv.indexOf(name);
+  return i !== -1 && argv[i + 1] ? argv[i + 1] : undefined;
+}
+
+// Parse a flag's value as a positive integer, exiting with `code` on a bad value.
+// Returns `fallback` when the flag is absent.
+function parsePositiveIntFlag(name, fallback, label, code = 1) {
+  const raw = flagValue(name);
+  if (raw === undefined) return fallback;
+  const parsed = parseInt(raw, 10);
+  if (isNaN(parsed) || parsed < 1) {
+    console.error(`❌ Invalid ${label} value. Must be a positive number`);
+    process.exit(code);
+  }
+  return parsed;
+}
+
+// Validate a --format flag against the allowed values, exiting with `code` on a bad value.
+function parseFormatFlag(allowed, fallback, code = 2) {
+  const raw = flagValue('--format');
+  if (raw === undefined) return fallback;
+  if (!allowed.includes(raw)) {
+    console.error(`❌ Invalid --format value. Use: ${allowed.join(' or ')}`);
+    process.exit(code);
+  }
+  return raw;
+}
+
+const SEVERITIES = ['info', 'low', 'moderate', 'high', 'critical'];
+
+// Validate a --min-severity flag against the severity ladder, exiting on a bad value.
+function parseMinSeverityFlag(fallback = 'high', code = 2) {
+  const raw = flagValue('--min-severity');
+  if (raw === undefined) return fallback;
+  if (!SEVERITIES.includes(raw)) {
+    console.error(`❌ Invalid --min-severity value. Use: ${SEVERITIES.join(', ')}`);
+    process.exit(code);
+  }
+  return raw;
+}
+
+// The registry-verification flags shared by the network-backed commands.
+function parseNetworkFlags(code = 1) {
+  return {
+    concurrency: parsePositiveIntFlag('--concurrency', 8, '--concurrency', code),
+    timeoutMs: parsePositiveIntFlag('--timeout', 10000, '--timeout', code),
+    defaultRegistry: flagValue('--registry')
+  };
+}
+
+// Spread the optional registry override only when one was supplied.
+function registryOption(defaultRegistry) {
+  return defaultRegistry ? { defaultRegistry } : {};
+}
+
+// Clear the in-progress progress bar line.
+function clearProgressLine() {
+  process.stdout.write('\r' + ' '.repeat(80) + '\r');
+}
+
+// Resolve the directory argument for dir-oriented commands (pin/unused/remediate).
+function getDirArg() {
+  return argv[1] && !argv[1].startsWith('-') ? path.resolve(argv[1]) : process.cwd();
+}
+
+// Write `data` as pretty JSON to a file, creating a backup first.
+function writeJsonFile(targetPath, data, indent = 2) {
+  createBackup(targetPath);
+  fs.writeFileSync(targetPath, JSON.stringify(data, null, indent) + '\n', 'utf8');
+}
+
+// Guard for the report/vuln/deprecated commands: a missing lockfile is exit 2.
+function requireLockfileOrExit2(filePath, command) {
   if (!fs.existsSync(filePath)) {
     console.error(`❌ No lockfile found at ${filePath}`);
-    console.error('   Run `npm-check report <path>` or `npm-check --help`.');
+    console.error(`   Run \`npm-check ${command} <path>\` or \`npm-check --help\`.`);
     process.exit(2);
   }
+}
+
+// Apply repeatable --rule <id>:<severity> overrides onto an audit config.
+function applyRuleOverrides(config) {
+  const ruleOverrides = {};
+  argv.forEach((arg, i) => {
+    if (arg === '--rule' && argv[i + 1]) {
+      const [ruleId, severity] = argv[i + 1].split(':');
+      ruleOverrides[ruleId] = severity;
+    }
+  });
+  if (Object.keys(ruleOverrides).length === 0) return;
+  const merged = mergeConfig({ maxWarnings: config.maxWarnings, rules: ruleOverrides });
+  for (const ruleId of Object.keys(ruleOverrides)) {
+    if (!merged.rules[ruleId]) continue;
+    config.rules[ruleId] = {
+      severity: merged.rules[ruleId].severity,
+      options: { ...config.rules[ruleId].options }
+    };
+  }
+}
+
+// Resolve the --max-warnings flag onto an audit config (--strict forces 0).
+function applyMaxWarnings(config) {
+  if (argv.includes('--strict')) config.maxWarnings = 0;
+  const raw = flagValue('--max-warnings');
+  if (raw === undefined) return;
+  const parsed = parseInt(raw, 10);
+  if (isNaN(parsed)) {
+    console.error('❌ Invalid --max-warnings value. Must be a number');
+    process.exit(2);
+  }
+  config.maxWarnings = parsed;
+}
+
+// Load the package.json sibling to a lockfile, or null when absent/unparseable.
+function loadSiblingPackageJson(filePath, { tolerant = false } = {}) {
+  const pkgPath = path.join(path.dirname(filePath), 'package.json');
+  if (!fs.existsSync(pkgPath)) return null;
+  if (!tolerant) return JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+  try { return JSON.parse(fs.readFileSync(pkgPath, 'utf8')); } catch { return null; }
+}
+
+// Resolve every report option from argv (audit config, format, toggles, network).
+function parseReportOptions() {
+  const config = loadAuditConfig(process.cwd(), flagValue('--config') || null);
+  applyRuleOverrides(config);
+
+  const strict = argv.includes('--strict');
+  applyMaxWarnings(config);
+  const maxWarnings = strict ? 0 : config.maxWarnings;
+
+  return {
+    config,
+    strict,
+    maxWarnings,
+    format: parseFormatFlag(['pretty', 'json'], 'pretty'),
+    // Network/integrity + license toggles.
+    integrity: !argv.includes('--offline') && !argv.includes('--no-integrity'),
+    license: !argv.includes('--no-license'),
+    vuln: !argv.includes('--offline') && !argv.includes('--no-vuln'),
+    deprecated: !argv.includes('--offline') && !argv.includes('--no-deprecated'),
+    failOnUnresolved: argv.includes('--fail-on-unresolved'),
+    failOnDeprecated: argv.includes('--fail-on-deprecated'),
+    minSeverity: parseMinSeverityFlag(),
+    concurrency: parsePositiveIntFlag('--concurrency', 8, '--concurrency', 2),
+    timeoutMs: parsePositiveIntFlag('--timeout', 10000, '--timeout', 2),
+    defaultRegistry: flagValue('--registry'),
+    licensesCsv: flagValue('--licenses-csv')
+  };
+}
+
+async function runReportCommand() {
+  // `report` takes its file from argv[1] only when invoked explicitly.
+  const filePath = getFilePath(argv[0] === 'report' ? argv[1] : undefined);
+  requireLockfileOrExit2(filePath, 'report');
 
   let report;
   try {
-    // Audit config: discovered/--config file + --rule/--strict/--max-warnings overrides.
-    let configPath = null;
-    const configIndex = argv.indexOf('--config');
-    if (configIndex !== -1 && argv[configIndex + 1]) configPath = argv[configIndex + 1];
-    const config = loadAuditConfig(process.cwd(), configPath);
-
-    argv.forEach((arg, i) => {
-      if (arg === '--rule' && argv[i + 1]) {
-        const [ruleId, severity] = argv[i + 1].split(':');
-        const merged = mergeConfig({ rules: { [ruleId]: severity } });
-        if (merged.rules[ruleId]) {
-          config.rules[ruleId] = { severity: merged.rules[ruleId].severity, options: { ...config.rules[ruleId].options } };
-        }
-      }
-    });
-
-    const strict = argv.includes('--strict');
-    let maxWarnings = strict ? 0 : config.maxWarnings;
-    const maxWarningsIndex = argv.indexOf('--max-warnings');
-    if (maxWarningsIndex !== -1 && argv[maxWarningsIndex + 1]) {
-      const parsed = parseInt(argv[maxWarningsIndex + 1], 10);
-      if (isNaN(parsed)) { console.error('❌ Invalid --max-warnings value. Must be a number'); process.exit(2); }
-      maxWarnings = parsed;
-    }
-
-    let format = 'pretty';
-    const formatIndex = argv.indexOf('--format');
-    if (formatIndex !== -1 && argv[formatIndex + 1]) {
-      format = argv[formatIndex + 1];
-      if (!['pretty', 'json'].includes(format)) { console.error('❌ Invalid --format value. Use: pretty or json'); process.exit(2); }
-    }
-
-    // Network/integrity + license toggles.
-    const integrity = !argv.includes('--offline') && !argv.includes('--no-integrity');
-    const license = !argv.includes('--no-license');
-    const vuln = !argv.includes('--offline') && !argv.includes('--no-vuln');
-    const deprecated = !argv.includes('--offline') && !argv.includes('--no-deprecated');
-    const failOnUnresolved = argv.includes('--fail-on-unresolved');
-    const failOnDeprecated = argv.includes('--fail-on-deprecated');
-
-    const SEVERITIES = ['info', 'low', 'moderate', 'high', 'critical'];
-    let minSeverity = 'high';
-    const minSeverityIndex = argv.indexOf('--min-severity');
-    if (minSeverityIndex !== -1 && argv[minSeverityIndex + 1]) {
-      minSeverity = argv[minSeverityIndex + 1];
-      if (!SEVERITIES.includes(minSeverity)) { console.error(`❌ Invalid --min-severity value. Use: ${SEVERITIES.join(', ')}`); process.exit(2); }
-    }
-
-    let concurrency = 8;
-    const concurrencyIndex = argv.indexOf('--concurrency');
-    if (concurrencyIndex !== -1 && argv[concurrencyIndex + 1]) {
-      const parsed = parseInt(argv[concurrencyIndex + 1], 10);
-      if (isNaN(parsed) || parsed < 1) { console.error('❌ Invalid --concurrency value. Must be a positive number'); process.exit(2); }
-      concurrency = parsed;
-    }
-    let timeoutMs = 10000;
-    const timeoutIndex = argv.indexOf('--timeout');
-    if (timeoutIndex !== -1 && argv[timeoutIndex + 1]) {
-      const parsed = parseInt(argv[timeoutIndex + 1], 10);
-      if (isNaN(parsed) || parsed < 1) { console.error('❌ Invalid --timeout value. Must be a positive number'); process.exit(2); }
-      timeoutMs = parsed;
-    }
-    let defaultRegistry;
-    const registryIndex = argv.indexOf('--registry');
-    if (registryIndex !== -1 && argv[registryIndex + 1]) defaultRegistry = argv[registryIndex + 1];
-
-    let licensesCsv;
-    const csvIndex = argv.indexOf('--licenses-csv');
-    if (csvIndex !== -1 && argv[csvIndex + 1]) licensesCsv = argv[csvIndex + 1];
-
+    const opts = parseReportOptions();
     const dir = path.dirname(filePath);
     const lockfile = parseLockfile(filePath);
-    let packageJson = null;
-    const packageJsonPath = path.join(dir, 'package.json');
-    if (fs.existsSync(packageJsonPath)) packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
+    const packageJson = loadSiblingPackageJson(filePath);
 
-    if ((integrity || vuln || deprecated) && format === 'pretty') console.log('🔎 Running all checks (querying the registry)…');
-
-    const onProgress = format === 'pretty' ? makeProgressReporter() : null;
+    if ((opts.integrity || opts.vuln || opts.deprecated) && opts.format === 'pretty') {
+      console.log('🔎 Running all checks (querying the registry)…');
+    }
+    const onProgress = opts.format === 'pretty' ? makeProgressReporter() : null;
 
     report = await runReport(
       { lockfile, packageJson, filePath: path.relative(process.cwd(), filePath) || filePath, dir },
       {
-        auditConfig: config, integrity, license, vuln, deprecated, failOnDeprecated, minSeverity, strict, maxWarnings,
-        concurrency, timeoutMs, failOnUnresolved, onProgress,
-        ...(defaultRegistry ? { defaultRegistry } : {}),
-        ...(licensesCsv ? { licensesCsv } : {})
+        auditConfig: opts.config, integrity: opts.integrity, license: opts.license, vuln: opts.vuln,
+        deprecated: opts.deprecated, failOnDeprecated: opts.failOnDeprecated, minSeverity: opts.minSeverity,
+        strict: opts.strict, maxWarnings: opts.maxWarnings, concurrency: opts.concurrency,
+        timeoutMs: opts.timeoutMs, failOnUnresolved: opts.failOnUnresolved, onProgress,
+        ...registryOption(opts.defaultRegistry),
+        ...(opts.licensesCsv ? { licensesCsv: opts.licensesCsv } : {})
       }
     );
 
-    if (onProgress) process.stdout.write('\r' + ' '.repeat(80) + '\r');
-    console.log(format === 'pretty' ? '\n' + formatReport(report, { format }) : formatReport(report, { format }));
+    if (onProgress) clearProgressLine();
+    const rendered = formatReport(report, { format: opts.format });
+    console.log(opts.format === 'pretty' ? '\n' + rendered : rendered);
   } catch (error) {
     console.error(`\n❌ Report error: ${error.message}`);
     process.exit(2);
@@ -433,57 +513,9 @@ function runUpgradeCommand() {
   }
 }
 
-async function runFixChecksumsCommand() {
-  const filePath = getFilePath(argv[1]);
-  ensureFileExists(filePath);
-  const hasWrite = argv.includes('--write');
-  const localFallback = argv.includes('--local-fallback');
-
-  let concurrency = 8;
-  const concurrencyIndex = argv.indexOf('--concurrency');
-  if (concurrencyIndex !== -1 && argv[concurrencyIndex + 1]) {
-    const parsed = parseInt(argv[concurrencyIndex + 1], 10);
-    if (isNaN(parsed) || parsed < 1) {
-      console.error('❌ Invalid --concurrency value. Must be a positive number');
-      process.exit(1);
-    }
-    concurrency = parsed;
-  }
-
-  let timeoutMs = 10000;
-  const timeoutIndex = argv.indexOf('--timeout');
-  if (timeoutIndex !== -1 && argv[timeoutIndex + 1]) {
-    const parsed = parseInt(argv[timeoutIndex + 1], 10);
-    if (isNaN(parsed) || parsed < 1) {
-      console.error('❌ Invalid --timeout value. Must be a positive number');
-      process.exit(1);
-    }
-    timeoutMs = parsed;
-  }
-
-  let defaultRegistry;
-  const registryIndex = argv.indexOf('--registry');
-  if (registryIndex !== -1 && argv[registryIndex + 1]) {
-    defaultRegistry = argv[registryIndex + 1];
-  }
-
-  const lockfile = parseLockfile(filePath);
-
-  const onProgress = makeProgressReporter();
-
-  console.log('🔐 Fixing integrity checksums...');
-  const lockfileDir = path.dirname(filePath);
-  const result = await fixChecksums(lockfile, {
-    onProgress,
-    concurrency,
-    timeoutMs,
-    localFallback,
-    baseDir: lockfileDir,
-    nodeModulesPath: path.join(lockfileDir, 'node_modules'),
-    ...(defaultRegistry ? { defaultRegistry } : {})
-  });
-
-  process.stdout.write('\r' + ' '.repeat(80) + '\r');
+// Print the fix-checksums result summary, changes, unresolved entries and warnings.
+function printChecksumResult(result, hasWrite) {
+  clearProgressLine();
   console.log('\n✅ Checksum fix complete');
   console.log(`   Candidates:          ${result.summary.candidates}`);
   console.log(`   Fixed from registry: ${result.summary.fixedFromRegistry}`);
@@ -497,21 +529,38 @@ async function runFixChecksumsCommand() {
       console.log(`     • ${change.packagePath}: ${change.from || '(missing)'} → ${change.to.slice(0, 40)}... [${change.source}]`);
     });
   }
-
   if (result.unresolved.length > 0) {
     console.log('\n   Unresolved packages:');
     result.unresolved.forEach((item) => {
       console.log(`     • ${item.packagePath}: ${item.reason}`);
     });
   }
+  result.warnings.forEach((warning) => console.log(`\n⚠️  ${warning}`));
+}
 
-  result.warnings.forEach((warning) => {
-    console.log(`\n⚠️  ${warning}`);
+async function runFixChecksumsCommand() {
+  const filePath = getFilePath(argv[1]);
+  ensureFileExists(filePath);
+  const hasWrite = argv.includes('--write');
+  const localFallback = argv.includes('--local-fallback');
+  const { concurrency, timeoutMs, defaultRegistry } = parseNetworkFlags();
+
+  const lockfile = parseLockfile(filePath);
+  const onProgress = makeProgressReporter();
+
+  console.log('🔐 Fixing integrity checksums...');
+  const lockfileDir = path.dirname(filePath);
+  const result = await fixChecksums(lockfile, {
+    onProgress, concurrency, timeoutMs, localFallback,
+    baseDir: lockfileDir,
+    nodeModulesPath: path.join(lockfileDir, 'node_modules'),
+    ...registryOption(defaultRegistry)
   });
 
+  printChecksumResult(result, hasWrite);
+
   if (hasWrite && result.changes.length > 0) {
-    createBackup(filePath);
-    fs.writeFileSync(filePath, JSON.stringify(result.lockfile, null, 2) + '\n', 'utf8');
+    writeJsonFile(filePath, result.lockfile);
     console.log(`\n📝 Changes written to ${filePath}`);
   } else if (result.changes.length > 0) {
     console.log('\n⚠️  Use --write flag to save changes');
@@ -652,65 +701,14 @@ function runAuditCommand() {
     }
 
     // Resolve config: file (discovered or --config) + CLI overrides
-    let configPath = null;
-    const configIndex = argv.indexOf('--config');
-    if (configIndex !== -1 && argv[configIndex + 1]) {
-      configPath = argv[configIndex + 1];
-    }
-    const config = loadAuditConfig(process.cwd(), configPath);
-
-    // --rule <id>:<severity> overrides (repeatable)
-    const ruleOverrides = {};
-    argv.forEach((arg, i) => {
-      if (arg === '--rule' && argv[i + 1]) {
-        const [ruleId, severity] = argv[i + 1].split(':');
-        ruleOverrides[ruleId] = severity;
-      }
-    });
-    if (Object.keys(ruleOverrides).length > 0) {
-      const merged = mergeConfig({
-        maxWarnings: config.maxWarnings,
-        rules: ruleOverrides
-      });
-      for (const ruleId of Object.keys(ruleOverrides)) {
-        config.rules[ruleId] = {
-          severity: merged.rules[ruleId].severity,
-          options: { ...config.rules[ruleId].options }
-        };
-      }
-    }
-
-    if (argv.includes('--strict')) {
-      config.maxWarnings = 0;
-    }
-    const maxWarningsIndex = argv.indexOf('--max-warnings');
-    if (maxWarningsIndex !== -1 && argv[maxWarningsIndex + 1]) {
-      const parsed = parseInt(argv[maxWarningsIndex + 1], 10);
-      if (isNaN(parsed)) {
-        console.error('❌ Invalid --max-warnings value. Must be a number');
-        process.exit(2);
-      }
-      config.maxWarnings = parsed;
-    }
-
-    let format = 'stylish';
-    const formatIndex = argv.indexOf('--format');
-    if (formatIndex !== -1 && argv[formatIndex + 1]) {
-      format = argv[formatIndex + 1];
-      if (!['stylish', 'json'].includes(format)) {
-        console.error('❌ Invalid --format value. Use: stylish or json');
-        process.exit(2);
-      }
-    }
+    const config = loadAuditConfig(process.cwd(), flagValue('--config') || null);
+    applyRuleOverrides(config);
+    applyMaxWarnings(config);
+    const format = parseFormatFlag(['stylish', 'json'], 'stylish');
 
     const lockfile = parseLockfile(filePath);
-
     // package.json is optional; the pinned-versions rule degrades gracefully
-    let packageJson = null;
-    const packageJsonPath = path.join(path.dirname(filePath), 'package.json');
-    if (fs.existsSync(packageJsonPath)) {
-      packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
-    }
+    const packageJson = loadSiblingPackageJson(filePath);
 
     report = runAudit({ lockfile, packageJson, filePath: path.relative(process.cwd(), filePath) || filePath }, config);
     console.log('\n' + formatAuditReport(report, { format }));
@@ -862,115 +860,92 @@ function runCleanBackupsCommand() {
   }
 }
 
+// Validate the --check flag, exiting on a bad value.
+function parseCheckType() {
+  const raw = flagValue('--check');
+  if (raw === undefined) return 'all';
+  if (!['hash', 'license', 'all'].includes(raw)) {
+    console.error('❌ Invalid check type. Use: hash, license, or all');
+    process.exit(1);
+  }
+  return raw;
+}
+
+// Print the integrity (hash) check result: counts, mismatches, unresolved entries.
+function printHashResult(hashResult, failOnUnresolved) {
+  clearProgressLine();
+  console.log(`   Checked: ${hashResult.checked}`);
+  console.log(`   ✅ Passed: ${hashResult.passed}`);
+  console.log(`   ❌ Failed: ${hashResult.failed}`);
+  console.log(`   ⏭️  Skipped: ${hashResult.skipped}`);
+  console.log(`   ❔ Unresolved: ${hashResult.unresolved}`);
+
+  const mismatches = hashResult.errors.filter(e => e.expected && e.actual);
+  if (mismatches.length > 0) {
+    console.log('\n   Hash mismatches (lockfile differs from registry):');
+    mismatches.forEach(err => {
+      console.log(`     • ${err.package}`);
+      console.log(`       Registry: ${err.expected.slice(0, 50)}...`);
+      console.log(`       Lockfile: ${err.actual.slice(0, 50)}...`);
+    });
+  }
+  if (hashResult.unresolvedItems.length > 0) {
+    console.log('\n   Unresolved (could not verify against the registry):');
+    hashResult.unresolvedItems.forEach(item => {
+      console.log(`     • ${item.package}@${item.version}: ${item.reason}`);
+    });
+    if (!failOnUnresolved) {
+      console.log('   (unresolved entries do not fail the check; pass --fail-on-unresolved to fail closed)');
+    }
+  }
+}
+
+// Print the license check result: counts, unapproved licenses, warnings.
+function printLicenseResult(licenseResult, strict) {
+  clearProgressLine();
+  console.log(`   Checked: ${licenseResult.checked}`);
+  console.log(`   ✅ Approved: ${licenseResult.approved}`);
+  console.log(`   ❌ Rejected: ${licenseResult.rejected}`);
+  console.log(`   ⚠️  Unknown: ${licenseResult.unknown}`);
+
+  if (licenseResult.errors.length > 0) {
+    console.log('\n   Unapproved/Unknown licenses:');
+    licenseResult.errors.forEach(err => {
+      console.log(`     • ${err.package}: ${err.license || 'UNKNOWN'}`);
+    });
+  }
+  if (licenseResult.warnings.length > 0 && !strict) {
+    console.log('\n   Warnings (unknown licenses):');
+    licenseResult.warnings.forEach(warn => {
+      console.log(`     • ${warn.package}: ${warn.license || 'UNKNOWN'}`);
+    });
+  }
+}
+
 async function runCheckCommand(command) {
   const filePath = getFilePath(argv[1]);
   ensureFileExists(filePath);
 
-  // Parse flags
-  let checkType = 'all';  // Default to all checks
-  let licensesCsv = './approved-licenses.csv';
-  let strict = argv.includes('--strict');
-
-  // Parse --check flag
-  const checkIndex = argv.indexOf('--check');
-  if (checkIndex !== -1 && argv[checkIndex + 1]) {
-    checkType = argv[checkIndex + 1];
-    if (!['hash', 'license', 'all'].includes(checkType)) {
-      console.error('❌ Invalid check type. Use: hash, license, or all');
-      process.exit(1);
-    }
-  }
-
-  // Parse --licenses-csv flag
-  const csvIndex = argv.indexOf('--licenses-csv');
-  if (csvIndex !== -1 && argv[csvIndex + 1]) {
-    licensesCsv = argv[csvIndex + 1];
-  }
-
-  // Registry-verification flags (hash check)
-  let concurrency = 8;
-  const concurrencyIndex = argv.indexOf('--concurrency');
-  if (concurrencyIndex !== -1 && argv[concurrencyIndex + 1]) {
-    const parsed = parseInt(argv[concurrencyIndex + 1], 10);
-    if (isNaN(parsed) || parsed < 1) {
-      console.error('❌ Invalid --concurrency value. Must be a positive number');
-      process.exit(1);
-    }
-    concurrency = parsed;
-  }
-
-  let timeoutMs = 10000;
-  const timeoutIndex = argv.indexOf('--timeout');
-  if (timeoutIndex !== -1 && argv[timeoutIndex + 1]) {
-    const parsed = parseInt(argv[timeoutIndex + 1], 10);
-    if (isNaN(parsed) || parsed < 1) {
-      console.error('❌ Invalid --timeout value. Must be a positive number');
-      process.exit(1);
-    }
-    timeoutMs = parsed;
-  }
-
-  let defaultRegistry;
-  const registryIndex = argv.indexOf('--registry');
-  if (registryIndex !== -1 && argv[registryIndex + 1]) {
-    defaultRegistry = argv[registryIndex + 1];
-  }
-
+  const checkType = parseCheckType();
+  const strict = argv.includes('--strict');
+  const licensesCsv = flagValue('--licenses-csv') || './approved-licenses.csv';
   const failOnUnresolved = argv.includes('--fail-on-unresolved');
+  // Registry-verification flags (hash check)
+  const { concurrency, timeoutMs, defaultRegistry } = parseNetworkFlags();
 
-  // Parse lockfile
   const lockfile = parseLockfile(filePath);
-
-  // Setup progress reporting
   const onProgress = makeProgressReporter();
-
-  const options = {
-    onProgress,
-    strict,
-    csvPath: licensesCsv
-  };
+  const options = { onProgress, strict, csvPath: licensesCsv };
 
   let allValid = true;
-
   try {
     // Run hash check (verifies locked integrity against the registry)
     if (checkType === 'hash' || checkType === 'all') {
       console.log('🔐 Verifying integrity against the registry...');
       const hashResult = await checkIntegrity(lockfile, {
-        ...options,
-        concurrency,
-        timeoutMs,
-        failOnUnresolved,
-        ...(defaultRegistry ? { defaultRegistry } : {})
+        ...options, concurrency, timeoutMs, failOnUnresolved, ...registryOption(defaultRegistry)
       });
-
-      process.stdout.write('\r' + ' '.repeat(80) + '\r');
-      console.log(`   Checked: ${hashResult.checked}`);
-      console.log(`   ✅ Passed: ${hashResult.passed}`);
-      console.log(`   ❌ Failed: ${hashResult.failed}`);
-      console.log(`   ⏭️  Skipped: ${hashResult.skipped}`);
-      console.log(`   ❔ Unresolved: ${hashResult.unresolved}`);
-
-      const mismatches = hashResult.errors.filter(e => e.expected && e.actual);
-      if (mismatches.length > 0) {
-        console.log('\n   Hash mismatches (lockfile differs from registry):');
-        mismatches.forEach(err => {
-          console.log(`     • ${err.package}`);
-          console.log(`       Registry: ${err.expected.slice(0, 50)}...`);
-          console.log(`       Lockfile: ${err.actual.slice(0, 50)}...`);
-        });
-      }
-
-      if (hashResult.unresolvedItems.length > 0) {
-        console.log('\n   Unresolved (could not verify against the registry):');
-        hashResult.unresolvedItems.forEach(item => {
-          console.log(`     • ${item.package}@${item.version}: ${item.reason}`);
-        });
-        if (!failOnUnresolved) {
-          console.log('   (unresolved entries do not fail the check; pass --fail-on-unresolved to fail closed)');
-        }
-      }
-
+      printHashResult(hashResult, failOnUnresolved);
       allValid = allValid && hashResult.valid;
     }
 
@@ -978,127 +953,76 @@ async function runCheckCommand(command) {
     if (checkType === 'license' || checkType === 'all') {
       console.log('\n📜 Checking licenses...');
       const licenseResult = await checkLicenses(lockfile, options);
-
-      process.stdout.write('\r' + ' '.repeat(80) + '\r');
-      console.log(`   Checked: ${licenseResult.checked}`);
-      console.log(`   ✅ Approved: ${licenseResult.approved}`);
-      console.log(`   ❌ Rejected: ${licenseResult.rejected}`);
-      console.log(`   ⚠️  Unknown: ${licenseResult.unknown}`);
-
-      if (licenseResult.errors.length > 0) {
-        console.log('\n   Unapproved/Unknown licenses:');
-        licenseResult.errors.forEach(err => {
-          console.log(`     • ${err.package}: ${err.license || 'UNKNOWN'}`);
-        });
-      }
-
-      if (licenseResult.warnings.length > 0 && !strict) {
-        console.log('\n   Warnings (unknown licenses):');
-        licenseResult.warnings.forEach(warn => {
-          console.log(`     • ${warn.package}: ${warn.license || 'UNKNOWN'}`);
-        });
-      }
-
+      printLicenseResult(licenseResult, strict);
       allValid = allValid && licenseResult.valid;
     }
 
     console.log(allValid ? '\n✅ All checks passed' : '\n❌ Some checks failed');
     process.exit(allValid ? 0 : 1);
-
   } catch (error) {
     handleError(error, `${command} command failed`);
   }
 }
 
+// Print the vuln-scan result in pretty form: counts, advisories, unresolved entries.
+function printVulnResult(result, minSeverity, failOnUnresolved) {
+  console.log(`   Scanned: ${result.scanned}`);
+  console.log(`   🛑 Vulnerable: ${result.vulnerable}`);
+  console.log(`   ⏭️  Skipped: ${result.skipped}`);
+  console.log(`   ❔ Unresolved: ${result.unresolved}`);
+
+  if (result.errors.length > 0) {
+    console.log(`\n   Vulnerabilities at/above ${minSeverity} (fail the run):`);
+    result.errors.forEach(e => {
+      if (!e.advisoryId) return;
+      console.log(`     • ${e.package}@${e.version}: ${e.title} (${e.severity})`);
+      if (e.url) console.log(`       ${e.url}`);
+    });
+  }
+  if (result.warnings.length > 0) {
+    console.log(`\n   Advisories below ${minSeverity} (warnings):`);
+    result.warnings.forEach(w => {
+      console.log(`     • ${w.package}@${w.version}: ${w.title} (${w.severity})`);
+    });
+  }
+  if (result.unresolvedItems.length > 0) {
+    console.log('\n   Unresolved (could not check against the registry):');
+    result.unresolvedItems.forEach(item => {
+      console.log(`     • ${item.package}@${item.version}: ${item.reason}`);
+    });
+    if (!failOnUnresolved) {
+      console.log('   (unresolved entries do not fail the scan; pass --fail-on-unresolved to fail closed)');
+    }
+  }
+  console.log(result.valid ? '\n✅ No known vulnerabilities at/above the threshold' : '\n❌ Known vulnerabilities found');
+}
+
 async function runVulnCommand(command) {
   const filePath = getFilePath(argv[1]);
-  if (!fs.existsSync(filePath)) {
-    console.error(`❌ No lockfile found at ${filePath}`);
-    console.error('   Run `npm-check vuln <path>` or `npm-check --help`.');
-    process.exit(2);
-  }
+  requireLockfileOrExit2(filePath, 'vuln');
 
-  let format = 'pretty';
-  const formatIndex = argv.indexOf('--format');
-  if (formatIndex !== -1 && argv[formatIndex + 1]) {
-    format = argv[formatIndex + 1];
-    if (!['pretty', 'json'].includes(format)) { console.error('❌ Invalid --format value. Use: pretty or json'); process.exit(2); }
-  }
-
-  const SEVERITIES = ['info', 'low', 'moderate', 'high', 'critical'];
-  let minSeverity = 'high';
-  const minSeverityIndex = argv.indexOf('--min-severity');
-  if (minSeverityIndex !== -1 && argv[minSeverityIndex + 1]) {
-    minSeverity = argv[minSeverityIndex + 1];
-    if (!SEVERITIES.includes(minSeverity)) { console.error(`❌ Invalid --min-severity value. Use: ${SEVERITIES.join(', ')}`); process.exit(2); }
-  }
-
+  const format = parseFormatFlag(['pretty', 'json'], 'pretty');
+  const minSeverity = parseMinSeverityFlag();
   const offline = argv.includes('--offline');
   const failOnUnresolved = argv.includes('--fail-on-unresolved');
-
-  let concurrency = 8;
-  const concurrencyIndex = argv.indexOf('--concurrency');
-  if (concurrencyIndex !== -1 && argv[concurrencyIndex + 1]) {
-    const parsed = parseInt(argv[concurrencyIndex + 1], 10);
-    if (isNaN(parsed) || parsed < 1) { console.error('❌ Invalid --concurrency value. Must be a positive number'); process.exit(2); }
-    concurrency = parsed;
-  }
-  let timeoutMs = 10000;
-  const timeoutIndex = argv.indexOf('--timeout');
-  if (timeoutIndex !== -1 && argv[timeoutIndex + 1]) {
-    const parsed = parseInt(argv[timeoutIndex + 1], 10);
-    if (isNaN(parsed) || parsed < 1) { console.error('❌ Invalid --timeout value. Must be a positive number'); process.exit(2); }
-    timeoutMs = parsed;
-  }
-  let defaultRegistry;
-  const registryIndex = argv.indexOf('--registry');
-  if (registryIndex !== -1 && argv[registryIndex + 1]) defaultRegistry = argv[registryIndex + 1];
+  const { concurrency, timeoutMs, defaultRegistry } = parseNetworkFlags(2);
 
   const lockfile = parseLockfile(filePath);
-
   const onProgress = format === 'pretty' ? makeProgressReporter() : null;
 
   try {
     if (format === 'pretty' && !offline) console.log('🛡️  Scanning locked packages for known vulnerabilities…');
     const result = await checkVulnerabilities(lockfile, {
       concurrency, timeoutMs, minSeverity, offline, failOnUnresolved, onProgress,
-      ...(defaultRegistry ? { defaultRegistry } : {})
+      ...registryOption(defaultRegistry)
     });
 
-    if (onProgress) process.stdout.write('\r' + ' '.repeat(80) + '\r');
+    if (onProgress) clearProgressLine();
 
     if (format === 'json') {
       console.log(JSON.stringify(result, null, 2));
     } else {
-      console.log(`   Scanned: ${result.scanned}`);
-      console.log(`   🛑 Vulnerable: ${result.vulnerable}`);
-      console.log(`   ⏭️  Skipped: ${result.skipped}`);
-      console.log(`   ❔ Unresolved: ${result.unresolved}`);
-
-      if (result.errors.length > 0) {
-        console.log(`\n   Vulnerabilities at/above ${minSeverity} (fail the run):`);
-        result.errors.forEach(e => {
-          if (!e.advisoryId) return;
-          console.log(`     • ${e.package}@${e.version}: ${e.title} (${e.severity})`);
-          if (e.url) console.log(`       ${e.url}`);
-        });
-      }
-      if (result.warnings.length > 0) {
-        console.log(`\n   Advisories below ${minSeverity} (warnings):`);
-        result.warnings.forEach(w => {
-          console.log(`     • ${w.package}@${w.version}: ${w.title} (${w.severity})`);
-        });
-      }
-      if (result.unresolvedItems.length > 0) {
-        console.log('\n   Unresolved (could not check against the registry):');
-        result.unresolvedItems.forEach(item => {
-          console.log(`     • ${item.package}@${item.version}: ${item.reason}`);
-        });
-        if (!failOnUnresolved) {
-          console.log('   (unresolved entries do not fail the scan; pass --fail-on-unresolved to fail closed)');
-        }
-      }
-      console.log(result.valid ? '\n✅ No known vulnerabilities at/above the threshold' : '\n❌ Known vulnerabilities found');
+      printVulnResult(result, minSeverity, failOnUnresolved);
     }
 
     process.exit(result.valid ? 0 : 1);
@@ -1107,93 +1031,70 @@ async function runVulnCommand(command) {
   }
 }
 
+// Print the deprecation-scan result in pretty form: counts, notices, unresolved, verdict.
+function printDeprecatedResult(result, failOnUnresolved) {
+  console.log(`   Scanned: ${result.scanned}`);
+  console.log(`   📉 Deprecated: ${result.deprecated}`);
+  console.log(`   ⏭️  Skipped: ${result.skipped}`);
+  console.log(`   ❔ Unresolved: ${result.unresolved}`);
+
+  if (result.errors.some(e => e.message)) {
+    console.log('\n   Deprecated (fail the run):');
+    result.errors.forEach(e => {
+      if (!e.message) return;
+      console.log(`     • ${e.package}@${e.version}: ${e.message}`);
+    });
+  }
+  if (result.warnings.length > 0) {
+    console.log('\n   Deprecated (warnings):');
+    result.warnings.forEach(w => {
+      console.log(`     • ${w.package}@${w.version}: ${w.message}`);
+    });
+  }
+  if (result.unresolvedItems.length > 0) {
+    console.log('\n   Unresolved (could not check against the registry):');
+    result.unresolvedItems.forEach(item => {
+      console.log(`     • ${item.package}@${item.version}: ${item.reason}`);
+    });
+    if (!failOnUnresolved) {
+      console.log('   (unresolved entries do not fail the scan; pass --fail-on-unresolved to fail closed)');
+    }
+  }
+  if (result.deprecated === 0) {
+    console.log('\n✅ No deprecated packages found');
+  } else if (result.valid) {
+    console.log('\n⚠️  Deprecated packages found (warnings; pass --fail-on-deprecated to fail the run)');
+  } else {
+    console.log('\n❌ Deprecated packages found');
+  }
+}
+
 async function runDeprecatedCommand(command) {
   const filePath = getFilePath(argv[1]);
-  if (!fs.existsSync(filePath)) {
-    console.error(`❌ No lockfile found at ${filePath}`);
-    console.error('   Run `npm-check deprecated <path>` or `npm-check --help`.');
-    process.exit(2);
-  }
+  requireLockfileOrExit2(filePath, 'deprecated');
 
-  let format = 'pretty';
-  const formatIndex = argv.indexOf('--format');
-  if (formatIndex !== -1 && argv[formatIndex + 1]) {
-    format = argv[formatIndex + 1];
-    if (!['pretty', 'json'].includes(format)) { console.error('❌ Invalid --format value. Use: pretty or json'); process.exit(2); }
-  }
-
+  const format = parseFormatFlag(['pretty', 'json'], 'pretty');
   const offline = argv.includes('--offline');
   const failOnDeprecated = argv.includes('--fail-on-deprecated');
   const failOnUnresolved = argv.includes('--fail-on-unresolved');
-
-  let concurrency = 8;
-  const concurrencyIndex = argv.indexOf('--concurrency');
-  if (concurrencyIndex !== -1 && argv[concurrencyIndex + 1]) {
-    const parsed = parseInt(argv[concurrencyIndex + 1], 10);
-    if (isNaN(parsed) || parsed < 1) { console.error('❌ Invalid --concurrency value. Must be a positive number'); process.exit(2); }
-    concurrency = parsed;
-  }
-  let timeoutMs = 10000;
-  const timeoutIndex = argv.indexOf('--timeout');
-  if (timeoutIndex !== -1 && argv[timeoutIndex + 1]) {
-    const parsed = parseInt(argv[timeoutIndex + 1], 10);
-    if (isNaN(parsed) || parsed < 1) { console.error('❌ Invalid --timeout value. Must be a positive number'); process.exit(2); }
-    timeoutMs = parsed;
-  }
-  let defaultRegistry;
-  const registryIndex = argv.indexOf('--registry');
-  if (registryIndex !== -1 && argv[registryIndex + 1]) defaultRegistry = argv[registryIndex + 1];
+  const { concurrency, timeoutMs, defaultRegistry } = parseNetworkFlags(2);
 
   const lockfile = parseLockfile(filePath);
-
   const onProgress = format === 'pretty' ? makeProgressReporter() : null;
 
   try {
     if (format === 'pretty' && !offline) console.log('📉 Scanning locked packages for deprecation notices…');
     const result = await checkDeprecations(lockfile, {
       concurrency, timeoutMs, offline, failOnDeprecated, failOnUnresolved, onProgress,
-      ...(defaultRegistry ? { defaultRegistry } : {})
+      ...registryOption(defaultRegistry)
     });
 
-    if (onProgress) process.stdout.write('\r' + ' '.repeat(80) + '\r');
+    if (onProgress) clearProgressLine();
 
     if (format === 'json') {
       console.log(JSON.stringify(result, null, 2));
     } else {
-      console.log(`   Scanned: ${result.scanned}`);
-      console.log(`   📉 Deprecated: ${result.deprecated}`);
-      console.log(`   ⏭️  Skipped: ${result.skipped}`);
-      console.log(`   ❔ Unresolved: ${result.unresolved}`);
-
-      if (result.errors.some(e => e.message)) {
-        console.log('\n   Deprecated (fail the run):');
-        result.errors.forEach(e => {
-          if (!e.message) return;
-          console.log(`     • ${e.package}@${e.version}: ${e.message}`);
-        });
-      }
-      if (result.warnings.length > 0) {
-        console.log('\n   Deprecated (warnings):');
-        result.warnings.forEach(w => {
-          console.log(`     • ${w.package}@${w.version}: ${w.message}`);
-        });
-      }
-      if (result.unresolvedItems.length > 0) {
-        console.log('\n   Unresolved (could not check against the registry):');
-        result.unresolvedItems.forEach(item => {
-          console.log(`     • ${item.package}@${item.version}: ${item.reason}`);
-        });
-        if (!failOnUnresolved) {
-          console.log('   (unresolved entries do not fail the scan; pass --fail-on-unresolved to fail closed)');
-        }
-      }
-      if (result.deprecated === 0) {
-        console.log('\n✅ No deprecated packages found');
-      } else if (result.valid) {
-        console.log('\n⚠️  Deprecated packages found (warnings; pass --fail-on-deprecated to fail the run)');
-      } else {
-        console.log('\n❌ Deprecated packages found');
-      }
+      printDeprecatedResult(result, failOnUnresolved);
     }
 
     process.exit(result.valid ? 0 : 1);
@@ -1202,10 +1103,34 @@ async function runDeprecatedCommand(command) {
   }
 }
 
+// Print the remediation result in pretty form: bumps, guidance, skips, warnings.
+function printRemediateResult(result) {
+  console.log('\n🩹 Remediation Results:');
+  if (result.bumped.length === 0) {
+    console.log('   • No direct dependencies to bump');
+  } else {
+    result.bumped.forEach((b) => {
+      console.log(`   • ${b.section}/${b.package}  ${b.from} → ${b.to}  (${b.reasons.join(', ')})`);
+    });
+  }
+
+  if (result.guidance.length > 0) {
+    console.log('\n   Transitive / manual (not a direct dep — bump the parent or add an npm override):');
+    result.guidance.forEach((g) => {
+      const note = g.kind === 'latest-still-affected' ? `${g.reasons.join(', ')}; latest still affected` : g.reasons.join(', ');
+      console.log(`     • ${g.package}: ${note}`);
+    });
+  }
+  if (result.skipped.length > 0) {
+    console.log('\n   Skipped:');
+    result.skipped.forEach((s) => console.log(`     • ${s.section}/${s.package} (${s.range}): ${s.reason}`));
+  }
+  result.warnings.forEach((w) => console.log(`\n⚠️  ${w.package}: ${w.reason}`));
+}
+
 async function runRemediateCommand(command) {
   // Operates on a directory containing both package.json and the lockfile.
-  let dir = process.cwd();
-  if (argv[1] && !argv[1].startsWith('-')) dir = path.resolve(argv[1]);
+  const dir = getDirArg();
   const hasWrite = argv.includes('--write');
 
   const packageJsonPath = path.join(dir, 'package.json');
@@ -1213,25 +1138,10 @@ async function runRemediateCommand(command) {
   ensureFileExists(packageJsonPath);
   ensureFileExists(lockfilePath);
 
-  let format = 'pretty';
-  const formatIndex = argv.indexOf('--format');
-  if (formatIndex !== -1 && argv[formatIndex + 1]) {
-    format = argv[formatIndex + 1];
-    if (!['pretty', 'json'].includes(format)) { console.error('❌ Invalid --format value. Use: pretty or json'); process.exit(2); }
-  }
-
-  const SEVERITIES = ['info', 'low', 'moderate', 'high', 'critical'];
-  let minSeverity = 'high';
-  const minSeverityIndex = argv.indexOf('--min-severity');
-  if (minSeverityIndex !== -1 && argv[minSeverityIndex + 1]) {
-    minSeverity = argv[minSeverityIndex + 1];
-    if (!SEVERITIES.includes(minSeverity)) { console.error(`❌ Invalid --min-severity value. Use: ${SEVERITIES.join(', ')}`); process.exit(2); }
-  }
+  const format = parseFormatFlag(['pretty', 'json'], 'pretty');
+  const minSeverity = parseMinSeverityFlag();
   const includeDeprecated = !argv.includes('--no-deprecated');
-
-  let defaultRegistry;
-  const registryIndex = argv.indexOf('--registry');
-  if (registryIndex !== -1 && argv[registryIndex + 1]) defaultRegistry = argv[registryIndex + 1];
+  const defaultRegistry = flagValue('--registry');
 
   const packageJsonRaw = fs.readFileSync(packageJsonPath, 'utf8');
   const packageJson = JSON.parse(packageJsonRaw);
@@ -1243,43 +1153,21 @@ async function runRemediateCommand(command) {
     if (format === 'pretty') console.log('🩹 Scanning for remediable direct dependencies…');
     const result = await remediateDependencies(lockfile, packageJson, {
       minSeverity, includeDeprecated, onProgress,
-      ...(defaultRegistry ? { defaultRegistry } : {})
+      ...registryOption(defaultRegistry)
     });
-    if (onProgress) process.stdout.write('\r' + ' '.repeat(80) + '\r');
+    if (onProgress) clearProgressLine();
 
     if (format === 'json') {
       console.log(JSON.stringify(result, null, 2));
       process.exit(0);
     }
 
-    console.log('\n🩹 Remediation Results:');
-    if (result.bumped.length === 0) {
-      console.log('   • No direct dependencies to bump');
-    } else {
-      result.bumped.forEach((b) => {
-        console.log(`   • ${b.section}/${b.package}  ${b.from} → ${b.to}  (${b.reasons.join(', ')})`);
-      });
-    }
-
-    if (result.guidance.length > 0) {
-      console.log('\n   Transitive / manual (not a direct dep — bump the parent or add an npm override):');
-      result.guidance.forEach((g) => {
-        const note = g.kind === 'latest-still-affected' ? `${g.reasons.join(', ')}; latest still affected` : g.reasons.join(', ');
-        console.log(`     • ${g.package}: ${note}`);
-      });
-    }
-    if (result.skipped.length > 0) {
-      console.log('\n   Skipped:');
-      result.skipped.forEach((s) => console.log(`     • ${s.section}/${s.package} (${s.range}): ${s.reason}`));
-    }
-    result.warnings.forEach((w) => console.log(`\n⚠️  ${w.package}: ${w.reason}`));
+    printRemediateResult(result);
 
     if (hasWrite && result.changed) {
       const indent = detectIndent(packageJsonRaw);
-      createBackup(packageJsonPath);
-      createBackup(lockfilePath);
-      fs.writeFileSync(packageJsonPath, JSON.stringify(result.packageJson, null, indent) + '\n', 'utf8');
-      fs.writeFileSync(lockfilePath, JSON.stringify(result.lockfile, null, 2) + '\n', 'utf8');
+      writeJsonFile(packageJsonPath, result.packageJson, indent);
+      writeJsonFile(lockfilePath, result.lockfile);
       console.log(`\n📝 Changes written to ${packageJsonPath} and ${lockfilePath}`);
       console.log('   ▶ Run `npm install` to re-resolve the dependency tree, then re-run `npm-check`.');
     } else if (result.changed) {
