@@ -27,6 +27,8 @@
     "docker:test:node22": "docker-compose -f tests/integration/docker/docker-compose.yml run --rm test-node22-npm10",
     "docker:test:all": "docker-compose -f tests/integration/docker/docker-compose.yml up --abort-on-container-exit",
     "lint": "eslint .",
+    "sbom": "cyclonedx-npm --output-format json --output-file sbom.json",
+    "sbom:prod": "cyclonedx-npm --omit dev --output-format json --output-file sbom-prod.json",
     "prepublishOnly": "npm run test && npm run lint"
   },
   "repository": {
@@ -64,6 +66,7 @@
   "devDependencies": {
     "@babel/core": "7.28.6",
     "@babel/preset-env": "7.28.6",
+    "@cyclonedx/cyclonedx-npm": "^4.2.1",
     "@eslint/js": "^10.0.1",
     "babel-jest": "30.2.0",
     "eslint": "10.5.0",
