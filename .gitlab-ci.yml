@@ -170,47 +170,49 @@ sbom:
     expire_in: 30 days
 
 # Publish the SBOM to Dependency-Track for continuous supply-chain monitoring.
-# Default branch only, and serialized so two uploads can't race. Uses the default
-# node:20 image (provides `node` and `curl`). autoCreate stands the project up on
-# first upload; projectVersion tracks the package.json version so each release is
-# a distinct BOM. The job hard-fails when the Dependency-Track variables aren't
-# configured, mirroring `publish`'s REGISTRY_* guard.
+# Default branch only. Mirrors the dependably-community `dt-publish` job exactly,
+# because faithful reproduction is what finally worked here: an `alpine:3` image
+# with `apk add curl`, consuming the `sbom` job's artifact across a stage boundary.
 #
-# This job regenerates the SBOM itself (via `npm run sbom`) rather than consuming
-# the `sbom` job's artifact, and lives in its OWN stage *after* `sbom`. Both points
-# matter: this runner shares one working directory (/builds/<project>) across
-# concurrently-running jobs, so when `sbom` and `sbom-publish` sat in the same
-# stage they raced — one job's `git clean` wiped the gitignored `sbom.json` the
-# other had just written, and curl failed with "(26) Failed to open/read local
-# data". A dedicated later stage serializes them, and regenerating in-job keeps the
-# publish self-contained. The explicit `test -s` guard turns any future miss into a
-# clear error (with a directory listing) instead of an opaque curl failure.
+# Two earlier approaches failed with curl "(26) Failed to open/read local data":
+# regenerating the SBOM in a node:20 job and uploading with node's bundled curl
+# failed even though `sbom.json` was demonstrably present and 1 MB (wc read it
+# milliseconds before curl) — node:20's curl could not do the multipart `-F @file`
+# upload. Alpine's curl (the proven dependably setup) does. A dedicated stage after
+# `sbom` also removes the shared-working-dir race between the two jobs.
 #
-# Uses the group-level `dependencyTrack_url` / `dependencyTrack_token` CI/CD
-# variables (same names the dependably-community pipeline consumes).
+# autoCreate stands the project up on first upload; projectVersion tracks the
+# package.json version so each release is a distinct BOM (read with sed since the
+# alpine image has no node). The job hard-fails when the Dependency-Track variables
+# aren't configured, mirroring `publish`'s REGISTRY_* guard. Uses the group-level
+# `dependencyTrack_url` / `dependencyTrack_token` CI/CD variables.
 sbom-publish:
   stage: sbom-publish
-  <<: *npm_install
+  image: alpine:3
+  needs:
+    - job: sbom
+      artifacts: true
   resource_group: sbom-publish
   rules:
     - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
   script:
+    - apk add --no-cache curl
     - |
       if [ -z "$dependencyTrack_url" ] || [ -z "$dependencyTrack_token" ]; then
         echo "ERROR: dependencyTrack_url and dependencyTrack_token must be set as CI/CD variables." >&2
         exit 1
       fi
-    - npm run sbom
     - |
       set -eu
       if [ ! -s sbom.json ]; then
-        echo "ERROR: sbom.json was not generated (cwd=$(pwd)). Directory contents:" >&2
+        echo "ERROR: sbom.json (from the sbom job artifact) is missing. Directory contents:" >&2
         ls -la >&2
         exit 1
       fi
       BASE="${dependencyTrack_url%/}"
-      PROJECT=$(node -p "require('./package.json').name")
-      VERSION=$(node -p "require('./package.json').version")
+      PROJECT="@moonlitlabs/npm-check"
+      VERSION=$(sed -n 's/^[[:space:]]*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' package.json | head -n1)
+      [ -n "$VERSION" ] || VERSION=latest
       echo "Publishing SBOM ($(wc -c < sbom.json) bytes) for $PROJECT@$VERSION to $BASE"
       status=$(curl -sS -o /tmp/bom.out -w '%{http_code}' \
         -X POST "$BASE/api/v1/bom" \
