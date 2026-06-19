@@ -197,6 +197,16 @@ function resolveScriptApproval(allowScripts, name, version) {
   return 'pending'; // pending | allowed | denied
 }
 
+// Build the allowed/blocked record for a single install-script package, or null
+// when the entry is a root/workspace/link/script-less node that we skip.
+function classifyScriptEntry({ key, entry, name }, { allowScripts, v12Aware, allow }) {
+  if (!entry || entry.hasInstallScript !== true) return null;
+
+  const approval = v12Aware ? resolveScriptApproval(allowScripts, name, entry.version) : 'pending';
+  const viaRuleAllow = Boolean(name && allow.includes(name));
+  return { key, name, version: entry.version, approval, viaRuleAllow };
+}
+
 export function classifyInstallScripts(lockfile, packageJson, options = {}) {
   const { allow = [] } = options;
   const allowScripts = packageJson && packageJson.allowScripts;
@@ -207,12 +217,9 @@ export function classifyInstallScripts(lockfile, packageJson, options = {}) {
 
   forEachPackageEntry(lockfile, ({ key, entry, name, isRoot, isWorkspaceSource, isLink }) => {
     if (isRoot || isWorkspaceSource || isLink) return;
-    if (!entry || entry.hasInstallScript !== true) return;
-
-    const approval = v12Aware ? resolveScriptApproval(allowScripts, name, entry.version) : 'pending';
-    const viaRuleAllow = Boolean(name && allow.includes(name));
-    const rec = { key, name, version: entry.version, approval, viaRuleAllow };
-    if (viaRuleAllow || approval === 'allowed') allowed.push(rec);
+    const rec = classifyScriptEntry({ key, entry, name }, { allowScripts, v12Aware, allow });
+    if (!rec) return;
+    if (rec.viaRuleAllow || rec.approval === 'allowed') allowed.push(rec);
     else blocked.push(rec);
   });
 

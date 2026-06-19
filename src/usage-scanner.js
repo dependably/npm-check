@@ -105,14 +105,15 @@ export function scanUsedPackages(dir, options = {}) {
  * @types/foo-follows-foo heuristic.
  */
 function isDependencyUsed(name, { used, scriptsText, ignore }) {
-  if (ignore.includes(name)) return true;
-  if (used.has(name)) return true;
-  // CLI tools invoked from npm scripts (eslint, jest, …) are used even
-  // though nothing imports them
-  if (scriptsText.includes(name)) return true;
-  // @types/foo is "used" when foo itself is
-  if (name.startsWith('@types/') && used.has(name.slice('@types/'.length))) return true;
-  return false;
+  return (
+    ignore.includes(name) ||
+    used.has(name) ||
+    // CLI tools invoked from npm scripts (eslint, jest, …) are used even
+    // though nothing imports them
+    scriptsText.includes(name) ||
+    // @types/foo is "used" when foo itself is
+    (name.startsWith('@types/') && used.has(name.slice('@types/'.length)))
+  );
 }
 
 /**

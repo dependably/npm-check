@@ -164,28 +164,40 @@ function genericSummary(id, findings) {
   return DEFAULT_PASS_SUMMARY[id] || 'pass';
 }
 
+// Build a passing/severity result whose summary comes from the given producer.
+function liveSection(findings, summary) {
+  return { status: worstSeverity(findings) || 'pass', summary };
+}
+
+// Per-section describers keyed by section id. Each returns { status, summary },
+// short-circuiting to a 'skip' when the underlying check didn't run.
+const SECTION_DESCRIBERS = {
+  integrity(findings, state) {
+    if (!state.integrity) return { status: 'skip', summary: 'skipped (--offline)' };
+    return liveSection(findings, integritySummary(state.integrityResult));
+  },
+  vuln(findings, state) {
+    if (!state.vuln) return { status: 'skip', summary: 'skipped (--offline)' };
+    return liveSection(findings, scanSummary(state.vulnResult, 'vulnerable', 'vulnerable'));
+  },
+  deprecated(findings, state) {
+    if (!state.deprecated) return { status: 'skip', summary: 'skipped (--offline)' };
+    return liveSection(findings, scanSummary(state.deprecationResult, 'deprecated', 'deprecated'));
+  },
+  licenses(findings, state) {
+    if (state.licenseSkip) return { status: 'skip', summary: `skipped (${state.licenseSkip})` };
+    return liveSection(findings, licenseSummary(state.licenseResult));
+  },
+  'install-scripts'(findings, state) {
+    return liveSection(findings, installScriptsSummary(state.scriptTally));
+  }
+};
+
 // Resolve a section's { status, summary } from its findings and the run's results.
 function describeSection(id, findings, state) {
-  if (id === 'integrity') {
-    if (!state.integrity) return { status: 'skip', summary: 'skipped (--offline)' };
-    return { status: worstSeverity(findings) || 'pass', summary: integritySummary(state.integrityResult) };
-  }
-  if (id === 'vuln') {
-    if (!state.vuln) return { status: 'skip', summary: 'skipped (--offline)' };
-    return { status: worstSeverity(findings) || 'pass', summary: scanSummary(state.vulnResult, 'vulnerable', 'vulnerable') };
-  }
-  if (id === 'deprecated') {
-    if (!state.deprecated) return { status: 'skip', summary: 'skipped (--offline)' };
-    return { status: worstSeverity(findings) || 'pass', summary: scanSummary(state.deprecationResult, 'deprecated', 'deprecated') };
-  }
-  if (id === 'licenses') {
-    if (state.licenseSkip) return { status: 'skip', summary: `skipped (${state.licenseSkip})` };
-    return { status: worstSeverity(findings) || 'pass', summary: licenseSummary(state.licenseResult) };
-  }
-  if (id === 'install-scripts') {
-    return { status: worstSeverity(findings) || 'pass', summary: installScriptsSummary(state.scriptTally) };
-  }
-  return { status: worstSeverity(findings) || 'pass', summary: genericSummary(id, findings) };
+  const describer = SECTION_DESCRIBERS[id];
+  if (describer) return describer(findings, state);
+  return liveSection(findings, genericSummary(id, findings));
 }
 
 /**
@@ -205,105 +217,110 @@ function describeSection(id, findings, state) {
  * @param {Function} options.onProgress - Progress callback for the integrity stage
  * @returns {Promise<object>} { filePath, sections, summary }
  */
-export async function runReport(target, options = {}) {
-  const { lockfile, packageJson = null, filePath = 'package-lock.json', dir = process.cwd() } = target;
-  if (!lockfile || typeof lockfile !== 'object') {
-    throw new ReportError('lockfile data is required', 'MISSING_LOCKFILE');
-  }
+// Merge caller options over the report defaults, resolving CSV / node_modules
+// paths relative to the target dir. Returns the fully-defaulted option set.
+function resolveRunOptions(options, dir) {
+  return {
+    auditConfig: {},
+    integrity: true,
+    license: true,
+    vuln: true,
+    deprecated: true,
+    failOnDeprecated: false,
+    minSeverity: 'high',
+    licensesCsv: path.join(dir, 'approved-licenses.csv'),
+    nodeModulesPath: path.join(dir, 'node_modules'),
+    strict: false,
+    maxWarnings: -1,
+    concurrency: 8,
+    timeoutMs: 10000,
+    defaultRegistry: undefined,
+    failOnUnresolved: false,
+    fetchIntegrity: null,
+    fetchAdvisories: null,
+    fetchManifest: null,
+    onProgress: null,
+    ...options
+  };
+}
 
-  const {
-    auditConfig = {},
-    integrity = true,
-    license = true,
-    vuln = true,
-    deprecated = true,
-    failOnDeprecated = false,
-    minSeverity = 'high',
-    licensesCsv = path.join(dir, 'approved-licenses.csv'),
-    nodeModulesPath = path.join(dir, 'node_modules'),
-    strict = false,
-    maxWarnings = -1,
-    concurrency = 8,
-    timeoutMs = 10000,
-    defaultRegistry,
-    failOnUnresolved = false,
-    fetchIntegrity = null,
-    fetchAdvisories = null,
-    fetchManifest = null,
-    onProgress = null
-  } = options;
-
-  // 1. Offline audit rules.
-  const audit = runAudit({ lockfile, packageJson, filePath }, auditConfig);
-
-  // Install-script tally (allowed vs blocked), reconciled against npm v12's
-  // package.json `allowScripts` — used for the section's summary line.
+// Install-script tally (allowed vs blocked), reconciled against npm v12's
+// package.json `allowScripts` — used for the section's summary line.
+function tallyInstallScripts(lockfile, packageJson, auditConfig) {
   const sampleRule = auditConfig.rules && auditConfig.rules['install-scripts'];
   const isResolved = sampleRule && typeof sampleRule === 'object' && !Array.isArray(sampleRule) && typeof sampleRule.severity === 'string';
   const resolvedConfig = isResolved ? auditConfig : mergeConfig(auditConfig);
   const scriptOptions = (resolvedConfig.rules['install-scripts'] || {}).options || {};
-  const scriptTally = classifyInstallScripts(lockfile, packageJson, scriptOptions);
+  return classifyInstallScripts(lockfile, packageJson, scriptOptions);
+}
 
-  // Bucket audit findings into report sections (normalized shape).
-  const buckets = {};
+// Bucket audit findings into report sections (normalized shape).
+function bucketAuditFindings(buckets, audit) {
   for (const f of audit.findings) {
     const id = RULE_SECTION[f.ruleId] || 'structure';
     pushFinding(buckets, id, { severity: f.severity, location: f.packagePath, message: f.message });
   }
+}
 
-  // 2. Registry integrity verification (network).
-  let integrityResult = null;
-  if (integrity) {
-    integrityResult = await checkIntegrity(lockfile, {
-      concurrency, timeoutMs, failOnUnresolved, fetchIntegrity, onProgress,
-      ...(defaultRegistry ? { defaultRegistry } : {})
+// Optional defaultRegistry spread, shared by every network stage.
+function registryOption(defaultRegistry) {
+  return defaultRegistry ? { defaultRegistry } : {};
+}
+
+// Registry integrity verification (network). Returns the result or null when off.
+async function runIntegrityStage(buckets, lockfile, opts) {
+  if (!opts.integrity) return null;
+  const result = await checkIntegrity(lockfile, {
+    concurrency: opts.concurrency, timeoutMs: opts.timeoutMs, failOnUnresolved: opts.failOnUnresolved,
+    fetchIntegrity: opts.fetchIntegrity, onProgress: opts.onProgress, ...registryOption(opts.defaultRegistry)
+  });
+  collectIntegrityFindings(buckets, result);
+  return result;
+}
+
+// Known-vulnerability scan (network; registry bulk advisory endpoint).
+async function runVulnStage(buckets, lockfile, opts) {
+  if (!opts.vuln) return null;
+  const result = await checkVulnerabilities(lockfile, {
+    concurrency: opts.concurrency, timeoutMs: opts.timeoutMs, minSeverity: opts.minSeverity,
+    failOnUnresolved: opts.failOnUnresolved, fetchAdvisories: opts.fetchAdvisories, onProgress: opts.onProgress,
+    ...registryOption(opts.defaultRegistry)
+  });
+  collectVulnFindings(buckets, result);
+  return result;
+}
+
+// Deprecation scan (network; registry version manifest `deprecated` field).
+async function runDeprecationStage(buckets, lockfile, opts) {
+  if (!opts.deprecated) return null;
+  const result = await checkDeprecations(lockfile, {
+    concurrency: opts.concurrency, timeoutMs: opts.timeoutMs, failOnDeprecated: opts.failOnDeprecated,
+    failOnUnresolved: opts.failOnUnresolved, fetchManifest: opts.fetchManifest, onProgress: opts.onProgress,
+    ...registryOption(opts.defaultRegistry)
+  });
+  collectDeprecationFindings(buckets, result);
+  return result;
+}
+
+// License validation (filesystem; needs node_modules + an approved list).
+// Returns { licenseResult, licenseSkip } — a non-null skip reason means it was skipped.
+async function runLicenseStage(buckets, lockfile, opts) {
+  if (!opts.license) return { licenseResult: null, licenseSkip: 'disabled' };
+  if (!fs.existsSync(opts.nodeModulesPath)) return { licenseResult: null, licenseSkip: 'no node_modules' };
+  if (!fs.existsSync(opts.licensesCsv)) return { licenseResult: null, licenseSkip: 'no approved-licenses.csv' };
+  try {
+    const licenseResult = await checkLicenses(lockfile, {
+      csvPath: opts.licensesCsv, nodeModulesPath: opts.nodeModulesPath, strict: opts.strict
     });
-    collectIntegrityFindings(buckets, integrityResult);
+    collectLicenseFindings(buckets, licenseResult);
+    return { licenseResult, licenseSkip: null };
+  } catch (e) {
+    return { licenseResult: null, licenseSkip: e.message };
   }
+}
 
-  // 3. Known-vulnerability scan (network; registry bulk advisory endpoint).
-  let vulnResult = null;
-  if (vuln) {
-    vulnResult = await checkVulnerabilities(lockfile, {
-      concurrency, timeoutMs, minSeverity, failOnUnresolved, fetchAdvisories, onProgress,
-      ...(defaultRegistry ? { defaultRegistry } : {})
-    });
-    collectVulnFindings(buckets, vulnResult);
-  }
-
-  // 3b. Deprecation scan (network; registry version manifest `deprecated` field).
-  let deprecationResult = null;
-  if (deprecated) {
-    deprecationResult = await checkDeprecations(lockfile, {
-      concurrency, timeoutMs, failOnDeprecated, failOnUnresolved, fetchManifest, onProgress,
-      ...(defaultRegistry ? { defaultRegistry } : {})
-    });
-    collectDeprecationFindings(buckets, deprecationResult);
-  }
-
-  // 4. License validation (filesystem; needs node_modules + an approved list).
-  let licenseResult = null;
-  let licenseSkip = null;
-  if (!license) {
-    licenseSkip = 'disabled';
-  } else if (!fs.existsSync(nodeModulesPath)) {
-    licenseSkip = 'no node_modules';
-  } else if (!fs.existsSync(licensesCsv)) {
-    licenseSkip = 'no approved-licenses.csv';
-  } else {
-    try {
-      licenseResult = await checkLicenses(lockfile, { csvPath: licensesCsv, nodeModulesPath, strict });
-      collectLicenseFindings(buckets, licenseResult);
-    } catch (e) {
-      licenseSkip = e.message;
-    }
-  }
-
-  // Assemble ordered sections with status + one-line summary.
-  const sectionState = {
-    integrity, integrityResult, vuln, vulnResult,
-    deprecated, deprecationResult, licenseSkip, licenseResult, scriptTally
-  };
+// Assemble the ordered sections (status + one-line summary) and roll up totals.
+function assembleSections(buckets, sectionState, maxWarnings) {
   const sections = SECTIONS.map(({ id, title }) => {
     const findings = buckets[id] || [];
     const { status, summary } = describeSection(id, findings, sectionState);
@@ -314,8 +331,37 @@ export async function runReport(target, options = {}) {
   const errors = allFindings.filter((f) => f.severity === 'error').length;
   const warnings = allFindings.filter((f) => f.severity === 'warn').length;
   const pass = errors === 0 && (maxWarnings < 0 || warnings <= maxWarnings);
+  return { sections, summary: { errors, warnings, total: errors + warnings, pass } };
+}
 
-  return { filePath, sections, summary: { errors, warnings, total: errors + warnings, pass } };
+export async function runReport(target, options = {}) {
+  const { lockfile, packageJson = null, filePath = 'package-lock.json', dir = process.cwd() } = target;
+  if (!lockfile || typeof lockfile !== 'object') {
+    throw new ReportError('lockfile data is required', 'MISSING_LOCKFILE');
+  }
+
+  const opts = resolveRunOptions(options, dir);
+
+  // 1. Offline audit rules + install-script tally, bucketed into report sections.
+  const audit = runAudit({ lockfile, packageJson, filePath }, opts.auditConfig);
+  const scriptTally = tallyInstallScripts(lockfile, packageJson, opts.auditConfig);
+  const buckets = {};
+  bucketAuditFindings(buckets, audit);
+
+  // 2–4. Network + filesystem stages (each no-ops to null when disabled).
+  const integrityResult = await runIntegrityStage(buckets, lockfile, opts);
+  const vulnResult = await runVulnStage(buckets, lockfile, opts);
+  const deprecationResult = await runDeprecationStage(buckets, lockfile, opts);
+  const { licenseResult, licenseSkip } = await runLicenseStage(buckets, lockfile, opts);
+
+  // Assemble ordered sections with status + one-line summary, then roll up totals.
+  const sectionState = {
+    integrity: opts.integrity, integrityResult, vuln: opts.vuln, vulnResult,
+    deprecated: opts.deprecated, deprecationResult, licenseSkip, licenseResult, scriptTally
+  };
+  const { sections, summary } = assembleSections(buckets, sectionState, opts.maxWarnings);
+
+  return { filePath, sections, summary };
 }
 
 const DEFAULT_PASS_SUMMARY = {

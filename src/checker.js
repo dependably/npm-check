@@ -288,8 +288,8 @@ function isVerifiableEntry(info) {
   if (isBundled || isGitDep || isFileDep) return false; // no registry tarball integrity
   // legacy sha1 can't be compared to the registry's sha512 — upgrade first
   if (typeof entry.integrity === 'string' && entry.integrity.startsWith('sha1-')) return false;
-  if (!entry.version) return false;
-  return true;
+  // a version is required to query the registry
+  return Boolean(entry.version);
 }
 
 /**
@@ -379,6 +379,40 @@ function recordIntegrityResult(results, candidate, registryHash, networkError, f
 }
 
 /**
+ * Verify a single candidate entry against the registry and record the outcome.
+ * Enforces the host allowlist (an untrusted resolved host is failed outright),
+ * then fetches the registry hash and classifies the result.
+ * @param {object} candidate - { key, entry, name }
+ * @param {object} ctx - Shared context (results, fetcher, defaultRegistry, hostAllowlist, failOnUnresolved)
+ * @returns {Promise<void>}
+ */
+async function verifyIntegrityCandidate(candidate, ctx) {
+  const { key, entry, name } = candidate;
+  const { results, fetcher, defaultRegistry, hostAllowlist, failOnUnresolved } = ctx;
+  const registryBase = deriveRegistryBase(entry.resolved, name) || defaultRegistry;
+
+  // Trust-anchor enforcement: never verify a hash against a host the operator
+  // hasn't trusted — a tampered lockfile would just point `resolved` at its own server.
+  if (hostAllowlist) {
+    const host = resolveRegistryHost(registryBase);
+    if (!host || !hostAllowlist.has(host)) {
+      recordIntegrityFailure(results, { valid: false, package: name, version: entry.version, packagePath: key, reason: `untrusted registry host "${host || registryBase}" (not in allowedHosts) — refusing to trust its integrity hash` });
+      return;
+    }
+  }
+
+  let registryHash = null;
+  let networkError = null;
+  try {
+    registryHash = await fetcher(name, entry.version, registryBase);
+  } catch (e) {
+    networkError = e;
+  }
+
+  recordIntegrityResult(results, candidate, registryHash, networkError, failOnUnresolved);
+}
+
+/**
  * Verify lockfile integrity hashes against the authoritative registry.
  *
  * For each registry-resolved package entry, the locked `integrity` is compared
@@ -463,30 +497,9 @@ export async function checkIntegrity(lockfileData, options = {}) {
     if (reporter) reporter.update(completed);
   };
 
+  const ctx = { results, fetcher, defaultRegistry, hostAllowlist, failOnUnresolved };
   await mapWithConcurrency(candidates, concurrency, async (candidate) => {
-    const { key, entry, name } = candidate;
-    const registryBase = deriveRegistryBase(entry.resolved, name) || defaultRegistry;
-
-    // Trust-anchor enforcement: never verify a hash against a host the operator
-    // hasn't trusted — a tampered lockfile would just point `resolved` at its own server.
-    if (hostAllowlist) {
-      const host = resolveRegistryHost(registryBase);
-      if (!host || !hostAllowlist.has(host)) {
-        recordIntegrityFailure(results, { valid: false, package: name, version: entry.version, packagePath: key, reason: `untrusted registry host "${host || registryBase}" (not in allowedHosts) — refusing to trust its integrity hash` });
-        markCompleted();
-        return;
-      }
-    }
-
-    let registryHash = null;
-    let networkError = null;
-    try {
-      registryHash = await fetcher(name, entry.version, registryBase);
-    } catch (e) {
-      networkError = e;
-    }
-
-    recordIntegrityResult(results, candidate, registryHash, networkError, failOnUnresolved);
+    await verifyIntegrityCandidate(candidate, ctx);
     markCompleted();
   });
 
