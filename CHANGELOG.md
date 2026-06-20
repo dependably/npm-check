@@ -7,7 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-06-19
+
 ### Added
+- **Known-vulnerability scan** — new `npm-check vuln` command and "Known vulnerabilities" report section. Scans locked packages against the npm registry bulk advisory endpoint (`POST /-/npm/v1/security/advisories/bulk`) straight from the lockfile — no `node_modules`, no `npm audit` subprocess. Per-package registry derivation (private registries work), concurrent fetch pool, `--min-severity` threshold (default high), `--offline` / `--fail-on-unresolved`. New `checkVulnerabilities()` API and `postJson()` helper.
+- **Deprecated-package scan** — new `npm-check deprecated` command and "Deprecated packages" report section. Surfaces the same `npm warn deprecated …` notices npm prints during `npm ci`, read from each locked version's registry manifest. Warning by default (`--fail-on-deprecated` for CI); dedupes identical `name@version@registry`. New `checkDeprecations()` API and `fetchPackumentManifest()` helper.
+- **Remediator** — new `npm-check remediate` command. Bumps DIRECT deps that are deprecated or vulnerable (≥ `--min-severity`) to the registry `dist-tags.latest` (range operator preserved) and syncs the lockfile root; transitive findings reported as guidance. Lockfile-first (run `npm install` afterward). New `remediateDependencies()` API and `fetchPackument()` / `fetchLatestVersion()` helpers.
+- **Config-file validation** — npm-check now validates all three files that govern an install. New `valid-package-json` (error) and `valid-npmrc` (warn) audit rules, "package.json" / ".npmrc (config)" report sections, and a `validate` command that checks lockfile + sibling package.json + project `.npmrc`. `validatePackageJson()` covers name/version validity, dependency-range syntax across all four sections, and field types; `validateNpmrc()` parses ini and forces plaintext auth tokens, `strict-ssl=false`, and disabled `rejectUnauthorized` to hard errors regardless of configured severity.
+- **`no-fund` audit rule** (warn) — flags packages carrying `funding` metadata (npm's "N packages are looking for funding" notice). Self-clears when a project `.npmrc` sets `fund=false`.
 - **npm v12 readiness** (for the [July 2026 breaking changes](https://github.blog/changelog/2026-06-09-upcoming-breaking-changes-for-npm-v12/) where install scripts, git deps, and remote-URL deps become opt-in):
   - `install-scripts` rule now reconciles with npm v12's package.json `allowScripts` map (pinned `name@version` or name-only entries; `true`/`false`). It flags scripts that are pending approval or explicitly denied — i.e. the ones npm v12 will silently not run — and treats approved ones as clean. The report's Install scripts section shows `N scripts · X allowed · Y blocked` when the project is `allowScripts`-aware.
   - New `no-git-deps` rule (warn): flags git dependencies (need `--allow-git` under npm v12).
@@ -17,6 +24,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - **`check --check hash` now verifies against the registry** instead of hashing the installed `node_modules` directory. The old approach compared a directory hash to npm's tarball integrity — two incompatible things — producing false-positive mismatches for every package. It now compares each locked `integrity` to the authoritative `dist.integrity` from the registry (base derived per-package from `resolved`, so private registries work), needs no `node_modules`, and reports unreachable/missing entries as `unresolved` (non-failing by default; `--fail-on-unresolved` to fail closed). New flags: `--concurrency`, `--timeout`, `--registry`, `--fail-on-unresolved`. `deriveRegistryBase` moved to `integrity.js` (re-exported from `checksum-fixer.js` for back-compat).
+- **Fixer root-sync** — `fixPackageLock(lockfile, { packageJson })` now syncs a stale lockfile top-level + `packages['']` name/version (the report's "Structure & format" errors after a rename / version bump); the `fix` CLI auto-loads the sibling package.json.
+
+### Fixed
+- **Destructive dedupe (data loss).** `deduplicatePackages` keyed a map by `name#version`, but real v2/v3 packages-map entries carry no `.name` field (the name lives in the install path) — so it silently dropped **every** dependency, gutting `fix`/`dedupe` output down to the root (e.g. 440 entries → 1). A path-keyed packages map has no safe key-collapse (that is npm hoisting / re-resolution), so the packages map is now preserved; only the legacy v1 dependencies tree is name-deduped. Covered by a regression test.
 
 ## [1.4.0] - 2026-06-17
 
