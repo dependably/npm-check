@@ -21,8 +21,20 @@
 #   SONAR_PROJECT_KEY     SonarQube project key (not a secret)
 #   SONAR_TOKEN           SonarQube analysis token (masked)
 
+# Auto-cancel superseded pipelines: when a new commit is pushed to a ref, cancel
+# the still-running jobs of older pipelines on that ref that are marked
+# `interruptible`. Saves runner time on rapid pushes. Only interruptible jobs are
+# cancelled — the external-write jobs (sbom-publish, publish) opt out below so an
+# in-flight upload/publish is never killed mid-write.
+workflow:
+  auto_cancel:
+    on_new_commit: interruptible
+
 default:
   image: node:20
+  # Most jobs are read-only or idempotent and safe to cancel + re-run, so make
+  # interruptible the default; the side-effecting jobs override it to false.
+  interruptible: true
 
 stages:
   - test
@@ -216,6 +228,8 @@ sbom:
 sbom-publish:
   stage: sbom-publish
   image: alpine:3
+  # External write (uploads the BOM to Dependency-Track) — never auto-cancel mid-upload.
+  interruptible: false
   needs:
     - job: sbom
       artifacts: true
@@ -255,6 +269,8 @@ sbom-publish:
 
 publish:
   stage: publish
+  # External write (pushes the tarball to the registry) — never auto-cancel it.
+  interruptible: false
   # Only the build artifact is needed — no source install, and publishing a
   # prebuilt tarball deliberately skips `prepublishOnly` (which re-runs the
   # full suite). The `test` stage above is the authoritative quality gate.
