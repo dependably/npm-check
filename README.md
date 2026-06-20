@@ -21,11 +21,11 @@ A comprehensive tool for validating, migrating, fixing, and updating npm `packag
 
 ## Installation
 
-Published to the private registry. Point the `@moonlitlabs` scope at it, then install:
+Published to the private registry. Point the `@dependably` scope at it, then install:
 
 ```bash
-npm config set @moonlitlabs:registry https://dependably.northwardlabs.ca/
-npm install -g @moonlitlabs/npm-check
+npm config set @dependably:registry https://dependably.northwardlabs.ca/
+npm install -g @dependably/npm-check
 ```
 
 The CLI is still invoked as `npm-check`.
@@ -300,7 +300,7 @@ import {
   checkLicenses,
   checkAll,
   parseLicensesCsv
-} from '@moonlitlabs/npm-check';
+} from '@dependably/npm-check';
 
 // Parse and validate a lockfile
 const lockfile = parseLockfile('package-lock.json');
@@ -371,7 +371,7 @@ import {
   chunkLockfile,
   mergeLockfileChunks,
   isLargeLockfile
-} from '@moonlitlabs/npm-check';
+} from '@dependably/npm-check';
 
 const lockfile = parseLockfile('large-package-lock.json');
 
@@ -396,7 +396,7 @@ console.log(`Heap: ${stats.heapUsed}MB / ${stats.heapTotal}MB`);
 ### Streaming Large Lockfiles
 
 ```js
-import { StreamingParser } from '@moonlitlabs/npm-check';
+import { StreamingParser } from '@dependably/npm-check';
 
 const parser = new StreamingParser({
   onPackage: (path, pkg) => {
@@ -413,7 +413,7 @@ const lockfile = await parser.parseFile('huge-package-lock.json');
 ### Parallel Processing
 
 ```js
-import { parallelUpgradeIntegrityHashes, parallelDeduplicatePackages } from '@moonlitlabs/npm-check';
+import { parallelUpgradeIntegrityHashes, parallelDeduplicatePackages } from '@dependably/npm-check';
 
 const lockfile = parseLockfile('package-lock.json');
 
@@ -427,7 +427,7 @@ const deduplicated = await parallelDeduplicatePackages(upgraded);
 ### Progress Tracking
 
 ```js
-import { createProgressReporter } from '@moonlitlabs/npm-check';
+import { createProgressReporter } from '@dependably/npm-check';
 
 const progress = createProgressReporter(totalPackages, {
   showMemory: true,
@@ -452,7 +452,7 @@ import {
   validatePackageLock,
   fixPackageLock,
   serializeLockfile
-} from '@moonlitlabs/npm-check';
+} from '@dependably/npm-check';
 
 // 1. Parse
 const lockfile = parseLockfile('package-lock.json');
@@ -483,7 +483,7 @@ import {
   validatePackageLock,
   findDuplicatePackages,
   countUniquePackages
-} from '@moonlitlabs/npm-check';
+} from '@dependably/npm-check';
 
 const lockfile = parseLockfile('package-lock.json');
 
