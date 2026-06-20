@@ -212,9 +212,9 @@ sbom:
 #
 # IMPORTANT — why the text fields use `--form-string`, not `-F`: in a curl `-F`
 # value, a leading `@` means "read this file" and a leading `<` means "read this
-# file as the field value". Our project name is the scoped package `@moonlitlabs/
-# npm-check`, so `-F "projectName=@moonlitlabs/npm-check"` made curl try to open a
-# file named `moonlitlabs/npm-check`, failing every run with the misleading
+# file as the field value". Our project name is the scoped package `@dependably/
+# npm-check`, so `-F "projectName=@dependably/npm-check"` made curl try to open a
+# file named `dependably/npm-check`, failing every run with the misleading
 # "(26) Failed to open/read local data" — even though the real upload file,
 # sbom.json, was present and fine. `--form-string` sends the value verbatim with no
 # @/< interpretation. Only the actual file upload keeps `-F "bom=@sbom.json"`.
@@ -251,7 +251,7 @@ sbom-publish:
         exit 1
       fi
       BASE="${dependencyTrack_url%/}"
-      PROJECT="@moonlitlabs/npm-check"
+      PROJECT="@dependably/npm-check"
       VERSION=$(sed -n 's/^[[:space:]]*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' package.json | head -n1)
       [ -n "$VERSION" ] || VERSION=latest
       echo "Publishing SBOM ($(wc -c < sbom.json) bytes) for $PROJECT@$VERSION to $BASE"
