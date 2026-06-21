@@ -1,6 +1,6 @@
 {
-  "name": "@moonlitlabs/npm-check",
-  "version": "1.5.0",
+  "name": "@dependably/npm-check",
+  "version": "1.6.0",
   "description": "A comprehensive tool for validating, migrating, and updating npm package-lock.json files across versions 1, 2, and 3.",
   "main": "src/index.js",
   "type": "module",
@@ -33,11 +33,11 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/mhiland/npm-check.git"
+    "url": "git+https://github.com/dependably/npm-check.git"
   },
-  "homepage": "https://github.com/mhiland/npm-check#readme",
+  "homepage": "https://github.com/dependably/npm-check#readme",
   "bugs": {
-    "url": "https://github.com/mhiland/npm-check/issues"
+    "url": "https://github.com/dependably/npm-check/issues"
   },
   "keywords": [
     "npm",
@@ -55,10 +55,10 @@
   ],
   "author": {
     "name": "MHiland",
-    "email": "michael@moonlitlabs.ca",
-    "url": "https://github.com/mhiland"
+    "email": "michael@dependably.ca",
+    "url": "https://github.com/dependably"
   },
-  "license": "MIT",
+  "license": "Apache-2.0",
   "engines": {
     "node": ">=18.0.0",
     "npm": ">=9.0.0"

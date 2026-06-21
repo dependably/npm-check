@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.6.0] - 2026-06-21
+
+### Added
+- **Shared `.dependably-check` config** — npm-check now reads a repo-root `.dependably-check` file (JSON, no extension) IN ADDITION to its existing `.npm-checkrc.json` / `npm-check.config.json`. Discovery walks up from the working directory to the repo root (stopping at a `.git` directory or the filesystem root). The relevant data for this tool is the union of `common.allowedRegistryHosts` and `npm.allowedRegistryHosts` (other tool sections such as `nuget`/`python` and unknown keys are ignored). New `findSharedConfig()`, `loadSharedConfig()`, and `extendAllowedHosts()` APIs and a `SHARED_CONFIG_FILENAME` constant.
+- **Additive `allowedRegistryHosts`** — hosts from `.dependably-check` are ADDED to the `secure-resolved` rule's trusted-host allowlist rather than replacing it, so the built-in `registry.npmjs.org` (public npm) always stays trusted while private domains (e.g. `dependably.northwardlabs.ca`) become accepted. Config precedence is built-in defaults < `.dependably-check` (shared) < tool config (`.npm-checkrc.json` / `npm-check.config.json`) < CLI flags; an explicit `secure-resolved.allowedHosts` in the tool config still replaces the defaults (existing behavior), and the shared hosts then extend that result. Malformed `.dependably-check` JSON raises an `AuditConfigError` (exit code 2).
+
 ## [1.5.0] - 2026-06-19
 
 ### Added
@@ -23,6 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Unified `report` command** (now the default — bare `npm-check` runs it). Runs every check in one pass — the 9 audit rules + registry integrity verification + license validation — and prints one clean, grouped report: a section summary table (Structure, Integrity, Resolved URLs, Licenses, Install scripts, Pinned versions, Orphans, Unused), then per-section detail, then a totals line. `--format json` for CI. Network/filesystem checks degrade gracefully (`--offline`/`--no-integrity`; licenses auto-skip without `node_modules`/approved-list). New API: `runReport()` / `formatReport()`.
 
 ### Changed
+- **Package scope renamed** from `@moonlitlabs/npm-check` to `@dependably/npm-check`, aligning the package name with its `dependably.northwardlabs.ca` registry. The CLI command (`npm-check`) is unchanged.
 - **`check --check hash` now verifies against the registry** instead of hashing the installed `node_modules` directory. The old approach compared a directory hash to npm's tarball integrity — two incompatible things — producing false-positive mismatches for every package. It now compares each locked `integrity` to the authoritative `dist.integrity` from the registry (base derived per-package from `resolved`, so private registries work), needs no `node_modules`, and reports unreachable/missing entries as `unresolved` (non-failing by default; `--fail-on-unresolved` to fail closed). New flags: `--concurrency`, `--timeout`, `--registry`, `--fail-on-unresolved`. `deriveRegistryBase` moved to `integrity.js` (re-exported from `checksum-fixer.js` for back-compat).
 - **Fixer root-sync** — `fixPackageLock(lockfile, { packageJson })` now syncs a stale lockfile top-level + `packages['']` name/version (the report's "Structure & format" errors after a rename / version bump); the `fix` CLI auto-loads the sibling package.json.
 
