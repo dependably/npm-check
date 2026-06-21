@@ -4,10 +4,13 @@ import path from 'path';
 import os from 'os';
 import {
   loadAuditConfig,
+  loadSharedConfig,
+  findSharedConfig,
   mergeConfig,
   normalizeRuleEntry,
   DEFAULT_CONFIG,
   CONFIG_FILENAMES,
+  SHARED_CONFIG_FILENAME,
   AuditConfigError
 } from '../../src/audit-config.js';
 
@@ -126,6 +129,111 @@ describe('loadAuditConfig', () => {
     } catch (e) {
       expect(e).toBeInstanceOf(AuditConfigError);
       expect(e.code).toBe('CONFIG_PARSE');
+    }
+  });
+});
+
+describe('shared .dependably-check config', () => {
+  it('discovers .dependably-check by walking up and adds its hosts to defaults', () => {
+    fs.writeFileSync(path.join(tmpDir, '.git'), ''); // bound the walk-up at this dir
+    fs.writeFileSync(
+      path.join(tmpDir, SHARED_CONFIG_FILENAME),
+      JSON.stringify({ common: { allowedRegistryHosts: ['dependably.northwardlabs.ca'] } })
+    );
+
+    const config = loadAuditConfig(tmpDir);
+    const hosts = config.rules['secure-resolved'].options.allowedHosts;
+    expect(hosts).toContain('registry.npmjs.org'); // public npm stays trusted
+    expect(hosts).toContain('dependably.northwardlabs.ca');
+    expect(config.sharedConfigPath).toBe(path.join(tmpDir, SHARED_CONFIG_FILENAME));
+  });
+
+  it('walks up from a nested cwd to find .dependably-check at the repo root', () => {
+    fs.writeFileSync(path.join(tmpDir, '.git'), '');
+    fs.writeFileSync(
+      path.join(tmpDir, SHARED_CONFIG_FILENAME),
+      JSON.stringify({ npm: { allowedRegistryHosts: ['npm.corp.example.com'] } })
+    );
+    const nested = path.join(tmpDir, 'a', 'b', 'c');
+    fs.mkdirSync(nested, { recursive: true });
+
+    expect(findSharedConfig(nested)).toBe(path.join(tmpDir, SHARED_CONFIG_FILENAME));
+    const config = loadAuditConfig(nested);
+    expect(config.rules['secure-resolved'].options.allowedHosts).toContain('npm.corp.example.com');
+  });
+
+  it('unions common.allowedRegistryHosts and npm.allowedRegistryHosts (deduped)', () => {
+    fs.writeFileSync(path.join(tmpDir, '.git'), '');
+    fs.writeFileSync(
+      path.join(tmpDir, SHARED_CONFIG_FILENAME),
+      JSON.stringify({
+        common: { allowedRegistryHosts: ['shared.example.com', 'dup.example.com'] },
+        npm: { allowedRegistryHosts: ['npm-only.example.com', 'dup.example.com'] },
+        nuget: { allowedRegistryHosts: ['ignored.example.com'] }
+      })
+    );
+
+    const { allowedRegistryHosts } = loadSharedConfig(tmpDir);
+    expect(allowedRegistryHosts).toEqual(['shared.example.com', 'dup.example.com', 'npm-only.example.com']);
+    expect(allowedRegistryHosts).not.toContain('ignored.example.com');
+  });
+
+  it('returns empty hosts when no .dependably-check exists', () => {
+    fs.writeFileSync(path.join(tmpDir, '.git'), '');
+    const { allowedRegistryHosts, sharedPath } = loadSharedConfig(tmpDir);
+    expect(allowedRegistryHosts).toEqual([]);
+    expect(sharedPath).toBeNull();
+  });
+
+  it('stops the walk-up at a .git directory (does not escape the repo)', () => {
+    fs.writeFileSync(path.join(tmpDir, '.git'), '');
+    const nested = path.join(tmpDir, 'sub');
+    fs.mkdirSync(nested);
+    // .dependably-check lives ABOVE the .git boundary — must not be found.
+    expect(findSharedConfig(nested)).toBeNull();
+  });
+
+  it('precedence: explicit .npm-checkrc.json allowedHosts replaces, but shared hosts still extend it', () => {
+    fs.writeFileSync(path.join(tmpDir, '.git'), '');
+    fs.writeFileSync(
+      path.join(tmpDir, '.npm-checkrc.json'),
+      JSON.stringify({ rules: { 'secure-resolved': ['error', { allowedHosts: ['tool.example.com'] }] } })
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, SHARED_CONFIG_FILENAME),
+      JSON.stringify({ common: { allowedRegistryHosts: ['shared.example.com'] } })
+    );
+
+    const config = loadAuditConfig(tmpDir);
+    const hosts = config.rules['secure-resolved'].options.allowedHosts;
+    // The tool config replaced the default (registry.npmjs.org gone),
+    // and the shared host is added additively on top.
+    expect(hosts).toEqual(['tool.example.com', 'shared.example.com']);
+  });
+
+  it('precedence: an explicit maxWarnings in .npm-checkrc.json wins over shared config', () => {
+    fs.writeFileSync(path.join(tmpDir, '.git'), '');
+    fs.writeFileSync(path.join(tmpDir, '.npm-checkrc.json'), JSON.stringify({ maxWarnings: 7 }));
+    fs.writeFileSync(
+      path.join(tmpDir, SHARED_CONFIG_FILENAME),
+      JSON.stringify({ common: { allowedRegistryHosts: ['shared.example.com'] } })
+    );
+
+    const config = loadAuditConfig(tmpDir);
+    expect(config.maxWarnings).toBe(7);
+    expect(config.rules['secure-resolved'].options.allowedHosts).toContain('shared.example.com');
+  });
+
+  it('throws AuditConfigError with the path on malformed .dependably-check JSON', () => {
+    fs.writeFileSync(path.join(tmpDir, '.git'), '');
+    fs.writeFileSync(path.join(tmpDir, SHARED_CONFIG_FILENAME), '{ not valid json');
+    try {
+      loadAuditConfig(tmpDir);
+      throw new Error('expected to throw');
+    } catch (e) {
+      expect(e).toBeInstanceOf(AuditConfigError);
+      expect(e.code).toBe('SHARED_CONFIG_PARSE');
+      expect(e.context.sharedPath).toBe(path.join(tmpDir, SHARED_CONFIG_FILENAME));
     }
   });
 });
