@@ -93,7 +93,7 @@ git push origin --tags
 
 ### 5. Create GitHub Release
 
-1. Go to https://github.com/mhiland/npm-check/releases
+1. Go to https://github.com/dependably/npm-check/releases
 2. Click "Draft a new release"
 3. Select the tag you just pushed
 4. Set title: `v1.0.1`
@@ -263,7 +263,7 @@ npm publish
 
 Monitor these channels for issues:
 
-1. **GitHub Issues**: https://github.com/mhiland/npm-check/issues
+1. **GitHub Issues**: https://github.com/dependably/npm-check/issues
 2. **npm Trends**: https://www.npmtrends.com/npm-check
 3. **npm Notifications**: Check for security advisories
 4. **Community**: Monitor popular Node.js forums and chat channels

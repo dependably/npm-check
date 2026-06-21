@@ -185,6 +185,22 @@ describe('runReport', () => {
     expect(scripts.findings[0].location).toBe('node_modules/native');
   });
 
+  it('frames install scripts as npm v12 blocked when the project has no allowScripts', async () => {
+    const lockfile = cleanLockfile();
+    lockfile.packages['node_modules/good-pkg'].hasInstallScript = true;
+    lockfile.packages['node_modules/native'] = {
+      name: 'native', version: '2.0.0', hasInstallScript: true,
+      resolved: 'https://registry.npmjs.org/native/-/native-2.0.0.tgz', integrity: HASH_A
+    };
+    const packageJson = cleanPackageJson(); // no allowScripts map
+
+    const report = await runReport({ lockfile, packageJson, filePath: 'package-lock.json' }, baseOpts());
+    const scripts = report.sections.find((s) => s.id === 'install-scripts');
+    expect(scripts.summary).toBe('2 scripts · 2 blocked by npm v12 (no allowScripts)');
+    expect(scripts.findings).toHaveLength(2); // every script blocked under v12
+    expect(scripts.findings[0].message).toMatch(/npm v12 blocks install scripts by default/);
+  });
+
   it('strict mode turns warnings into a failure', async () => {
     const lockfile = cleanLockfile();
     lockfile.packages['node_modules/good-pkg'].hasInstallScript = true;

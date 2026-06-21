@@ -13,6 +13,11 @@ export class AuditConfigError extends Error {
 
 export const CONFIG_FILENAMES = ['.npm-checkrc.json', 'npm-check.config.json'];
 
+// Shared, cross-tool config file (JSON, no extension) discovered by walking up
+// from the working directory. Its `common`/`npm` `allowedRegistryHosts` extend
+// the secure-resolved trusted-host allowlist additively (public npm stays trusted).
+export const SHARED_CONFIG_FILENAME = '.dependably-check';
+
 export const SEVERITIES = ['error', 'warn', 'off'];
 
 export const DEFAULT_CONFIG = {
@@ -92,6 +97,63 @@ export function normalizeRuleEntry(entry) {
  * @param {string|null} explicitPath - Path passed via --config (wins over discovery)
  * @returns {{maxWarnings, rules: {[id]: {severity, options}}, configPath}}
  */
+/**
+ * Walk up from `cwd` to the filesystem root looking for the shared
+ * `.dependably-check` config file. Stops at the first hit, at a directory
+ * containing a `.git` entry (the repo root), or at the filesystem root.
+ *
+ * @param {string} cwd - Directory to start the search from
+ * @returns {string|null} Absolute path to the shared config, or null when absent
+ */
+export function findSharedConfig(cwd = process.cwd()) {
+  let dir = path.resolve(cwd);
+  for (;;) {
+    const candidate = path.join(dir, SHARED_CONFIG_FILENAME);
+    if (fs.existsSync(candidate)) return candidate;
+
+    // Stop at the repo root: a directory containing `.git`.
+    if (fs.existsSync(path.join(dir, '.git'))) return null;
+
+    const parent = path.dirname(dir);
+    if (parent === dir) return null; // reached the filesystem root
+    dir = parent;
+  }
+}
+
+/**
+ * Read and parse the shared `.dependably-check` file, returning the union of
+ * `common.allowedRegistryHosts` and `npm.allowedRegistryHosts` (deduped). Other
+ * tool sections and unknown keys are ignored.
+ *
+ * @param {string} cwd - Directory to start discovery from
+ * @returns {{ allowedRegistryHosts: string[], sharedPath: string|null }}
+ */
+export function loadSharedConfig(cwd = process.cwd()) {
+  const sharedPath = findSharedConfig(cwd);
+  if (!sharedPath) return { allowedRegistryHosts: [], sharedPath: null };
+
+  let raw;
+  try {
+    raw = fs.readFileSync(sharedPath, 'utf8');
+  } catch (e) {
+    throw new AuditConfigError(`Cannot read shared config file: ${e.message}`, 'SHARED_CONFIG_READ', { sharedPath });
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (e) {
+    throw new AuditConfigError(`Invalid JSON in ${sharedPath}: ${e.message}`, 'SHARED_CONFIG_PARSE', { sharedPath });
+  }
+
+  const collect = (section) => {
+    const hosts = section && section.allowedRegistryHosts;
+    return Array.isArray(hosts) ? hosts.filter((h) => typeof h === 'string') : [];
+  };
+  const allowedRegistryHosts = [...new Set([...collect(parsed.common), ...collect(parsed.npm)])];
+  return { allowedRegistryHosts, sharedPath };
+}
+
 export function loadAuditConfig(cwd = process.cwd(), explicitPath = null) {
   let userConfig = {};
   let configPath = null;
@@ -125,7 +187,32 @@ export function loadAuditConfig(cwd = process.cwd(), explicitPath = null) {
     }
   }
 
-  return mergeConfig(userConfig, configPath);
+  const config = mergeConfig(userConfig, configPath);
+
+  // Layer the shared `.dependably-check` hosts ADDITIVELY onto whatever
+  // secure-resolved.allowedHosts resolved to (built-in default or a
+  // tool-config replacement) — public npm always stays trusted.
+  const { allowedRegistryHosts, sharedPath } = loadSharedConfig(cwd);
+  if (allowedRegistryHosts.length > 0) {
+    extendAllowedHosts(config, allowedRegistryHosts);
+  }
+  config.sharedConfigPath = sharedPath;
+
+  return config;
+}
+
+/**
+ * Add the given hosts to the secure-resolved rule's `allowedHosts`, deduplicated,
+ * without replacing the existing entries. No-op when the rule is absent.
+ *
+ * @param {object} config - A merged audit config (from mergeConfig)
+ * @param {string[]} hosts - Bare hostnames to add to the allowlist
+ */
+export function extendAllowedHosts(config, hosts) {
+  const rule = config.rules && config.rules['secure-resolved'];
+  if (!rule) return;
+  const existing = Array.isArray(rule.options.allowedHosts) ? rule.options.allowedHosts : [];
+  rule.options = { ...rule.options, allowedHosts: [...new Set([...existing, ...hosts])] };
 }
 
 /**

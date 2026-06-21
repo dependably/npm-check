@@ -154,7 +154,8 @@ function installScriptsSummary(tally) {
   if (tally.v12Aware) {
     return `${tally.total} ${tally.total === 1 ? 'script' : 'scripts'} · ${tally.allowed.length} allowed · ${tally.blocked.length} blocked`;
   }
-  return `${tally.total} ${tally.total === 1 ? 'package' : 'packages'} (no allowScripts — all need review)`;
+  // No allowScripts map: npm v12 blocks every install script by default.
+  return `${tally.total} ${tally.total === 1 ? 'script' : 'scripts'} · ${tally.blocked.length} blocked by npm v12 (no allowScripts)`;
 }
 
 // Default pass-state summary for a generic section: count its findings or fall back.
