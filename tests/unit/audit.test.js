@@ -3,6 +3,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { runAudit, formatAuditReport, rules, AuditError } from '../../src/audit.js';
+import { loadAuditConfig } from '../../src/audit-config.js';
 
 const GOOD_HASH = 'sha512-' + 'A'.repeat(86) + '==';
 
@@ -189,6 +190,52 @@ describe('runAudit', () => {
       expect(secure).toHaveLength(1);
       expect(secure[0].packagePath).toBe('node_modules/git-dep');
       expect(secure[0].message).toMatch(/git dependency not allowed/);
+    });
+  });
+
+  describe('secure-resolved with shared .dependably-check config', () => {
+    let sharedDir;
+
+    beforeEach(() => {
+      sharedDir = fs.mkdtempSync(path.join(os.tmpdir(), 'npm-check-shared-'));
+      fs.writeFileSync(path.join(sharedDir, '.git'), ''); // bound the walk-up
+    });
+
+    afterEach(() => {
+      fs.rmSync(sharedDir, { recursive: true, force: true });
+    });
+
+    function privateHostLockfile() {
+      const lockfile = cleanLockfile();
+      lockfile.packages['node_modules/private'] = {
+        version: '1.0.0',
+        resolved: 'https://dependably.northwardlabs.ca/private/-/private-1.0.0.tgz',
+        integrity: GOOD_HASH
+      };
+      return lockfile;
+    }
+
+    it('passes a package from the private host when .dependably-check trusts it', () => {
+      fs.writeFileSync(
+        path.join(sharedDir, '.dependably-check'),
+        JSON.stringify({ common: { allowedRegistryHosts: ['dependably.northwardlabs.ca'] } })
+      );
+
+      const config = loadAuditConfig(sharedDir);
+      const report = runAudit({ lockfile: privateHostLockfile(), packageJson: cleanPackageJson() }, config);
+      const secure = report.findings.filter((f) => f.ruleId === 'secure-resolved');
+      expect(secure).toEqual([]);
+      // public npm is still trusted alongside the added private host
+      expect(config.rules['secure-resolved'].options.allowedHosts).toContain('registry.npmjs.org');
+    });
+
+    it('flags the same private host when .dependably-check is absent', () => {
+      const config = loadAuditConfig(sharedDir); // no .dependably-check on disk
+      const report = runAudit({ lockfile: privateHostLockfile(), packageJson: cleanPackageJson() }, config);
+      const secure = report.findings.filter((f) => f.ruleId === 'secure-resolved');
+      expect(secure).toHaveLength(1);
+      expect(secure[0].packagePath).toBe('node_modules/private');
+      expect(secure[0].message).toMatch(/untrusted registry host/);
     });
   });
 

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.6.0] - 2026-06-21
+
+### Added
+- **Shared `.dependably-check` config** — npm-check now reads a repo-root `.dependably-check` file (JSON, no extension) IN ADDITION to its existing `.npm-checkrc.json` / `npm-check.config.json`. Discovery walks up from the working directory to the repo root (stopping at a `.git` directory or the filesystem root). The relevant data for this tool is the union of `common.allowedRegistryHosts` and `npm.allowedRegistryHosts` (other tool sections such as `nuget`/`python` and unknown keys are ignored). New `findSharedConfig()`, `loadSharedConfig()`, and `extendAllowedHosts()` APIs and a `SHARED_CONFIG_FILENAME` constant.
+- **Additive `allowedRegistryHosts`** — hosts from `.dependably-check` are ADDED to the `secure-resolved` rule's trusted-host allowlist rather than replacing it, so the built-in `registry.npmjs.org` (public npm) always stays trusted while private domains (e.g. `dependably.northwardlabs.ca`) become accepted. Config precedence is built-in defaults < `.dependably-check` (shared) < tool config (`.npm-checkrc.json` / `npm-check.config.json`) < CLI flags; an explicit `secure-resolved.allowedHosts` in the tool config still replaces the defaults (existing behavior), and the shared hosts then extend that result. Malformed `.dependably-check` JSON raises an `AuditConfigError` (exit code 2).
+
 ## [1.5.0] - 2026-06-19
 
 ### Added
