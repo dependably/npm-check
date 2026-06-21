@@ -1,13 +1,17 @@
 # CI/CD pipeline for npm-check
 #
-# Flow:  test  →  build  →  sbom  →  sbom-publish  →  publish (manual, default branch only)
+# Flow:  test  →  build  →  sbom  →  sbom-publish  →  publish (manual)  →  mirror (manual)
+#        (manual jobs are default-branch only)
 #
-#   test          lint + unit tests on every push/MR
-#   build         `npm pack` the publishable tarball, kept as a job artifact
-#   sbom          generate a CycloneDX SBOM (every pipeline), kept as an artifact
-#   sbom-publish  upload the SBOM to Dependency-Track on the default branch (its own
-#                 stage so it never races the `sbom` job in the shared build dir)
-#   publish       manual gate that pushes the built tarball to the private registry
+#   test           lint + unit tests on every push/MR
+#   build          `npm pack` the publishable tarball, kept as a job artifact
+#   sbom           generate a CycloneDX SBOM (every pipeline), kept as an artifact
+#   sbom-publish   upload the SBOM to Dependency-Track on the default branch (its own
+#                  stage so it never races the `sbom` job in the shared build dir)
+#   publish        manual gate that pushes the built tarball to the private registry
+#   publish-github manual gate (last stage) that mirrors the default branch + tags
+#                  to the public GitHub repo — reachable only after every earlier
+#                  stage has passed
 #
 # Required CI/CD variables (Settings → CI/CD → Variables), set as "Protected"
 # and "Masked" so they're only exposed to protected branches:
@@ -20,6 +24,11 @@
 #   SONAR_HOST_URL        SonarQube server URL (not a secret)
 #   SONAR_PROJECT_KEY     SonarQube project key (not a secret)
 #   SONAR_TOKEN           SonarQube analysis token (masked)
+#   GITHUB_TOKEN          GitHub PAT (or fine-grained token) with `contents:write`
+#                         on dependably/npm-check — used by the `publish-github`
+#                         mirror job. Set Protected + Masked (default branch only).
+#   GITHUB_MIRROR_REPO    (optional) override the GitHub push URL; defaults to
+#                         https://github.com/dependably/npm-check.git
 
 # Run ONE pipeline per change: a merge-request pipeline when an MR is open (so the
 # full test suite runs in — and gates — the MR, not just snyk), the branch pipeline
@@ -53,6 +62,7 @@ stages:
   - sbom
   - sbom-publish
   - publish
+  - mirror
 
 # Reusable npm dependency cache (keyed on the lockfile).
 .npm_install: &npm_install
@@ -339,3 +349,50 @@ publish:
     - echo "✓ $PKG published and verified on $REGISTRY_URL"
   after_script:
     - rm -f .npmrc
+
+# Mirror the source to the public GitHub repo (https://github.com/dependably/
+# npm-check). GitLab stays the source of truth; this is the one-way push that
+# makes the public mirror reflect a released state.
+#
+# Gating: it lives in the LAST stage and uses no `needs:`, so it only becomes
+# reachable once every earlier stage (test → build → sbom → sbom-publish →
+# publish) has succeeded on the default branch — i.e. "only when main passes all
+# jobs". Even then it's `when: manual`, so a human clicks to mirror. Default
+# branch only; serialized via resource_group; interruptible:false so an in-flight
+# push is never auto-cancelled.
+#
+# GIT_DEPTH: 0 turns the shallow CI clone into a full clone so the whole history
+# and all tags can be pushed. Auth uses an http.extraheader carrying a base64
+# Basic credential (x-access-token:<PAT>) rather than embedding the token in the
+# remote URL — git never echoes the header, so the token can't leak into the
+# (retained) job log even on a push error. GITHUB_TOKEN must be a Masked
+# CI/CD variable.
+publish-github:
+  stage: mirror
+  image: node:20  # ships git; same base as the default image
+  interruptible: false
+  variables:
+    GIT_DEPTH: "0"
+  resource_group: publish-github
+  rules:
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+      when: manual
+      allow_failure: false
+  script:
+    - |
+      if [ -z "$GITHUB_TOKEN" ]; then
+        echo "ERROR: GITHUB_TOKEN must be set as a masked CI/CD variable." >&2
+        exit 1
+      fi
+    - GITHUB_REPO="${GITHUB_MIRROR_REPO:-https://github.com/dependably/npm-check.git}"
+    - git remote remove github 2>/dev/null || true
+    - git remote add github "$GITHUB_REPO"
+    - |
+      set -eu
+      AUTH=$(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')
+      echo "Mirroring $CI_DEFAULT_BRANCH + tags to $GITHUB_REPO"
+      git -c http.extraheader="Authorization: Basic ${AUTH}" \
+        push github "HEAD:refs/heads/${CI_DEFAULT_BRANCH}"
+      git -c http.extraheader="Authorization: Basic ${AUTH}" \
+        push github --tags
+    - echo "✓ Mirrored $CI_DEFAULT_BRANCH + tags to $GITHUB_REPO"

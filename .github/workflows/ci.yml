@@ -1,0 +1,100 @@
+# CI for the public GitHub mirror (https://github.com/dependably/npm-check).
+#
+# GitLab (gitlab.northwardlabs.ca/moonlitlabs/npm-check) stays the source of
+# truth and runs the authoritative pipeline (.gitlab-ci.yml: lint, tests, SBOM,
+# private-registry publish). This workflow is the CI that runs *on GitHub* once
+# the GitLab `publish-github` manual job mirrors the branch here. It deliberately
+# uses the PUBLIC npm registry only — no private registry, no secrets required —
+# so it works for forks and external contributors out of the box.
+#
+# Jobs:  secret-scan (trufflehog)  ·  lint  ·  test (matrix)  ·  build (npm pack)
+#
+# Action pins: third-party/marketplace steps are intended to be pinned by commit
+# SHA for supply-chain safety. The official GitHub-maintained actions below use
+# `@v4` major tags; tighten to SHAs when convenient.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Cancel superseded runs on the same ref (mirrors the GitLab auto-cancel policy).
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # Secret scan — fail the build if a committed secret is detected. We run the
+  # SAME trufflehog image pinned by digest as the GitLab `secret-scan` job, for
+  # parity and so the scanner version can't drift. fetch-depth: 0 gives a full
+  # history scan; --only-verified keeps it fast and false-positive-free; --fail
+  # hard-fails on a finding.
+  secret-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: TruffleHog (full-history, verified secrets only)
+        run: |
+          docker run --rm -v "$PWD:/repo" \
+            trufflesecurity/trufflehog:3.95.3@sha256:9cc33bb080cac0efbbf228a17667172875b529eeeab01efcc4697adfb55f568a \
+            git file:///repo --only-verified --fail
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+
+  # Unit tests across the supported Node range (package.json engines: >=18).
+  # Integration tests are Docker/registry-based and stay on-demand, matching the
+  # GitLab pipeline (which also runs only unit tests inline).
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: [18, 20, 22]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          registry-url: https://registry.npmjs.org
+          cache: npm
+      - run: npm ci
+      - run: npm run test:unit
+
+  # "Build" is just packing the publishable tarball — this is a pure-ESM package
+  # with no transpile step. npm pack honors the package.json `files` allowlist.
+  # Gated behind lint + test so we never publish an artifact from a red build.
+  build:
+    runs-on: ubuntu-latest
+    needs: [lint, test]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+          cache: npm
+      - run: npm ci
+      - run: npm pack
+      - uses: actions/upload-artifact@v4
+        with:
+          name: npm-tarball
+          path: "*.tgz"
+          retention-days: 7
