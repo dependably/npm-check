@@ -33,11 +33,11 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/mhiland/npm-check.git"
+    "url": "git+https://github.com/dependably/npm-check.git"
   },
-  "homepage": "https://github.com/mhiland/npm-check#readme",
+  "homepage": "https://github.com/dependably/npm-check#readme",
   "bugs": {
-    "url": "https://github.com/mhiland/npm-check/issues"
+    "url": "https://github.com/dependably/npm-check/issues"
   },
   "keywords": [
     "npm",
@@ -55,8 +55,8 @@
   ],
   "author": {
     "name": "MHiland",
-    "email": "michael@moonlitlabs.ca",
-    "url": "https://github.com/mhiland"
+    "email": "michael@dependably.ca",
+    "url": "https://github.com/dependably"
   },
   "license": "MIT",
   "engines": {
