@@ -236,7 +236,7 @@ function installScriptMessage(label, approval, v12Aware) {
   if (v12Aware) {
     return `${label} runs an install script not yet approved in package.json "allowScripts" — npm v12 will not run it (\`npm approve-scripts\`)`;
   }
-  return `${label} runs a lifecycle install script (preinstall/install/postinstall) — review and add to this rule's "allow" list if trusted, or install with \`--ignore-scripts\``;
+  return `${label} runs a lifecycle install script — npm v12 blocks install scripts by default; approve it in package.json "allowScripts" (\`npm approve-scripts\`) if trusted, or it will not run`;
 }
 
 const installScriptsRule = {
