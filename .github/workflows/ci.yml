@@ -106,28 +106,39 @@ jobs:
           path: "*.tgz"
           retention-days: 7
 
-  # Publish to the PUBLIC npm registry with SLSA build provenance — SLSA Build L2.
-  # Runs only when a GitHub Release is published (see the `release` trigger above),
-  # so it never fires on a branch push or PR. `npm publish --provenance` makes npm
-  # generate a sigstore-signed SLSA provenance statement from THIS workflow's OIDC
-  # identity (that's what `id-token: write` is for) and link it on the package's npm
-  # page — keyless, no signing secret to manage or leak. NODE_AUTH_TOKEN is only the
-  # registry auth token (an npm automation/granular token), not a signing key.
+  # Publish the npm package with a signed SLSA build provenance — SLSA Build L2.
+  # TWO complementary signatures are produced, because npm and the GitHub
+  # attestation store surface provenance in DIFFERENT places:
   #
-  # Quality gate: `npm publish` runs the package.json `prepublishOnly` script
-  # (test + lint) from the checked-out source before anything is pushed, so a red
-  # build cannot ship. `--access public` is required because the package is scoped
-  # (@dependably/*), which npm defaults to restricted.
+  #   1. actions/attest-build-provenance signs the packed *.tgz and stores the
+  #      attestation in GitHub (repo "Attestations" tab; verify with
+  #      `gh attestation verify <tarball> -R dependably/npm-check`). This is the
+  #      SAME mechanism the NuGet pipeline uses, so it produces a signed release
+  #      regardless of which registry the tarball is pushed to (incl. private).
   #
-  # Prereq: add an npm token as the `NPM_TOKEN` repo secret. Provenance also needs
-  # npm >= 9.5 — Node 24 ships npm 11, so the version below satisfies it.
+  #   2. `npm publish --provenance` additionally records sigstore provenance on
+  #      the npmjs package page (verify with `npm audit signatures`). This works
+  #      ONLY against the PUBLIC registry (registry.npmjs.org) — private/third-
+  #      party registries do not support npm provenance, so this is the public-npm
+  #      bonus on top of the registry-independent GitHub attestation above.
+  #
+  # We `npm pack` ONCE and attest + publish the same bytes, so the attestation
+  # matches the released artifact exactly. The attest step runs BEFORE publish, so
+  # the signed release exists even if publish fails (e.g. NPM_TOKEN not yet set).
+  #
+  # Runs only on a published GitHub Release. Keyless: id-token: write drives the
+  # OIDC->sigstore signature; NODE_AUTH_TOKEN is registry auth only, not a key.
+  # The quality gate is the job-level `needs: [lint, test, build]`. --access public
+  # is required for the scoped @dependably/* name. Prereq: NPM_TOKEN repo secret;
+  # npm >= 9.5 for provenance (Node 24 ships npm 11).
   publish-npm:
     if: github.event_name == 'release'
     runs-on: ubuntu-latest
     needs: [lint, test, build]
     permissions:
       contents: read       # checkout
-      id-token: write      # OIDC -> sigstore signature for provenance (keyless)
+      id-token: write      # OIDC -> sigstore signature (GitHub attestation + npm provenance)
+      attestations: write  # store the GitHub build-provenance attestation on the repo
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
@@ -136,6 +147,14 @@ jobs:
           registry-url: https://registry.npmjs.org
           cache: npm
       - run: npm ci
-      - run: npm publish --provenance --access public
+      # Pack the exact tarball we attest and publish (one set of bytes).
+      - run: npm pack
+      # NuGet-equivalent: signed GitHub attestation over the tarball, registry-
+      # independent. SHA-pin this action when convenient (see header note).
+      - uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: "*.tgz"
+      # Public-npm provenance bonus; publishes the same packed tarball.
+      - run: npm publish *.tgz --provenance --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
