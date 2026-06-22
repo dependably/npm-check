@@ -8,7 +8,8 @@
 # so it works for forks and external contributors out of the box.
 #
 # Jobs:  secret-scan (trufflehog)  ·  lint  ·  test (matrix)  ·  build (npm pack)
-#        publish-npm (release only — public npm + SLSA build provenance, L2)
+#        release (tags v* only — creates a GitHub Release + attaches the .tgz +
+#                 SLSA build provenance, L2; npm publish when NPM_TOKEN is set)
 #
 # Action pins: third-party/marketplace steps are intended to be pinned by commit
 # SHA for supply-chain safety. The official GitHub-maintained actions below use
@@ -20,12 +21,12 @@ name: CI
 on:
   push:
     branches: [main]
+    # A release is cut by pushing a `v*` tag — the `release` job below then creates
+    # the GitHub Release, attaches the packed tarball, and emits SLSA provenance.
+    # This mirrors the nuget-check pipeline (tag-driven, self-creating release).
+    tags: ["v*"]
   pull_request:
     branches: [main]
-  # Publishing is gated on a GitHub Release being published (cut from a tag),
-  # never on a plain push — so a release is a deliberate, reviewable act.
-  release:
-    types: [published]
 
 # Cancel superseded runs on the same ref (mirrors the GitLab auto-cancel policy).
 concurrency:
@@ -100,13 +101,17 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm pack
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: npm-tarball
           path: "*.tgz"
           retention-days: 7
 
-  # Publish the npm package with a signed SLSA build provenance — SLSA Build L2.
+  # Release the npm package with a signed SLSA build provenance — SLSA Build L2.
+  # Tag-driven and self-creating, mirroring the nuget-check `release` job: pushing
+  # a `v*` tag creates the GitHub Release, attaches the packed tarball, and signs
+  # it — so the released artifact is visible and verifiable on GitHub itself.
+  #
   # TWO complementary signatures are produced, because npm and the GitHub
   # attestation store surface provenance in DIFFERENT places:
   #
@@ -122,21 +127,21 @@ jobs:
   #      party registries do not support npm provenance, so this is the public-npm
   #      bonus on top of the registry-independent GitHub attestation above.
   #
-  # We `npm pack` ONCE and attest + publish the same bytes, so the attestation
-  # matches the released artifact exactly. The attest step runs BEFORE publish, so
-  # the signed release exists even if publish fails (e.g. NPM_TOKEN not yet set).
+  # We `npm pack` ONCE and attest + release + publish the same bytes, so the
+  # attestation matches the released artifact exactly. The attest + GitHub Release
+  # steps run independently of npm publish, so the signed GitHub Release is produced
+  # even when NPM_TOKEN is unset — npm publish is skipped (not failed) until then.
   #
-  # Runs only on a published GitHub Release. Keyless: id-token: write drives the
-  # OIDC->sigstore signature; NODE_AUTH_TOKEN is registry auth only, not a key.
-  # The quality gate is the job-level `needs: [lint, test, build]`. --access public
-  # is required for the scoped @dependably/* name. Prereq: NPM_TOKEN repo secret;
-  # npm >= 9.5 for provenance (Node 24 ships npm 11).
-  publish-npm:
-    if: github.event_name == 'release'
+  # Runs only on a `v*` tag, after the gating jobs pass. Keyless: id-token: write
+  # drives the OIDC->sigstore signature; NODE_AUTH_TOKEN is registry auth only, not
+  # a key. --access public is required for the scoped @dependably/* name. Prereq for
+  # npm publish: NPM_TOKEN repo secret; npm >= 9.5 for provenance (Node 24 ships npm 11).
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
-    needs: [lint, test, build]
+    needs: [secret-scan, lint, test, build]
     permissions:
-      contents: read       # checkout
+      contents: write      # create the GitHub Release + upload the .tgz asset
       id-token: write      # OIDC -> sigstore signature (GitHub attestation + npm provenance)
       attestations: write  # store the GitHub build-provenance attestation on the repo
     steps:
@@ -147,14 +152,33 @@ jobs:
           registry-url: https://registry.npmjs.org
           cache: npm
       - run: npm ci
-      # Pack the exact tarball we attest and publish (one set of bytes).
+      # Pack the exact tarball we attest, release, and publish (one set of bytes).
       - run: npm pack
       # NuGet-equivalent: signed GitHub attestation over the tarball, registry-
       # independent. SHA-pin this action when convenient (see header note).
       - uses: actions/attest-build-provenance@v2
         with:
           subject-path: "*.tgz"
-      # Public-npm provenance bonus; publishes the same packed tarball.
-      - run: npm publish *.tgz --provenance --access public
+      # Public-npm provenance bonus; publishes the same packed tarball. Skipped
+      # (not failed) until NPM_TOKEN is set, so the GitHub Release + provenance
+      # still produce on the first tagged run.
+      - name: Publish to npmjs.org
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -eu
+          if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
+            echo "NPM_TOKEN not set — skipping npm publish (GitHub Release + provenance still produced)."
+            exit 0
+          fi
+          npm publish *.tgz --provenance --access public
+      # Attach the attested .tgz to a GitHub Release so the exact signed bytes are
+      # downloadable and verifiable by digest — the artifact you see on GitHub.
+      - name: Publish .tgz to the GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eu
+          gh release create "$GITHUB_REF_NAME" *.tgz \
+            --title "$GITHUB_REF_NAME" --generate-notes \
+          || gh release upload "$GITHUB_REF_NAME" *.tgz --clobber
