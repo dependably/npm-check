@@ -28,4 +28,12 @@ if (process.env.CI || process.env.INTEGRATION_TESTS) {
   config.maxWorkers = 1;
 }
 
+// In CI, force Jest to exit once the run completes. The suite passes cleanly but
+// an intermittent benign async handle (not reported by --detectOpenHandles) can
+// outlive Jest's 1s post-run grace under maxWorkers=1, hanging the job until its
+// timeout. forceExit is scoped to CI so local runs keep open-handle diagnostics.
+if (process.env.CI) {
+  config.forceExit = true;
+}
+
 export default config;
