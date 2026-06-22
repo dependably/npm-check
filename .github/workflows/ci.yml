@@ -12,7 +12,8 @@
 #
 # Action pins: third-party/marketplace steps are intended to be pinned by commit
 # SHA for supply-chain safety. The official GitHub-maintained actions below use
-# `@v4` major tags; tighten to SHAs when convenient.
+# `@v5` major tags (Node 24 runtime — `@v4` ran on the now-deprecated Node 20);
+# tighten to SHAs when convenient.
 
 name: CI
 
@@ -43,7 +44,7 @@ jobs:
   secret-scan:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
       - name: TruffleHog (full-history, verified secrets only)
@@ -55,16 +56,17 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
-          node-version: 20
+          node-version: 24
           registry-url: https://registry.npmjs.org
           cache: npm
       - run: npm ci
       - run: npm run lint
 
-  # Unit tests across the supported Node range (package.json engines: >=18).
+  # Unit tests across the supported Node range (package.json engines: >=22) — the
+  # two current LTS lines. 18 and 20 are end-of-life and dropped.
   # Integration tests are Docker/registry-based and stay on-demand, matching the
   # GitLab pipeline (which also runs only unit tests inline).
   test:
@@ -72,10 +74,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        node-version: [18, 20, 22]
+        node-version: [22, 24]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: ${{ matrix.node-version }}
           registry-url: https://registry.npmjs.org
@@ -90,10 +92,10 @@ jobs:
     runs-on: ubuntu-latest
     needs: [lint, test]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
-          node-version: 20
+          node-version: 24
           registry-url: https://registry.npmjs.org
           cache: npm
       - run: npm ci
@@ -118,7 +120,7 @@ jobs:
   # (@dependably/*), which npm defaults to restricted.
   #
   # Prereq: add an npm token as the `NPM_TOKEN` repo secret. Provenance also needs
-  # npm >= 9.5 — Node 20 ships npm 10, so the version below satisfies it.
+  # npm >= 9.5 — Node 24 ships npm 11, so the version below satisfies it.
   publish-npm:
     if: github.event_name == 'release'
     runs-on: ubuntu-latest
@@ -127,10 +129,10 @@ jobs:
       contents: read       # checkout
       id-token: write      # OIDC -> sigstore signature for provenance (keyless)
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
-          node-version: 20
+          node-version: 24
           registry-url: https://registry.npmjs.org
           cache: npm
       - run: npm ci
