@@ -17,6 +17,12 @@ export const DEFAULT_EXTENSIONS = ['.js', '.mjs', '.cjs', '.jsx', '.ts', '.tsx',
 export const DEFAULT_IGNORE_DIRS = [
   'node_modules', '.git', '.backups', 'dist', 'build', 'out', 'coverage', '.next', '.nuxt', 'vendor'
 ];
+// Build/tooling output dirs that DEFAULT_IGNORE_DIRS skips during the app scan.
+// `findUnusedDependencies` scans these separately so a dependency imported only
+// by a hand-written build toolkit (e.g. a `build/` shipped as source) is not
+// mistaken for unused. Conservative by design: it can only rescue deps from a
+// removal suggestion, never add one.
+export const DEFAULT_BUILD_DIRS = ['build', 'dist', 'out'];
 
 // require('x') / require("x") / import('x') / import "x" / from 'x' / export ... from 'x'
 const IMPORT_PATTERNS = [
@@ -131,25 +137,57 @@ function collectUnusedInSection(deps, section, context) {
 }
 
 /**
+ * Scan each build/tooling dir that exists under `dir`, as its own pass. Returns
+ * the union of packages imported there plus a per-dir file/usage breakdown.
+ */
+function scanBuildDirs(dir, buildDirs, options) {
+  const used = new Set();
+  let scannedFiles = 0;
+  const dirsScanned = [];
+  for (const name of buildDirs) {
+    const full = path.join(dir, name);
+    if (!fs.existsSync(full)) continue;
+    const res = scanUsedPackages(full, options);
+    for (const pkg of res.used) used.add(pkg);
+    scannedFiles += res.scannedFiles;
+    dirsScanned.push(name);
+  }
+  return { used, scannedFiles, dirsScanned };
+}
+
+/**
  * Find dependencies declared in package.json that the application never
  * imports. Heuristic — results are flagged for removal, never auto-removed:
  * packages used only via CLI, config files, or runtime magic can appear
  * unused. Mentions in npm scripts count as used to reduce CLI-tool noise.
  *
+ * Runs two passes: the application (with build/output dirs ignored), and the
+ * build/tooling dirs (`buildDirs`) separately. A dependency counts as used if
+ * either pass imports it, so a `build/` shipped as source no longer produces
+ * false "unused" flags; deps imported ONLY by the build pass are surfaced as
+ * `buildOnly` for visibility. Pass `buildDirs: []` to disable the second pass.
+ *
  * @param {object} packageJson - Parsed package.json
  * @param {string} dir - Project root to scan
- * @param {object} options - { includeDev = false, ignore = [], extensions, ignoreDirs }
- * @returns {{unused: Array<{name, section, version}>, used: Set<string>, scannedFiles: number, sectionsChecked: string[]}}
+ * @param {object} options - { includeDev = false, ignore = [], buildDirs, extensions, ignoreDirs }
+ * @returns {{unused: Array<{name, section, version}>, used: Set<string>, usedByApp: Set<string>, usedByBuild: Set<string>, buildOnly: string[], scannedFiles: number, appFiles: number, buildFiles: number, buildDirsScanned: string[], sectionsChecked: string[]}}
  */
 export function findUnusedDependencies(packageJson, dir, options = {}) {
-  const { includeDev = false, ignore = [] } = options;
+  const { includeDev = false, ignore = [], buildDirs = DEFAULT_BUILD_DIRS } = options;
 
   if (!packageJson || typeof packageJson !== 'object') {
     throw new UsageScannerError('package.json data is required', 'MISSING_PACKAGE_JSON');
   }
 
-  const { used, scannedFiles } = scanUsedPackages(dir, options);
+  // Pass 1: the application, with build/output dirs ignored (default behavior).
+  const app = scanUsedPackages(dir, options);
+  const usedByApp = app.used;
 
+  // Pass 2: the build/tooling dirs, scanned separately.
+  const build = scanBuildDirs(dir, buildDirs, options);
+  const usedByBuild = build.used;
+
+  const used = new Set([...usedByApp, ...usedByBuild]);
   const scriptsText = Object.values(packageJson.scripts || {}).join('\n');
   const context = { used, scriptsText, ignore };
 
@@ -160,5 +198,18 @@ export function findUnusedDependencies(packageJson, dir, options = {}) {
     unused.push(...collectUnusedInSection(packageJson[section], section, context));
   }
 
-  return { unused, used, scannedFiles, sectionsChecked };
+  const buildOnly = [...usedByBuild].filter((name) => !usedByApp.has(name)).sort();
+
+  return {
+    unused,
+    used,
+    usedByApp,
+    usedByBuild,
+    buildOnly,
+    scannedFiles: app.scannedFiles + build.scannedFiles,
+    appFiles: app.scannedFiles,
+    buildFiles: build.scannedFiles,
+    buildDirsScanned: build.dirsScanned,
+    sectionsChecked
+  };
 }

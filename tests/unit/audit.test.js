@@ -678,6 +678,23 @@ describe('install-scripts allowScripts reconciliation (npm v12)', () => {
     const report = runAudit({ lockfile: lockfileWithScripts(), packageJson: cleanPackageJson() });
     expect(report.findings.filter((f) => f.ruleId === 'install-scripts')).toHaveLength(2);
   });
+
+  it('accepts the array form of allowScripts (listing = approved)', () => {
+    const packageJson = cleanPackageJson();
+    packageJson.allowScripts = ['good-pkg@1.0.0', 'sneaky'];
+    const report = runAudit({ lockfile: lockfileWithScripts(), packageJson });
+    expect(report.findings.filter((f) => f.ruleId === 'install-scripts')).toEqual([]);
+  });
+
+  it('array form leaves unlisted install-script packages pending', () => {
+    const packageJson = cleanPackageJson();
+    packageJson.allowScripts = ['good-pkg']; // bare name approves good-pkg only
+    const report = runAudit({ lockfile: lockfileWithScripts(), packageJson });
+    const scripts = report.findings.filter((f) => f.ruleId === 'install-scripts');
+    expect(scripts).toHaveLength(1);
+    expect(scripts[0].packagePath).toBe('node_modules/sneaky');
+    expect(scripts[0].message).toMatch(/not yet approved/);
+  });
 });
 
 describe('no-git-deps and no-remote-deps rules (npm v12 opt-ins)', () => {

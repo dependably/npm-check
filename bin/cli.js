@@ -670,11 +670,21 @@ function runUnusedCommand() {
   if (asJson) {
     console.log(JSON.stringify({
       scannedFiles: result.scannedFiles,
+      appFiles: result.appFiles,
+      buildFiles: result.buildFiles,
+      buildDirsScanned: result.buildDirsScanned,
       sectionsChecked: result.sectionsChecked,
+      buildOnly: result.buildOnly,
       unused: result.unused
     }, null, 2));
   } else {
-    console.log(`\n🔎 Scanned ${result.scannedFiles} source file(s) (${result.sectionsChecked.join(', ')})`);
+    const split = result.buildFiles
+      ? ` — ${result.appFiles} app, ${result.buildFiles} build [${result.buildDirsScanned.join(', ')}]`
+      : '';
+    console.log(`\n🔎 Scanned ${result.scannedFiles} source file(s)${split} (${result.sectionsChecked.join(', ')})`);
+    if (result.buildOnly.length > 0) {
+      console.log(`   ${result.buildOnly.length} package(s) imported only by build tooling (kept): ${result.buildOnly.join(', ')}`);
+    }
     if (result.unused.length === 0) {
       console.log('   All declared dependencies are imported by the application');
     } else {

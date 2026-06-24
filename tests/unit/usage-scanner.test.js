@@ -169,4 +169,45 @@ describe('findUnusedDependencies', () => {
   it('throws without package.json data', () => {
     expect(() => findUnusedDependencies(null, tmpDir)).toThrow(UsageScannerError);
   });
+
+  it('does not flag a dependency imported only by the build/ toolkit', () => {
+    write('src/app.js', `import lodash from 'lodash';`);
+    write('build/pipeline.js', `import unified from 'unified';`);
+    const packageJson = {
+      name: 'app',
+      dependencies: { lodash: '^4.0.0', unified: '^11.0.0', 'truly-unused': '^1.0.0' }
+    };
+
+    const result = findUnusedDependencies(packageJson, tmpDir);
+    expect(result.unused.map((u) => u.name)).toEqual(['truly-unused']);
+    expect(result.buildOnly).toEqual(['unified']);
+    expect(result.usedByApp.has('unified')).toBe(false);
+    expect(result.usedByBuild.has('unified')).toBe(true);
+    expect(result.buildDirsScanned).toEqual(['build']);
+    expect(result.buildFiles).toBe(1);
+    expect(result.appFiles).toBe(1);
+  });
+
+  it('scans dist and out alongside build for the build pass', () => {
+    write('dist/bundle.js', `require('from-dist');`);
+    write('out/tool.js', `import x from 'from-out';`);
+    const packageJson = {
+      name: 'app',
+      dependencies: { 'from-dist': '^1.0.0', 'from-out': '^1.0.0' }
+    };
+
+    const result = findUnusedDependencies(packageJson, tmpDir);
+    expect(result.unused).toEqual([]);
+    expect(result.buildOnly).toEqual(['from-dist', 'from-out']);
+  });
+
+  it('flags build-imported deps as unused when the build pass is disabled', () => {
+    write('build/pipeline.js', `import unified from 'unified';`);
+    const packageJson = { name: 'app', dependencies: { unified: '^11.0.0' } };
+
+    const result = findUnusedDependencies(packageJson, tmpDir, { buildDirs: [] });
+    expect(result.unused.map((u) => u.name)).toEqual(['unified']);
+    expect(result.buildOnly).toEqual([]);
+    expect(result.buildFiles).toBe(0);
+  });
 });
