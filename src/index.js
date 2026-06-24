@@ -67,6 +67,7 @@ export {
   scanUsedPackages,
   findUnusedDependencies,
   specifierToPackageName,
+  DEFAULT_BUILD_DIRS,
   UsageScannerError
 } from './usage-scanner.js';
 export {

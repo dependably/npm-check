@@ -181,9 +181,11 @@ const secureResolvedRule = {
 /**
  * Classify every package that declares a lifecycle install script as allowed
  * or blocked, reconciling against both this rule's `allow` list and npm v12's
- * native package.json `allowScripts` map (keys are `name@version` pinned or
- * bare `name`; values true=approved / false=denied). Under npm v12 a script
- * only runs when explicitly approved, so anything not approved is "blocked".
+ * native package.json `allowScripts`. Two shapes are accepted: the map form
+ * (keys are `name@version` pinned or bare `name`; values true=approved /
+ * false=denied) and the array form (`["name", "name@version"]`, listing alone
+ * = approved, no deny semantics). Under npm v12 a script only runs when
+ * explicitly approved, so anything not approved is "blocked".
  *
  * @returns {{ total, allowed: object[], blocked: object[], v12Aware: boolean }}
  */
@@ -192,6 +194,10 @@ const secureResolvedRule = {
 function resolveScriptApproval(allowScripts, name, version) {
   if (!allowScripts || !name) return 'pending';
   const pinned = `${name}@${version}`;
+  if (Array.isArray(allowScripts)) {
+    // Array form: an entry approves; there is no way to express a denial.
+    return allowScripts.includes(pinned) || allowScripts.includes(name) ? 'allowed' : 'pending';
+  }
   if (pinned in allowScripts) return allowScripts[pinned] ? 'allowed' : 'denied';
   if (name in allowScripts) return allowScripts[name] ? 'allowed' : 'denied';
   return 'pending'; // pending | allowed | denied
