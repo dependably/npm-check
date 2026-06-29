@@ -76,7 +76,9 @@ describe('checkVulnerabilities', () => {
     expect(belowThreshold.valid).toBe(true);
   });
 
-  it('reports a clean package with no advisories', async () => {
+  // "Obtained data, nothing found" — the registry successfully reported no advisories.
+  // This is a normal clean result and MUST keep exiting 0 (do not fail closed here).
+  it('reports a clean package with no advisories (stays valid / exit 0)', async () => {
     const lockfile = lockfileWith(pkg('good'));
     const result = await checkVulnerabilities(lockfile, { fetchAdvisories: fakeAdvisories({}) });
     expect(result.valid).toBe(true);
@@ -84,30 +86,39 @@ describe('checkVulnerabilities', () => {
     expect(result.vulnerable).toBe(0);
   });
 
-  it('marks packages unresolved (non-fatal) when the endpoint 404s', async () => {
+  // P0 fail-closed: the bulk endpoint 404s → advisory data could NOT be obtained, so
+  // the scan didn't complete. By default that must FAIL the run, never report clean.
+  it('fails closed by default when the endpoint is unsupported (404)', async () => {
     const lockfile = lockfileWith(pkg('good'));
     const result = await checkVulnerabilities(lockfile, { fetchAdvisories: () => Promise.resolve(null) });
-    expect(result.valid).toBe(true);
+    expect(result.valid).toBe(false);
     expect(result.unresolved).toBe(1);
+    expect(result.errors).toHaveLength(1);
     expect(result.unresolvedItems[0].reason).toMatch(/does not support/);
   });
 
-  it('fails closed on unresolved when failOnUnresolved is set', async () => {
+  // P0 fail-closed: a registry/network error means we couldn't scan → fail the run.
+  it('fails closed by default when a registry/network error aborts the scan', async () => {
     const lockfile = lockfileWith(pkg('good'));
     const result = await checkVulnerabilities(lockfile, {
-      failOnUnresolved: true, fetchAdvisories: () => Promise.resolve(null)
+      fetchAdvisories: () => Promise.reject(new Error('ECONNREFUSED'))
     });
     expect(result.valid).toBe(false);
+    expect(result.unresolved).toBe(1);
     expect(result.errors).toHaveLength(1);
+    expect(result.unresolvedItems[0].reason).toMatch(/unreachable/);
   });
 
-  it('treats a network error as unresolved (not failed) by default', async () => {
+  // The explicit opt-out (CLI: --allow-unresolved) restores lenient behavior for
+  // users who genuinely accept an incomplete/offline scan.
+  it('keeps unresolved non-fatal when failOnUnresolved is opted out', async () => {
     const lockfile = lockfileWith(pkg('good'));
     const result = await checkVulnerabilities(lockfile, {
-      fetchAdvisories: () => Promise.reject(new Error('ETIMEDOUT'))
+      failOnUnresolved: false, fetchAdvisories: () => Promise.reject(new Error('ETIMEDOUT'))
     });
     expect(result.valid).toBe(true);
     expect(result.unresolved).toBe(1);
+    expect(result.errors).toHaveLength(0);
     expect(result.unresolvedItems[0].reason).toMatch(/unreachable/);
   });
 

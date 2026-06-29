@@ -5,9 +5,15 @@
 // This complements the integrity check — integrity asks "is the lockfile what it
 // claims to be?", this asks "do the versions it locks have published advisories?".
 // It is lockfile-first (no node_modules), reuses the registry-base derivation and
-// concurrency model, and degrades gracefully when a registry doesn't implement the
-// endpoint (every such entry is reported `unresolved`, which does not fail the run
-// by default). It deliberately does NOT shell out to `npm audit`.
+// concurrency model. It deliberately does NOT shell out to `npm audit`.
+//
+// Fail-closed by default: when the scan CANNOT COMPLETE for an entry — the registry
+// is unreachable (network/transport error) or doesn't implement the bulk advisory
+// endpoint — that entry is `unresolved`, and an unresolved entry FAILS the run by
+// default. We must never print "clean" for a package we could not actually scan.
+// This is distinct from a package the registry successfully reports as having NO
+// advisories, which is a normal `clean` result. Set `failOnUnresolved: false`
+// (CLI `--allow-unresolved`) to opt back into lenient/offline-tolerant behavior.
 import { createProgressReporter } from './progress-reporter.js';
 import { forEachPackageEntry } from './format-library.js';
 import { DEFAULT_REGISTRY, postJson } from './integrity.js';
@@ -79,7 +85,9 @@ function buildUnits(candidates, batchSize) {
 
 /**
  * Record every candidate in a unit as unresolved (registry unreachable, or the
- * endpoint isn't supported). With failOnUnresolved, also fails the run.
+ * endpoint isn't supported) — i.e. advisory data could not be obtained, so the
+ * scan did not complete for these packages. Fails the run when failOnUnresolved
+ * (the default), so a registry outage can never be mistaken for "no vulnerabilities".
  */
 function recordUnresolvedUnit(unitCandidates, reason, results, failOnUnresolved) {
   for (const cand of unitCandidates) {
@@ -221,8 +229,9 @@ function fetchBulkAdvisories(registryBase, bodyObject, timeoutMs) {
  *
  * Outcomes per entry:
  *   - vulnerable: registry returned ≥1 advisory for that name@version
- *   - clean:      submitted, no advisories
- *   - unresolved: registry unreachable or endpoint not supported (non-fatal by default)
+ *   - clean:      submitted, no advisories (obtained data, nothing found)
+ *   - unresolved: registry unreachable or endpoint not supported — advisory data
+ *                 could not be obtained (FAILS the run by default; fail-closed)
  *   - skipped:    not checkable this way (root/workspace/link/git/file/bundled, missing version)
  *
  * Each advisory at or above `minSeverity` is an error (fails the run); below it, a warning.
@@ -235,7 +244,9 @@ function fetchBulkAdvisories(registryBase, bodyObject, timeoutMs) {
  * @param {string} options.minSeverity - Threshold at/above which a finding fails the run (default: 'high')
  * @param {number} options.batchSize - Max package names per bulk POST (default: 250)
  * @param {boolean} options.offline - Skip all network; report everything as skipped
- * @param {boolean} options.failOnUnresolved - Treat unresolved entries as failures
+ * @param {boolean} options.failOnUnresolved - Fail the run when advisory data can't be
+ *   obtained (registry unreachable / endpoint unsupported). Default true (fail closed);
+ *   set false to tolerate an incomplete scan.
  * @param {Function} options.fetchAdvisories - Injectable (registryBase, body, timeoutMs) => Promise<object|null>
  * @param {Function} options.onProgress - Progress callback
  * @returns {Promise<object>} Results object with summary and details
@@ -248,7 +259,7 @@ export async function checkVulnerabilities(lockfileData, options = {}) {
     minSeverity = 'high',
     batchSize = 250,
     offline = false,
-    failOnUnresolved = false,
+    failOnUnresolved = true, // fail closed: a scan that couldn't complete must not pass as "clean"
     fetchAdvisories = null,
     onProgress = null
   } = options;

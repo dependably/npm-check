@@ -85,8 +85,9 @@ npm-check check
 # Verify locked integrity hashes against the registry (no node_modules needed)
 npm-check check --check hash
 
-# Fail the run when an entry can't be verified (registry down / missing)
-npm-check check --check hash --fail-on-unresolved
+# Registry-backed scans FAIL CLOSED by default: if an entry can't be verified
+# (registry down / missing hash) the run exits non-zero. Opt into lenient behavior:
+npm-check check --check hash --allow-unresolved
 
 # Check only licenses against approved list
 npm-check check --check license
@@ -100,6 +101,8 @@ npm-check check --check license --strict
 # Scan locked packages for known vulnerabilities (npm advisory endpoint; no node_modules)
 npm-check vuln
 npm-check vuln --min-severity critical
+npm-check vuln --allow-unresolved      # don't fail if some packages can't be scanned
+npm-check vuln --offline               # skip the network entirely (everything skipped)
 
 # Surface npm's "deprecated" warnings straight from the lockfile
 npm-check deprecated
@@ -170,6 +173,19 @@ Use `--strict` to treat unknown licenses (missing license field) as errors inste
 ```bash
 npm-check check --check license --strict
 ```
+
+### Fail-closed scanning (registry errors)
+
+The registry-backed scans — `check --check hash` (integrity), `vuln`, `deprecated`, and the full `report` — **fail closed by default**. If a scan **cannot complete** for a package — the registry is unreachable (network/transport error, `ECONNREFUSED`, timeout) or doesn't implement the advisory endpoint — that package is reported as **unresolved** and the run **exits non-zero**. A registry outage can therefore never be mistaken for a clean result: the tool will not print "✅ no vulnerabilities" (and exit 0) for packages it never actually scanned.
+
+This is deliberately distinct from a package the registry **successfully reports as having no advisories / no deprecation** — that is a normal *clean* result and still exits 0. The line is drawn at *"could not obtain advisory data due to an error"* (fail closed) versus *"obtained data, nothing found"* (clean).
+
+**Opting out (lenient / offline-tolerant):**
+
+- `--allow-unresolved` — keep unresolved entries non-fatal (the old default). Use this on registries that don't implement the advisory endpoint, or in environments where intermittent registry errors must not break the build. Findings the scan *did* obtain (real advisories, real hash mismatches) still fail the run.
+- `--offline` (`vuln`, `deprecated`, `report`) — skip the network entirely; every candidate is reported as *skipped* rather than *unresolved*, and the run exits 0. This is the explicit "I am not scanning right now" mode.
+
+The same default applies to the programmatic API: `checkIntegrity`, `checkVulnerabilities`, and `checkDeprecations` now default `failOnUnresolved: true`; pass `failOnUnresolved: false` to restore lenient behavior.
 
 ### Audit Command
 

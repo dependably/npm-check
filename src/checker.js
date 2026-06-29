@@ -337,8 +337,10 @@ function recordIntegrityFailure(results, item) {
 }
 
 /**
- * Record an unresolved entry (registry unreachable or no sha512 published).
- * Unresolved entries don't fail the run unless failOnUnresolved is set.
+ * Record an unresolved entry (registry unreachable or no sha512 published) — i.e.
+ * the authoritative hash could not be obtained, so integrity could not be verified.
+ * Fails the run when failOnUnresolved (the default), so a registry outage can never
+ * be mistaken for "integrity verified".
  * @param {object} results - Results accumulator
  * @param {object} item - Unresolved detail ({ package, version, packagePath, reason })
  * @param {boolean} failOnUnresolved - Promote unresolved entries to failures
@@ -429,16 +431,18 @@ async function verifyIntegrityCandidate(candidate, ctx) {
  *                 missing integrity, or a legacy sha1 hash)
  *   - unresolved: registry unreachable or has no sha512 for that version
  *
- * `valid` is false only when there are mismatches (failed > 0). Unresolved
- * entries are surfaced loudly but do not fail the run, so a flaky registry
- * doesn't break CI; pass `failOnUnresolved: true` to fail closed instead.
+ * `valid` is false on mismatches (failed > 0) AND, by default, on unresolved
+ * entries — verification that could not complete must not pass as "verified"
+ * (fail closed). Pass `failOnUnresolved: false` to tolerate a flaky registry and
+ * keep unresolved entries non-fatal.
  *
  * @param {object} lockfileData - Parsed lockfile data (v2/v3)
  * @param {object} options
  * @param {number} options.concurrency - Parallel registry requests (default: 8)
  * @param {number} options.timeoutMs - Per-request timeout (default: 10000)
  * @param {string} options.defaultRegistry - Registry for entries without a derivable base
- * @param {boolean} options.failOnUnresolved - Treat unresolved entries as failures
+ * @param {boolean} options.failOnUnresolved - Fail the run when the registry hash can't
+ *   be obtained. Default true (fail closed); set false to keep unresolved non-fatal.
  * @param {Function} options.fetchIntegrity - Injectable (name, version, registryBase) => Promise<string|null>
  * @param {Function} options.onProgress - Progress callback
  * @returns {Promise<object>} Results object with summary and details
@@ -448,7 +452,7 @@ export async function checkIntegrity(lockfileData, options = {}) {
     concurrency = 8,
     timeoutMs = 10000,
     defaultRegistry = DEFAULT_REGISTRY,
-    failOnUnresolved = false,
+    failOnUnresolved = true, // fail closed: verification that couldn't complete must not pass as "verified"
     // Operator-pinned trusted registry hosts. The authoritative hash is fetched
     // from the host named in the lockfile's own `resolved` URL — so a tampered
     // lockfile could point at an attacker host that returns a matching hash. When

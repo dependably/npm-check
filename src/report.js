@@ -82,21 +82,24 @@ function pushFinding(buckets, id, finding) {
   list.push(finding);
 }
 
-// Bucket integrity findings: real hash mismatches are errors, unresolved entries warn.
-function collectIntegrityFindings(buckets, integrityResult) {
+// Bucket integrity findings: real hash mismatches are errors. Unresolved entries
+// (could-not-verify) are errors when failing closed (the default), else warnings.
+function collectIntegrityFindings(buckets, integrityResult, failOnUnresolved) {
   for (const err of integrityResult.errors) {
     if (err.expected && err.actual) {
       pushFinding(buckets, 'integrity', { severity: 'error', location: err.packagePath, message: `lockfile hash differs from registry for ${err.package}` });
     }
   }
+  const unresolvedSeverity = failOnUnresolved ? 'error' : 'warn';
   for (const item of integrityResult.unresolvedItems) {
-    pushFinding(buckets, 'integrity', { severity: 'warn', location: item.packagePath, message: `${item.package}@${item.version}: ${item.reason}` });
+    pushFinding(buckets, 'integrity', { severity: unresolvedSeverity, location: item.packagePath, message: `${item.package}@${item.version}: ${item.reason}` });
   }
 }
 
-// Bucket vulnerability findings. Only advisory findings are errors here; unresolved
-// entries (which appear in `errors` too when failOnUnresolved) are rendered once as warnings.
-function collectVulnFindings(buckets, vulnResult) {
+// Bucket vulnerability findings. Advisory findings are errors. Unresolved entries —
+// packages the scan could not check at all — are errors when failing closed (the
+// default), else warnings; rendered once here (not from `errors`, where they have no advisoryId).
+function collectVulnFindings(buckets, vulnResult, failOnUnresolved) {
   for (const err of vulnResult.errors) {
     if (!err.advisoryId) continue;
     pushFinding(buckets, 'vuln', { severity: 'error', location: err.packagePath, message: `${err.package}@${err.version}: ${err.title} (${err.severity})` });
@@ -104,14 +107,17 @@ function collectVulnFindings(buckets, vulnResult) {
   for (const warn of vulnResult.warnings) {
     pushFinding(buckets, 'vuln', { severity: 'warn', location: warn.packagePath, message: `${warn.package}@${warn.version}: ${warn.title} (${warn.severity})` });
   }
+  const unresolvedSeverity = failOnUnresolved ? 'error' : 'warn';
   for (const item of vulnResult.unresolvedItems) {
-    pushFinding(buckets, 'vuln', { severity: 'warn', location: item.packagePath, message: `${item.package}@${item.version}: ${item.reason}` });
+    pushFinding(buckets, 'vuln', { severity: unresolvedSeverity, location: item.packagePath, message: `could not scan ${item.package}@${item.version}: ${item.reason}` });
   }
 }
 
-// Bucket deprecation findings. Unresolved entries also land in `errors` when
-// failOnUnresolved; render those once, as warnings — only findings carry a `message`.
-function collectDeprecationFindings(buckets, deprecationResult) {
+// Bucket deprecation findings. A *found* deprecation is an error only under
+// failOnDeprecated (it lands in `errors` with a message), else a warning. Unresolved
+// entries — the scan couldn't complete — are errors when failing closed (the default),
+// else warnings; rendered once here (those in `errors` carry no `message`).
+function collectDeprecationFindings(buckets, deprecationResult, failOnUnresolved) {
   for (const err of deprecationResult.errors) {
     if (!err.message) continue;
     pushFinding(buckets, 'deprecated', { severity: 'error', location: err.packagePath, message: `${err.package}@${err.version}: ${err.message}` });
@@ -119,8 +125,9 @@ function collectDeprecationFindings(buckets, deprecationResult) {
   for (const warn of deprecationResult.warnings) {
     pushFinding(buckets, 'deprecated', { severity: 'warn', location: warn.packagePath, message: `${warn.package}@${warn.version}: ${warn.message}` });
   }
+  const unresolvedSeverity = failOnUnresolved ? 'error' : 'warn';
   for (const item of deprecationResult.unresolvedItems) {
-    pushFinding(buckets, 'deprecated', { severity: 'warn', location: item.packagePath, message: `${item.package}@${item.version}: ${item.reason}` });
+    pushFinding(buckets, 'deprecated', { severity: unresolvedSeverity, location: item.packagePath, message: `could not scan ${item.package}@${item.version}: ${item.reason}` });
   }
 }
 
@@ -254,7 +261,9 @@ function resolveRunOptions(options, dir) {
     concurrency: 8,
     timeoutMs: 10000,
     defaultRegistry: undefined,
-    failOnUnresolved: false,
+    // Fail closed by default: a registry-backed scan that couldn't complete must not
+    // pass the report as clean. Set false (CLI `--allow-unresolved`) to tolerate.
+    failOnUnresolved: true,
     fetchIntegrity: null,
     fetchAdvisories: null,
     fetchManifest: null,
@@ -293,7 +302,7 @@ async function runIntegrityStage(buckets, lockfile, opts) {
     concurrency: opts.concurrency, timeoutMs: opts.timeoutMs, failOnUnresolved: opts.failOnUnresolved,
     fetchIntegrity: opts.fetchIntegrity, onProgress: opts.onProgress, ...registryOption(opts.defaultRegistry)
   });
-  collectIntegrityFindings(buckets, result);
+  collectIntegrityFindings(buckets, result, opts.failOnUnresolved);
   return result;
 }
 
@@ -305,7 +314,7 @@ async function runVulnStage(buckets, lockfile, opts) {
     failOnUnresolved: opts.failOnUnresolved, fetchAdvisories: opts.fetchAdvisories, onProgress: opts.onProgress,
     ...registryOption(opts.defaultRegistry)
   });
-  collectVulnFindings(buckets, result);
+  collectVulnFindings(buckets, result, opts.failOnUnresolved);
   return result;
 }
 
@@ -317,7 +326,7 @@ async function runDeprecationStage(buckets, lockfile, opts) {
     failOnUnresolved: opts.failOnUnresolved, fetchManifest: opts.fetchManifest, onProgress: opts.onProgress,
     ...registryOption(opts.defaultRegistry)
   });
-  collectDeprecationFindings(buckets, result);
+  collectDeprecationFindings(buckets, result, opts.failOnUnresolved);
   return result;
 }
 

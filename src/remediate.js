@@ -75,11 +75,14 @@ function assertValidInputs(lockfile, packageJson) {
 async function gatherFlagged(lockfile, options) {
   const { includeDeprecated, timeoutMs, concurrency, defaultRegistry, minSeverity, fetchManifest, fetchAdvisories, onProgress } = options;
 
+  // remediate gathers *actual* findings to bump — it is not a CI gate, so it opts
+  // out of the scanners' fail-closed default (failOnUnresolved). Otherwise an
+  // unreachable-registry entry would land in `errors` and be mistaken for a finding.
   const [deprecationResult, vulnResult] = await Promise.all([
     includeDeprecated
-      ? checkDeprecations(lockfile, { timeoutMs, concurrency, defaultRegistry, fetchManifest, onProgress })
+      ? checkDeprecations(lockfile, { timeoutMs, concurrency, defaultRegistry, fetchManifest, onProgress, failOnUnresolved: false })
       : Promise.resolve({ warnings: [], errors: [] }),
-    checkVulnerabilities(lockfile, { timeoutMs, concurrency, defaultRegistry, minSeverity, fetchAdvisories, onProgress })
+    checkVulnerabilities(lockfile, { timeoutMs, concurrency, defaultRegistry, minSeverity, fetchAdvisories, onProgress, failOnUnresolved: false })
   ]);
 
   const flagged = new Map(); // name -> Set of reasons
