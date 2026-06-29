@@ -44,7 +44,10 @@ export const DEFAULT_CONFIG = {
     'no-orphan-packages': 'warn',
     'unused-dependencies': ['warn', { includeDev: false, ignore: [] }],
     'no-fund': 'warn',
-    'valid-npmrc': ['warn', {}]
+    'valid-npmrc': ['warn', {}],
+    // pnpm-only rules (no-op on npm lockfiles via flavor gating in runAudit).
+    'valid-pnpm-workspace': 'error',
+    'valid-pnpm-field': 'error'
   }
 };
 

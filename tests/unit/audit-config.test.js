@@ -241,7 +241,7 @@ describe('shared .dependably-check config', () => {
 describe('constants', () => {
   it('exposes the documented filenames and defaults', () => {
     expect(CONFIG_FILENAMES).toEqual(['.npm-checkrc.json', 'npm-check.config.json']);
-    expect(Object.keys(DEFAULT_CONFIG.rules)).toHaveLength(14);
+    expect(Object.keys(DEFAULT_CONFIG.rules)).toHaveLength(16);
     expect(DEFAULT_CONFIG.rules['valid-package-json']).toBe('error');
     expect(DEFAULT_CONFIG.rules['valid-npmrc']).toEqual(['warn', {}]);
   });

@@ -8,6 +8,8 @@ coverage/
 # build artifacts / registry auth (generated in CI)
 *.tgz
 .npmrc
+# …but test fixtures ship a committed .npmrc (pnpm registry-config cases)
+!tests/fixtures/**/.npmrc
 
 # SBOM (CycloneDX) — generated in CI, published to Dependency-Track
 sbom.json

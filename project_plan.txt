@@ -202,6 +202,62 @@ Completed:
    the three .npmrc security codes are forced to error regardless of configured severity. New report
    sections "package.json" and ".npmrc (config)". `npm-check validate` now validates all three files.
 
+## PNPM SUPPORT — PHASE 1 (read-only supply-chain checks) (2026-06-29):
+### Feature Implementation ✅
+1. **pnpm-lock.yaml detection + parsing.** parseLockfile() dispatches by flavor: a YAML lockfile
+   (pnpm-lock.yaml / *.yaml) is parsed via the new lazy `yaml` runtime dep (createRequire — loaded
+   ONLY on the pnpm path, npm core stays zero-dep). The parsed object carries a non-enumerable
+   `__npmCheckMeta` { flavor, lockfileVersion, registry, scopedRegistries } built from the sibling
+   .npmrc (pnpm reads .npmrc only for registry+auth — the authoritative source since pnpm registry
+   deps have no `resolved` URL). detectLockfileFlavor() in format-library.js: string lockfileVersion
+   / importers / snapshots → pnpm; numeric → npm.
+2. **Normalized iteration (the single seam).** forEachPackageEntry() now dispatches npm vs pnpm and
+   stamps `info.registryBase` + `info.node` for BOTH flavors. New src/pnpm-format.js:
+   forEachPnpmPackageEntry (iterates importers as root/workspace + packages as name@version, strips
+   peer suffixes like foo@1.0.0(react@18.0.0), classifies registry/git/tarball/link/file),
+   resolvePnpmRegistryBase (scoped @scope:registry → registry → default), parsePnpmDepPath.
+3. **Consumers reuse one field.** vuln.js / deprecation.js / checker.js (integrity) now read
+   `info.registryBase || defaultRegistry` instead of deriveRegistryBase(entry.resolved,…) — npm
+   behavior byte-identical, pnpm gets the config-resolved base. integrity/vuln/deprecation now work
+   over pnpm lockfiles (no node_modules, registry-first).
+4. **CLI + report wiring.** CLI auto-discovers pnpm-lock.yaml when no package-lock.json; the report
+   marks npm-structural + license sections "N/A (pnpm)" and runs only integrity/vuln/deprecated.
+   Write/transform commands (migrate, upgrade, upgrade-hashes, fix-checksums, dedupe, fix, prune)
+   refuse pnpm with a "regenerate with `pnpm install`" message. checkLicenses throws PNPM_UNSUPPORTED
+   (pnpm .pnpm-store walk is Phase 3).
+5. **Tests/fixtures.** tests/fixtures/pnpm-basic/ (pnpm-lock.yaml + .npmrc + package.json); 26 new
+   tests (pnpm-format, pnpm-parser incl. injected-fetcher integrity/vuln/deprecation). Full unit
+   suite green (474 tests), lint clean.
+### Out of scope / next phases
+- Phase 3: remediate/pinner for pnpm (package.json only), license via .pnpm store walk, usage-scanner
+  from importers.
+- Never write/fix/migrate pnpm-lock.yaml (machine-generated).
+
+## PNPM SUPPORT — PHASE 2 (config validation) (2026-06-29):
+### Feature Implementation ✅
+1. **.npmrc pnpm-flavor warning.** validateNpmrc(content, { flavor: 'pnpm' }) emits NPMRC_PNPM_IGNORED
+   (warning) for any non-auth/non-registry key — pnpm reads .npmrc ONLY for registry+auth, so a
+   setting like node-linker=hoisted is silently dropped. Security codes (plaintext token,
+   strict-ssl=false, rejectUnauthorized off) remain hard errors. npm flavor unchanged.
+2. **package.json `pnpm` field.** package-json-validator type-checks overrides/packageExtensions/
+   peerDependencyRules/patchedDependencies/allowedDeprecatedVersions (objects) +
+   onlyBuiltDependencies/neverBuiltDependencies/ignoredBuiltDependencies (string arrays); unknown
+   sub-keys warn (PJ_UNKNOWN_PNPM_KEY). Validated whenever the field is present (both flavors).
+3. **pnpm-workspace.yaml validator (src/pnpm-workspace-validator.js).** parsePnpmWorkspace (lazy yaml)
+   + validatePnpmWorkspace — `packages` globs, the settings that moved off .npmrc (nodeLinker,
+   hoistPattern, onlyBuiltDependencies, catalog/catalogs, overrides, …), unknown-key warns, YAML
+   syntax error. Same { valid, errors, warnings, info } contract.
+4. **Audit rules + flavor gating.** Rules now carry `flavors` (default ['npm']); runAudit derives the
+   flavor and skips rules that don't apply, so npm-shape rules no-op on pnpm and vice versa. New rules
+   valid-pnpm-workspace + valid-pnpm-field (pnpm-only); valid-package-json + valid-npmrc apply to both
+   (valid-npmrc gets the flavor threaded through context). audit-config defaults updated (16 rules).
+5. **Report + validate command.** New report section "pnpm (workspace + manifest)"; for pnpm the
+   package.json / .npmrc / pnpm-config sections are LIVE (npm-shape sections N/A (pnpm)); the
+   pnpm-config section is N/A (npm) on npm lockfiles. `npm-check validate` is flavor-aware: for pnpm it
+   validates package.json + .npmrc(pnpm) + pnpm-workspace.yaml and skips lockfile structural checks.
+6. **Public API + tests.** index.js exports validatePnpmWorkspace/parsePnpmWorkspace/detectLockfile
+   Flavor/forEachPnpmPackageEntry/etc. 15 new config tests; full unit suite green (489), lint clean.
+
 In Progress:
 - (none currently)
 

@@ -143,9 +143,28 @@ function checkUnknownKey({ key, line }, sink) {
   }
 }
 
+// The ONLY keys pnpm reads from .npmrc: registry + authentication (incl. TLS
+// client-auth material). Everything else has moved to pnpm-workspace.yaml.
+const PNPM_HONORED_KEYS = new Set(['registry', 'ca', 'cafile', 'cert', 'key', 'always-auth']);
+
+// pnpm flavor: pnpm ignores all non-auth/non-registry settings in .npmrc (they
+// belong in pnpm-workspace.yaml), so flag them — a setting that looks applied but
+// is silently dropped. Reached only for entries not already claimed by the
+// secret/TLS/registry checks. `//…` auth lines and the honored keys are fine.
+function checkPnpmIgnored({ key, line }, sink) {
+  if (key.startsWith('//')) return; // per-registry auth line
+  if (key === 'registry' || key.endsWith(':registry')) return;
+  if (PNPM_HONORED_KEYS.has(key)) return;
+  sink.warnings.push({
+    code: 'NPMRC_PNPM_IGNORED',
+    message: `pnpm ignores non-auth setting "${key}" at line ${line} in .npmrc — move it to pnpm-workspace.yaml`
+  });
+}
+
 // Run the security/registry checks in order; the first to claim the entry wins.
-// When none does, the entry falls through to the unknown-key warning.
-function validateEntry(entry, sink) {
+// When none does, the entry falls through to the unknown-key (npm) or
+// pnpm-ignored (pnpm) warning.
+function validateEntry(entry, sink, flavor) {
   if (entry.malformed) {
     sink.errors.push(new NpmrcValidationError(`malformed line ${entry.line}: "${entry.raw}" (expected key=value)`, 'NPMRC_SYNTAX'));
     return;
@@ -154,7 +173,11 @@ function validateEntry(entry, sink) {
   if (checkTls(entry, sink)) return;
   if (checkUnsafePerm(entry, sink)) return;
   if (checkRegistry(entry, sink)) return;
-  checkUnknownKey(entry, sink);
+  if (flavor === 'pnpm') {
+    checkPnpmIgnored(entry, sink);
+  } else {
+    checkUnknownKey(entry, sink);
+  }
 }
 
 export function validateNpmrc(input, options = {}) {
@@ -163,7 +186,7 @@ export function validateNpmrc(input, options = {}) {
   const info = { keys: entries.filter((e) => e.key).map((e) => e.key) };
 
   for (const e of entries) {
-    validateEntry(e, sink);
+    validateEntry(e, sink, options.flavor);
   }
 
   const { errors, warnings } = sink;

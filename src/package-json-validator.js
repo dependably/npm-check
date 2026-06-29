@@ -145,6 +145,49 @@ function validateWorkspaces(packageJson, errors) {
   }
 }
 
+// Helpers for the `pnpm` field's sub-key types.
+const isPlainObject = (v) => typeof v === 'object' && v !== null && !Array.isArray(v);
+const isStringArray = (v) => Array.isArray(v) && v.every((x) => typeof x === 'string');
+
+// pnpm-specific manifest fields and the type each must have. `peerDependencyRules`
+// is an object; `onlyBuiltDependencies`/`neverBuiltDependencies` are string arrays;
+// the rest are objects. Surfaced for both flavors (the field is harmless on npm,
+// and validating it where present is always useful).
+const PNPM_FIELD_TYPES = {
+  overrides: isPlainObject,
+  packageExtensions: isPlainObject,
+  peerDependencyRules: isPlainObject,
+  patchedDependencies: isPlainObject,
+  allowedDeprecatedVersions: isPlainObject,
+  onlyBuiltDependencies: isStringArray,
+  neverBuiltDependencies: isStringArray,
+  ignoredBuiltDependencies: isStringArray,
+  updateConfig: isPlainObject,
+  auditConfig: isPlainObject,
+  supportedArchitectures: isPlainObject
+};
+
+// --- pnpm field (overrides / packageExtensions / build-script allowlists / …) ---
+function validatePnpmField(packageJson, errors, warnings) {
+  const pnpm = packageJson.pnpm;
+  if (pnpm === undefined) return;
+  if (!isPlainObject(pnpm)) {
+    errors.push(new PackageJsonValidationError('"pnpm" must be an object', 'PJ_INVALID_PNPM'));
+    return;
+  }
+  for (const [key, value] of Object.entries(pnpm)) {
+    const validator = PNPM_FIELD_TYPES[key];
+    if (!validator) {
+      warnings.push({ code: 'PJ_UNKNOWN_PNPM_KEY', message: `unrecognized pnpm config key "pnpm.${key}"` });
+      continue;
+    }
+    if (!validator(value)) {
+      const expected = validator === isStringArray ? 'an array of strings' : 'an object';
+      errors.push(new PackageJsonValidationError(`"pnpm.${key}" must be ${expected}`, 'PJ_INVALID_PNPM_FIELD'));
+    }
+  }
+}
+
 export function validatePackageJson(packageJson, options = {}) {
   const errors = [];
   const warnings = [];
@@ -171,6 +214,7 @@ export function validatePackageJson(packageJson, options = {}) {
   validateLicense(packageJson, isPrivate, warnings);
   validateEntryPoints(packageJson, errors);
   validateWorkspaces(packageJson, errors);
+  validatePnpmField(packageJson, errors, warnings);
 
   const valid = errors.length === 0 && !(options.strictMode && warnings.length > 0);
   return { valid, errors, warnings, info };

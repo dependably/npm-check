@@ -10,7 +10,7 @@
 // by default). It deliberately does NOT shell out to `npm audit`.
 import { createProgressReporter } from './progress-reporter.js';
 import { forEachPackageEntry } from './format-library.js';
-import { deriveRegistryBase, DEFAULT_REGISTRY, postJson } from './integrity.js';
+import { DEFAULT_REGISTRY, postJson } from './integrity.js';
 
 /**
  * Custom error class for vuln-scan operations
@@ -46,7 +46,7 @@ function collectCandidates(lockfileData, results, defaultRegistry) {
     if (isLink) return results.skipped++;
     if (isBundled || isGitDep || isFileDep) return results.skipped++; // no registry advisory to check
     if (!entry.version) return results.skipped++;
-    const registryBase = deriveRegistryBase(entry.resolved, name) || defaultRegistry;
+    const registryBase = info.registryBase || defaultRegistry;
     candidates.push({ key, name, version: entry.version, registryBase });
   });
   return candidates;
