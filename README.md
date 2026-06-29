@@ -34,7 +34,13 @@ The CLI is still invoked as `npm-check`.
 
 ### CLI Usage
 
-The repository includes a lightweight CLI exposed as the `npm-check` binary:
+The repository includes a lightweight CLI exposed as the `npm-check` binary. Its
+subcommands group into three families (`npm-check --help` prints the same grouping):
+
+- **Read & report** (inspect; never mutate the lockfile): `report` (default), `validate`, `vuln`, `deprecated`, `check`, `audit`, `unused`
+- **Fix & transform** (npm-only; mutate the lockfile with `--write`): `fix`, `fix-checksums`, `upgrade-hashes`, `migrate` (`upgrade` is an alias of `migrate 3`), `pin`, `prune`, `dedupe`, `remediate`
+- **Backups**: `backups`, `restore`, `clean-backups`
+
 
 ```bash
 # Run ALL checks and print one grouped report (the default command)
@@ -190,7 +196,7 @@ The same default applies to the programmatic API: `checkIntegrity`, `checkVulner
 
 ### Machine-readable output (`--format json` → the shared finding schema)
 
-`vuln --format json` and `report --format json` emit the **Dependably suite's shared finding-schema envelope** (schema v1) — the same top-level shape every tool in the suite produces, so one consumer can parse any of them identically. In json mode stdout is exactly **one** JSON object (banners/progress go to stderr). The default human format is now `--format human` (it was `pretty`).
+`vuln`, `deprecated`, `remediate`, and `report` all emit the **Dependably suite's shared finding-schema envelope** (schema v1) under `--format json` — the same top-level shape every tool in the suite produces, so one consumer can parse any of them identically. In json mode stdout is exactly **one** JSON object (banners/progress go to stderr). The default human format is now `--format human` (it was `pretty` for `deprecated` and `remediate`).
 
 ```json
 {
@@ -230,6 +236,29 @@ The same default applies to the programmatic API: `checkIntegrity`, `checkVulner
 Each advisory finding's top-level `severity` is the **true** advisory severity (`info`\|`low`\|`moderate`\|`high`\|`critical`) kept verbatim; the advisory payload (package, versions, advisory/CVE ids, vulnerable range, references) lives under `extra`. `fixedVersion` is populated only from data the advisory actually provides — it is never fabricated; `remediation` is derived from it.
 
 `report --format json` uses the same envelope. Its `findings` is the complete, flattened list across every report section, each mapped to the ladder (advisory findings keep their true severity; other findings map report-tier `error`→`high`, `warn`→`low`). The report-tier `error`/`warn` that drives the pass/fail gate is preserved under each finding's `extra.reportSeverity`, and the section table + the gate rollup (`errors`/`warnings`/`pass`) are preserved under the top-level `extra.sections` / `extra.summary`.
+
+`deprecated --format json` and `remediate --format json` emit the same envelope. A deprecation notice maps to `category: "deprecated"`, `ruleId: "deprecated"`, `location: null` (package-level), `remediation: "replace deprecated package"`, with `extra.package` / `extra.installedVersion` and the gate bucket under `extra.gate`; its top-level `severity` is the ladder string `low` (a soft warning, as npm itself treats it) or `high` when `--fail-on count=0` makes a found deprecation fail the run. `remediate`'s findings are the flagged direct/transitive dependencies — each a planned bump (`extra.action: "bump"`, `extra.fixedVersion` the upgrade target), transitive guidance, or a manual-range skip — with `category`/`severity` taken from the reason (`vulnerability`/`high` when an advisory drove it, else `deprecated`/`low`); operational warnings and the `changed` flag ride under the top-level `extra`. Both keep their scan-completeness counts (`deprecated`'s `extra.scan`) so nothing the human output showed is lost.
+
+```json
+{
+  "tool": "npm-check",
+  "schemaVersion": "1.0",
+  "target": "package-lock.json",
+  "summary": { "scanned": 1, "findings": 1, "bySeverity": { "low": 1, "...": 0 }, "exitCode": 0 },
+  "findings": [
+    {
+      "severity": "low",
+      "ruleId": "deprecated",
+      "category": "deprecated",
+      "message": "request@2.88.2: request has been deprecated",
+      "location": null,
+      "remediation": "replace deprecated package",
+      "extra": { "package": "request", "installedVersion": "2.88.2", "gate": "warn" }
+    }
+  ],
+  "extra": { "scan": { "deprecated": 1, "clean": 0, "unresolved": 0, "skipped": 1, "valid": true } }
+}
+```
 
 ### Exit codes
 
