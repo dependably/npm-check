@@ -7,8 +7,8 @@ import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import { createProgressReporter } from './progress-reporter.js';
-import { forEachPackageEntry } from './format-library.js';
-import { fetchPackumentIntegrity, deriveRegistryBase, DEFAULT_REGISTRY } from './integrity.js';
+import { forEachPackageEntry, detectLockfileFlavor } from './format-library.js';
+import { fetchPackumentIntegrity, DEFAULT_REGISTRY } from './integrity.js';
 
 /**
  * Custom error class for checker operations
@@ -306,7 +306,7 @@ function collectIntegrityCandidates(lockfileData, results) {
       results.skipped++;
       return;
     }
-    candidates.push({ key: info.key, entry: info.entry, name: info.name });
+    candidates.push({ key: info.key, entry: info.entry, name: info.name, registryBase: info.registryBase });
   });
   return candidates;
 }
@@ -389,7 +389,7 @@ function recordIntegrityResult(results, candidate, registryHash, networkError, f
 async function verifyIntegrityCandidate(candidate, ctx) {
   const { key, entry, name } = candidate;
   const { results, fetcher, defaultRegistry, hostAllowlist, failOnUnresolved } = ctx;
-  const registryBase = deriveRegistryBase(entry.resolved, name) || defaultRegistry;
+  const registryBase = candidate.registryBase || defaultRegistry;
 
   // Trust-anchor enforcement: never verify a hash against a host the operator
   // hasn't trusted — a tampered lockfile would just point `resolved` at its own server.
@@ -562,6 +562,15 @@ export async function checkLicenses(lockfileData, options = {}) {
     strict = false,
     onProgress = null
   } = options;
+
+  // pnpm's flat `.pnpm` virtual store means license-by-node_modules path walking
+  // doesn't map directly — not supported yet (planned as a store-aware walk).
+  if (detectLockfileFlavor(lockfileData) === 'pnpm') {
+    throw new CheckError(
+      'license verification is not supported for pnpm-lock.yaml yet',
+      'PNPM_UNSUPPORTED'
+    );
+  }
 
   // Check if node_modules exists
   if (!fs.existsSync(nodeModulesPath)) {

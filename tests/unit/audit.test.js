@@ -557,7 +557,7 @@ describe('formatAuditReport', () => {
 });
 
 describe('rules registry', () => {
-  it('exposes all fourteen rules with ids and check functions', () => {
+  it('exposes all sixteen rules with ids and check functions', () => {
     expect(rules.map((r) => r.id)).toEqual([
       'lockfile-version',
       'valid-structure',
@@ -572,7 +572,9 @@ describe('rules registry', () => {
       'no-orphan-packages',
       'unused-dependencies',
       'no-fund',
-      'valid-npmrc'
+      'valid-npmrc',
+      'valid-pnpm-workspace',
+      'valid-pnpm-field'
     ]);
     rules.forEach((rule) => expect(typeof rule.check).toBe('function'));
   });

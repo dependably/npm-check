@@ -1,10 +1,11 @@
 // src/audit.js
 import fs from 'fs';
 import path from 'path';
-import { forEachPackageEntry } from './format-library.js';
+import { forEachPackageEntry, detectLockfileFlavor } from './format-library.js';
 import { validatePackageLock } from './validator.js';
 import { validatePackageJson } from './package-json-validator.js';
 import { validateNpmrc, NPMRC_SECURITY_CODES } from './npmrc-validator.js';
+import { validatePnpmWorkspace } from './pnpm-workspace-validator.js';
 import { isPlaceholder } from './integrity.js';
 import { classifyRange } from './pinner.js';
 import { findOrphanedPackages } from './pruner.js';
@@ -20,9 +21,13 @@ export class AuditError extends Error {
   }
 }
 
-// Rule contract: { id, description, defaultSeverity, check(context) => findings[] }
-// context = { lockfile, packageJson|null, options, filePath }
+// Rule contract: { id, description, defaultSeverity, flavors?, check(context) => findings[] }
+// context = { lockfile, packageJson|null, options, filePath, flavor }
 // findings = [{ packagePath, message, data? }] — the engine stamps ruleId + severity.
+// `flavors` lists which lockfile flavors a rule applies to (default ['npm']); a
+// rule whose flavors don't include the current flavor is skipped (e.g. the npm
+// lockfile-shape rules no-op on a pnpm-lock.yaml, and vice versa).
+const DEFAULT_FLAVORS = ['npm'];
 
 const lockfileVersionRule = {
   id: 'lockfile-version',
@@ -65,6 +70,7 @@ const validPackageJsonRule = {
   id: 'valid-package-json',
   description: 'package.json must pass schema/field validation',
   defaultSeverity: 'error',
+  flavors: ['npm', 'pnpm'],
   check({ packageJson, options }) {
     if (!packageJson) {
       return [{
@@ -533,7 +539,8 @@ const validNpmrcRule = {
   id: 'valid-npmrc',
   description: '.npmrc must be well-formed and free of insecure settings',
   defaultSeverity: 'warn',
-  check({ filePath, options }) {
+  flavors: ['npm', 'pnpm'],
+  check({ filePath, options, flavor }) {
     const dir = path.dirname(path.resolve(filePath));
     const npmrcPath = options.npmrcPath ? path.resolve(options.npmrcPath) : path.join(dir, '.npmrc');
     let content;
@@ -542,7 +549,8 @@ const validNpmrcRule = {
     } catch {
       return []; // no project .npmrc → nothing to validate (legitimate)
     }
-    const result = validateNpmrc(content, options);
+    // For pnpm projects, flag non-auth settings that pnpm silently ignores in .npmrc.
+    const result = validateNpmrc(content, { ...options, flavor });
     const findings = result.errors.map((err) => ({
       packagePath: '.npmrc',
       message: err.message,
@@ -556,6 +564,55 @@ const validNpmrcRule = {
       message: typeof warn === 'string' ? warn : warn.message,
       data: { forcedSeverity: 'warn', code: typeof warn === 'string' ? undefined : warn.code }
     }));
+    return [...findings, ...warnFindings];
+  }
+};
+
+const validPnpmWorkspaceRule = {
+  id: 'valid-pnpm-workspace',
+  description: 'pnpm-workspace.yaml must be well-formed (packages globs + valid settings)',
+  defaultSeverity: 'error',
+  flavors: ['pnpm'],
+  check({ filePath }) {
+    const dir = path.dirname(path.resolve(filePath));
+    const wsPath = path.join(dir, 'pnpm-workspace.yaml');
+    let content;
+    try {
+      content = fs.readFileSync(wsPath, 'utf8');
+    } catch {
+      return []; // no pnpm-workspace.yaml → nothing to validate (single-package repo)
+    }
+    const result = validatePnpmWorkspace(content);
+    const findings = result.errors.map((err) => ({
+      packagePath: 'pnpm-workspace.yaml',
+      message: err.message,
+      data: { code: err.code }
+    }));
+    const warnFindings = result.warnings.map((warn) => ({
+      packagePath: 'pnpm-workspace.yaml',
+      message: typeof warn === 'string' ? warn : warn.message,
+      data: { forcedSeverity: 'warn', code: typeof warn === 'string' ? undefined : warn.code }
+    }));
+    return [...findings, ...warnFindings];
+  }
+};
+
+const validPnpmFieldRule = {
+  id: 'valid-pnpm-field',
+  description: 'package.json "pnpm" field (overrides, build allowlists, …) must be well-typed',
+  defaultSeverity: 'error',
+  flavors: ['pnpm'],
+  check({ packageJson }) {
+    if (!packageJson || packageJson.pnpm === undefined) return [];
+    // validatePackageJson already type-checks the pnpm field; surface only those.
+    const result = validatePackageJson(packageJson);
+    const isPnpm = (msg) => typeof msg === 'string' && msg.includes('"pnpm');
+    const findings = result.errors
+      .filter((err) => err.code === 'PJ_INVALID_PNPM' || err.code === 'PJ_INVALID_PNPM_FIELD')
+      .map((err) => ({ packagePath: 'package.json', message: err.message, data: { code: err.code } }));
+    const warnFindings = result.warnings
+      .filter((warn) => warn.code === 'PJ_UNKNOWN_PNPM_KEY' || isPnpm(warn.message))
+      .map((warn) => ({ packagePath: 'package.json', message: warn.message, data: { forcedSeverity: 'warn', code: warn.code } }));
     return [...findings, ...warnFindings];
   }
 };
@@ -574,7 +631,9 @@ export const rules = [
   noOrphanPackagesRule,
   unusedDependenciesRule,
   noFundRule,
-  validNpmrcRule
+  validNpmrcRule,
+  validPnpmWorkspaceRule,
+  validPnpmFieldRule
 ];
 
 /**
@@ -623,13 +682,18 @@ export function runAudit(target, config = {}) {
   }
 
   const resolved = resolveAuditConfig(config);
+  const flavor = detectLockfileFlavor(lockfile);
 
   const findings = [];
   for (const rule of rules) {
+    // Flavor gating: a rule only runs against the lockfile flavors it supports
+    // (npm-shape rules no-op on pnpm-lock.yaml; pnpm rules no-op on npm).
+    if (!(rule.flavors || DEFAULT_FLAVORS).includes(flavor)) continue;
+
     const ruleConfig = resolved.rules[rule.id];
     if (!ruleConfig || ruleConfig.severity === 'off') continue;
 
-    const context = { lockfile, packageJson, options: ruleConfig.options || {}, filePath };
+    const context = { lockfile, packageJson, options: ruleConfig.options || {}, filePath, flavor };
     findings.push(...collectRuleFindings(rule, ruleConfig, context));
   }
 

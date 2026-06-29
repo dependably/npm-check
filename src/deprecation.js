@@ -11,7 +11,7 @@
 // every lockfile path that shares them.
 import { createProgressReporter } from './progress-reporter.js';
 import { forEachPackageEntry } from './format-library.js';
-import { deriveRegistryBase, DEFAULT_REGISTRY, fetchPackumentManifest } from './integrity.js';
+import { DEFAULT_REGISTRY, fetchPackumentManifest } from './integrity.js';
 
 /**
  * Custom error class for deprecation-scan operations
@@ -84,7 +84,7 @@ function collectCandidates(lockfileData, defaultRegistry, results) {
     if (isLink) return results.skipped++;
     if (isBundled || isGitDep || isFileDep) return results.skipped++; // no registry manifest to check
     if (!entry.version) return results.skipped++;
-    const registryBase = deriveRegistryBase(entry.resolved, name) || defaultRegistry;
+    const registryBase = info.registryBase || defaultRegistry;
     candidates.push({ key, name, version: entry.version, registryBase });
   });
   return candidates;

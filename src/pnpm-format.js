@@ -1,0 +1,174 @@
+// src/pnpm-format.js
+// pnpm-lock.yaml support. pnpm's lockfile is a different shape from npm's:
+//   - YAML, not JSON (`lockfileVersion` is a string like '9.0')
+//   - `importers:` declares each workspace's direct deps (the root is the '.' importer)
+//   - `packages:` is keyed by `name@version` (not by install path) and carries the
+//     `resolution.integrity` we verify against the registry
+//   - registry packages store NO `resolved` tarball URL — the registry is implied by
+//     config (.npmrc), so we resolve the per-package registry base from that instead
+//     of parsing it out of a URL the way the npm path does.
+//
+// This module gives the rest of the toolkit a uniform view: forEachPnpmPackageEntry
+// emits the SAME callback shape as format-library's npm walker (so the integrity /
+// vuln / deprecation checkers iterate it unchanged), plus a precomputed `registryBase`
+// and a normalized `node`.
+import { DEFAULT_REGISTRY } from './integrity.js';
+
+// Strip trailing slashes without a regex (linear scan, no backtracking).
+function stripTrailingSlash(url) {
+  let base = url;
+  while (base.endsWith('/')) base = base.slice(0, -1);
+  return base;
+}
+
+/**
+ * Resolve the registry base for a pnpm package from the project's registry config.
+ * Scoped names honour a matching `@scope:registry`; everything else uses the default
+ * `registry`, falling back to the public npm registry. Preserves private-registry
+ * support without a `resolved` URL to parse.
+ * @param {string|null} name - Real package name (may be scoped)
+ * @param {object} registryConfig - { registry, scopedRegistries }
+ * @returns {string} Registry base URL
+ */
+export function resolvePnpmRegistryBase(name, registryConfig = {}) {
+  const { registry = DEFAULT_REGISTRY, scopedRegistries = {} } = registryConfig;
+  if (name && name.startsWith('@')) {
+    const slash = name.indexOf('/');
+    const scope = slash === -1 ? name : name.slice(0, slash);
+    if (scopedRegistries[scope]) return stripTrailingSlash(scopedRegistries[scope]);
+  }
+  return stripTrailingSlash(registry || DEFAULT_REGISTRY);
+}
+
+/**
+ * Split a pnpm depPath into { name, version }.
+ * depPaths look like `lodash@4.17.21`, `@scope/pkg@1.0.0`, or peer-suffixed
+ * `foo@1.0.0(react@18.0.0)` — the peer suffix is stripped FIRST so the inner
+ * `@` of a peer (`react@18`) can't be mistaken for the version separator.
+ * Local deps surface as `name@file:../x` / `name@link:../x`.
+ * @param {string} depPath - Key from the pnpm `packages` map
+ * @returns {{ name: string, version: string|null }}
+ */
+export function parsePnpmDepPath(depPath) {
+  const parenIdx = depPath.indexOf('(');
+  const bare = parenIdx === -1 ? depPath : depPath.slice(0, parenIdx);
+  const at = bare.lastIndexOf('@');
+  if (at <= 0) return { name: bare, version: null }; // unscoped name with no version, or '@'-less key
+  return { name: bare.slice(0, at), version: bare.slice(at + 1) || null };
+}
+
+/**
+ * Classify a pnpm `packages` entry into the boolean flags the checkers already
+ * understand. Only a plain registry package (integrity, semver version, no
+ * tarball/git/local marker) is left verifiable; everything else is flagged so the
+ * existing skip logic in the checkers passes over it.
+ * @param {string} version - Version portion of the depPath
+ * @param {object} entry - The pnpm package entry (with `resolution`)
+ * @returns {{ kind: string, flags: object }}
+ */
+function classifyPnpmPackage(version, entry) {
+  const resolution = (entry && entry.resolution) || {};
+  const flags = { isLink: false, isBundled: false, isGitDep: false, isFileDep: false };
+
+  if (typeof version === 'string' && version.startsWith('link:')) {
+    flags.isLink = true;
+    return { kind: 'link', flags };
+  }
+  if (typeof version === 'string' && (version.startsWith('file:') || resolution.directory)) {
+    flags.isFileDep = true;
+    return { kind: 'file', flags };
+  }
+  if (resolution.type === 'git' || resolution.repo || (typeof version === 'string' && version.startsWith('git'))) {
+    flags.isGitDep = true;
+    return { kind: 'git', flags };
+  }
+  if (resolution.tarball && !resolution.integrity) {
+    // Remote tarball with no integrity to verify against a registry — treat like a
+    // file/url dep so the checkers skip it (no registry advisory/manifest applies).
+    flags.isFileDep = true;
+    return { kind: 'tarball', flags };
+  }
+  if (resolution.integrity) {
+    return { kind: 'registry', flags };
+  }
+  // Unknown / unverifiable shape — flag as file so it is skipped, not mis-checked.
+  flags.isFileDep = true;
+  return { kind: 'file', flags };
+}
+
+/**
+ * Iterate a parsed pnpm-lock.yaml, emitting one info object per importer (root /
+ * workspace) and per `packages` entry. The shape mirrors format-library's npm
+ * walker — { key, entry, name, isRoot, isWorkspaceSource, isLink, isBundled,
+ * isGitDep, isFileDep } — plus `registryBase` and a normalized `node`, so the
+ * downstream checkers iterate npm and pnpm uniformly.
+ *
+ * The registry config is read from `lockfile.__npmCheckMeta` (stamped by the
+ * parser from the sibling .npmrc); absent meta falls back to public-registry
+ * defaults.
+ * @param {object} lockfile - Parsed pnpm lockfile
+ * @param {function} callback - Called with each entry's info
+ */
+export function forEachPnpmPackageEntry(lockfile, callback) {
+  const meta = lockfile && lockfile.__npmCheckMeta;
+  const registryConfig = {
+    registry: (meta && meta.registry) || DEFAULT_REGISTRY,
+    scopedRegistries: (meta && meta.scopedRegistries) || {}
+  };
+
+  // 1. Importers: the root project ('.') and each workspace package. These have no
+  //    integrity to verify; emit them so counts/iteration match the npm root+workspace
+  //    entries (the checkers skip both).
+  const importers = (lockfile && lockfile.importers) || {};
+  for (const importerKey of Object.keys(importers)) {
+    const isRoot = importerKey === '.';
+    const node = { name: null, version: null, integrity: null, registryBase: null, kind: isRoot ? 'root' : 'workspace', path: importerKey };
+    callback({
+      key: importerKey,
+      entry: {},
+      name: null,
+      isRoot,
+      isWorkspaceSource: !isRoot,
+      isLink: false,
+      isBundled: false,
+      isGitDep: false,
+      isFileDep: false,
+      registryBase: null,
+      node
+    });
+  }
+
+  // 2. Packages: the resolved dependency set, keyed by `name@version`.
+  const packages = (lockfile && lockfile.packages) || {};
+  for (const [depPath, entry] of Object.entries(packages)) {
+    const { name, version } = parsePnpmDepPath(depPath);
+    const { kind, flags } = classifyPnpmPackage(version, entry);
+    const resolution = (entry && entry.resolution) || {};
+    const integrity = resolution.integrity || null;
+    const registryBase = kind === 'registry' ? resolvePnpmRegistryBase(name, registryConfig) : null;
+
+    // Synthesize an npm-shaped `entry` so the existing checkers read it unchanged:
+    // version + integrity are the fields they consult; `resolved` is null for pnpm
+    // registry deps (the registry comes from `registryBase`, not a URL).
+    const synthEntry = {
+      version: version || undefined,
+      integrity: integrity || undefined,
+      resolved: resolution.tarball || undefined,
+      deprecated: entry && entry.deprecated
+    };
+
+    callback({
+      key: depPath,
+      entry: synthEntry,
+      name,
+      isRoot: false,
+      isWorkspaceSource: false,
+      isLink: flags.isLink,
+      isBundled: flags.isBundled,
+      isGitDep: flags.isGitDep,
+      isFileDep: flags.isFileDep,
+      registryBase,
+      node: { name, version: version || null, integrity, registryBase, kind, path: depPath }
+    });
+  }
+}

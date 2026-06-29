@@ -3,6 +3,8 @@ export { parseLockfile, serializeLockfile } from './parser.js';
 export { validatePackageLock, ValidationError } from './validator.js';
 export { validatePackageJson, PackageJsonValidationError } from './package-json-validator.js';
 export { parseNpmrc, validateNpmrc, NpmrcValidationError, NPMRC_SECURITY_CODES } from './npmrc-validator.js';
+export { parsePnpmWorkspace, validatePnpmWorkspace, PnpmWorkspaceValidationError } from './pnpm-workspace-validator.js';
+export { forEachPnpmPackageEntry, resolvePnpmRegistryBase, parsePnpmDepPath } from './pnpm-format.js';
 export { migrateToVersion, PackageLockMigrator, MigrationError } from './migrator.js';
 export {
   upgradeIntegrityHashes,
@@ -15,6 +17,7 @@ export { fixPackageLock, FixerError } from './fixer.js';
 export {
   LOCKFILE_VERSIONS,
   detectLockfileVersion,
+  detectLockfileFlavor,
   hasPackagesMap,
   hasDependenciesTree,
   forEachPackageEntry,

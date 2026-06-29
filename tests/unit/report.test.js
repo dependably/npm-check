@@ -58,7 +58,7 @@ describe('runReport', () => {
       baseOpts()
     );
     expect(report.sections.map((s) => s.id)).toEqual([
-      'structure', 'package-json', 'npmrc', 'integrity', 'vuln', 'deprecated', 'resolved', 'licenses',
+      'structure', 'package-json', 'npmrc', 'pnpm-config', 'integrity', 'vuln', 'deprecated', 'resolved', 'licenses',
       'install-scripts', 'git', 'remote', 'pinned', 'orphans', 'unused', 'fund'
     ]);
 
@@ -239,7 +239,7 @@ describe('formatReport', () => {
     const report = await runReport({ lockfile: cleanLockfile(), packageJson: cleanPackageJson(), filePath: 'package-lock.json' }, baseOpts());
     const json = JSON.parse(formatReport(report, { format: 'json' }));
     expect(json.summary.pass).toBe(true);
-    expect(json.sections).toHaveLength(15);
+    expect(json.sections).toHaveLength(16);
   });
 
   it('rejects an unknown format', () => {

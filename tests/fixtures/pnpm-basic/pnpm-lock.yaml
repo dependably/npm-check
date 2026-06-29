@@ -1,0 +1,50 @@
+lockfileVersion: '9.0'
+
+settings:
+  autoInstallPeers: true
+  excludeLinksFromLockfile: false
+
+importers:
+  .:
+    dependencies:
+      lodash:
+        specifier: ^4.17.21
+        version: 4.17.21
+      '@scope/util':
+        specifier: ^1.0.0
+        version: 1.0.0
+    devDependencies:
+      left-pad:
+        specifier: ^1.3.0
+        version: 1.3.0
+  packages/app:
+    dependencies:
+      lodash:
+        specifier: ^4.17.21
+        version: 4.17.21
+
+packages:
+  lodash@4.17.21:
+    resolution: {integrity: sha512-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==}
+    engines: {node: '>=8'}
+
+  '@scope/util@1.0.0':
+    resolution: {integrity: sha512-BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB==}
+
+  left-pad@1.3.0:
+    resolution: {integrity: sha512-CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC==}
+    deprecated: use String.prototype.padStart() instead
+
+  some-git-dep@2.0.0:
+    resolution: {type: git, repo: git+https://github.com/x/y.git, commit: abc123def456}
+
+  some-tarball@3.0.0:
+    resolution: {tarball: https://example.com/some-tarball-3.0.0.tgz}
+
+  '@scope/peer-thing@1.2.3(react@18.2.0)':
+    resolution: {integrity: sha512-DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD==}
+
+snapshots:
+  lodash@4.17.21: {}
+  '@scope/util@1.0.0': {}
+  left-pad@1.3.0: {}

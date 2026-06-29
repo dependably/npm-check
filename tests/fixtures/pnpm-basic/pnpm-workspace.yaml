@@ -1,0 +1,8 @@
+packages:
+  - 'packages/*'
+
+onlyBuiltDependencies:
+  - esbuild
+
+overrides:
+  left-pad: 1.3.0

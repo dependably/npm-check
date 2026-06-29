@@ -63,6 +63,9 @@
     "node": ">=22.0.0",
     "npm": ">=10.0.0"
   },
+  "dependencies": {
+    "yaml": "^2.9.0"
+  },
   "devDependencies": {
     "@babel/core": "7.29.7",
     "@babel/preset-env": "7.28.6",

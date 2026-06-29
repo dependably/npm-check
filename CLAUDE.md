@@ -271,8 +271,9 @@ Removes `^`/`~` from package.json, locking versions down:
 
 Opinionated, configurable lockfile linter for CI (non-zero exit on failure):
 
-- Rules: `lockfile-version`, `valid-structure`, `valid-package-json`, `integrity-hygiene`, `secure-resolved`, `install-scripts`, `no-git-deps`, `no-remote-deps`, `pinned-versions`, `lockfile-sync`, `no-orphan-packages`, `unused-dependencies`, `no-fund` (flags packages emitting npm funding solicitations unless a project `.npmrc` sets `fund=false`), `valid-npmrc`
-- **Config-file validation** (`valid-package-json`, `valid-npmrc`): npm-check validates all three files that govern an install, not just the lockfile. `valid-package-json` (default `error`) delegates to `validatePackageJson()` — name/version validity, dependency-range syntax across all four sections, scripts/bin/main/exports/workspaces types, license presence (warn). `valid-npmrc` (default `warn`) reads the project-level `.npmrc` next to the lockfile and delegates to `validateNpmrc()` — ini syntax, plus security checks where **plaintext auth tokens, `strict-ssl=false`, and disabled `rejectUnauthorized` are always hard errors** regardless of configured severity (insecure `http://` registries and unknown keys are warnings). Both surface as the report's "package.json" / ".npmrc (config)" sections and via the standalone `validate` command.
+- Rules: `lockfile-version`, `valid-structure`, `valid-package-json`, `integrity-hygiene`, `secure-resolved`, `install-scripts`, `no-git-deps`, `no-remote-deps`, `pinned-versions`, `lockfile-sync`, `no-orphan-packages`, `unused-dependencies`, `no-fund` (flags packages emitting npm funding solicitations unless a project `.npmrc` sets `fund=false`), `valid-npmrc`, `valid-pnpm-workspace`, `valid-pnpm-field`
+- **Flavor gating:** each rule carries a `flavors` list (default `['npm']`); `runAudit` derives the lockfile flavor (`detectLockfileFlavor`) and skips rules that don't apply — the npm-lockfile-shape rules no-op on a `pnpm-lock.yaml`, and the pnpm-only rules (`valid-pnpm-workspace`, `valid-pnpm-field`) no-op on npm. The flavor-agnostic config rules (`valid-package-json`, `valid-npmrc`) run for both (and `valid-npmrc` gets the flavor threaded through so it can flag pnpm-ignored keys). See the pnpm support section.
+- **Config-file validation** (`valid-package-json`, `valid-npmrc`): npm-check validates all three files that govern an install, not just the lockfile. `valid-package-json` (default `error`) delegates to `validatePackageJson()` — name/version validity, dependency-range syntax across all four sections, scripts/bin/main/exports/workspaces types, license presence (warn), and the `pnpm` field's types (`overrides`/`packageExtensions`/build allowlists/…). `valid-npmrc` (default `warn`) reads the project-level `.npmrc` next to the lockfile and delegates to `validateNpmrc()` — ini syntax, plus security checks where **plaintext auth tokens, `strict-ssl=false`, and disabled `rejectUnauthorized` are always hard errors** regardless of configured severity (insecure `http://` registries and unknown keys are warnings). Both surface as the report's "package.json" / ".npmrc (config)" sections and via the standalone `validate` command.
 - **npm v12 readiness** (the three breaking opt-ins): `install-scripts` reconciles with package.json `allowScripts` (pinned `name@version` or name-only) and flags pending/denied scripts; `no-git-deps` and `no-remote-deps` flag deps that will need `--allow-git` / `--allow-remote`. The report's Install scripts section shows `total · allowed · blocked` when the project is `allowScripts`-aware.
 - Each rule is `{id, description, defaultSeverity, check(context)}` — extensible
 - Severities error/warn/off with per-rule options; `maxWarnings` budget
@@ -353,6 +354,24 @@ Turns the deprecated/vulnerable *findings* into *action* — the write counterpa
 **Key Functions:**
 - `remediateDependencies(lockfile, packageJson, options)` - Returns `{packageJson, lockfile, bumped, guidance, skipped, warnings, changed}`
 
+### 16. pnpm support (`pnpm-format.js`, `pnpm-workspace-validator.js`)
+
+npm-check reads **pnpm projects** for the read-only checks + config validation. pnpm's model differs from npm's: `pnpm-lock.yaml` is YAML (`lockfileVersion` is a string like `'9.0'`), keyed by `name@version` with `resolution.integrity` and **no `resolved` URL** (the registry is implied by config), and most settings have moved off `.npmrc` into `pnpm-workspace.yaml` / the package.json `pnpm` field.
+
+The whole toolkit couples to the lockfile shape through **two seams**, both made flavor-aware:
+- **Iteration** — `forEachPackageEntry()` dispatches on `detectLockfileFlavor()` (string `lockfileVersion` / `importers` / `snapshots` → pnpm) to the npm walker or `forEachPnpmPackageEntry()`. Both emit the same callback shape plus a precomputed `registryBase` and normalized `node`, so the integrity / vuln / deprecation checkers iterate npm and pnpm uniformly.
+- **Registry** — pnpm has no `resolved` URL, so `resolvePnpmRegistryBase()` derives the per-package registry from the sibling `.npmrc` (scoped `@scope:registry` → `registry` → default). The parser stamps a **non-enumerable** `lockfile.__npmCheckMeta` (`{ flavor, lockfileVersion, registry, scopedRegistries }`) so this config rides along without leaking into JSON output.
+
+**Parsing:** `pnpm-lock.yaml` (any `*.yaml`/`*.yml` lockfile) is parsed via the **lazy `yaml` dependency** (`createRequire`, loaded only on the pnpm path — the npm path stays zero-dep). pnpm depPaths strip peer suffixes (`foo@1.0.0(react@18.0.0)` → `foo@1.0.0`).
+
+**What works for pnpm:** the registry-backed read-only checks (`report` / integrity / `vuln` / `deprecated`) and config validation. The report runs only the applicable sections — integrity/vuln/deprecated + the config sections (package.json, .npmrc, **pnpm (workspace + manifest)**); the npm-lockfile-shape sections render `N/A (pnpm)` (and `pnpm-config` is `N/A (npm)` on an npm lockfile).
+
+**Config validation (Phase 2):** `validateNpmrc(content, { flavor: 'pnpm' })` flags non-auth keys pnpm silently ignores (`NPMRC_PNPM_IGNORED`, warn) while keeping the security codes as hard errors; `validatePackageJson` type-checks the `pnpm` field; `validatePnpmWorkspace()` (in `pnpm-workspace-validator.js`) validates `pnpm-workspace.yaml`. Surfaced via the `valid-pnpm-workspace` / `valid-pnpm-field` audit rules and the flavor-aware `validate` command.
+
+**Out of scope:** the write/transform commands (`migrate`, `fix`, `fix-checksums`, `upgrade`, `dedupe`, `prune`, `pin`) **refuse pnpm** — `pnpm-lock.yaml` is machine-generated; regenerate with `pnpm install`. License verification for pnpm (needs a `.pnpm` store walk), remediate/pinner for pnpm, and usage-scanning from `importers` are future (Phase 3).
+
+**Key Functions:** `detectLockfileFlavor()`, `forEachPnpmPackageEntry()`, `resolvePnpmRegistryBase()`, `parsePnpmDepPath()` (pnpm-format.js); `validatePnpmWorkspace()` / `parsePnpmWorkspace()` (pnpm-workspace-validator.js)
+
 ## Planned Components
 
 ### Future: Advanced Features
@@ -393,7 +412,9 @@ Turns the deprecated/vulnerable *findings* into *action* — the write counterpa
 **Node.js Version:**
 - Requires Node.js 18.0.0 or higher
 - Uses native ES modules
-- No external dependencies for core functionality
+- Zero external dependencies for the npm core path; pnpm support pulls one audited YAML parser
+  (`yaml`), loaded lazily (createRequire) only when a `pnpm-lock.yaml` is actually parsed — npm-only
+  usage never loads it
 
 **File Format Support:**
 - JSON parsing with error recovery

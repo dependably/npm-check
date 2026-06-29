@@ -9,6 +9,15 @@ import { mergeConfig } from './audit-config.js';
 import { checkIntegrity, checkLicenses } from './checker.js';
 import { checkVulnerabilities } from './vuln.js';
 import { checkDeprecations } from './deprecation.js';
+import { detectLockfileFlavor } from './format-library.js';
+
+// Sections that apply to a pnpm lockfile: the registry-backed scans plus the
+// config validators (package.json, .npmrc, pnpm-workspace.yaml + pnpm field).
+// The npm-lockfile-shape sections (and license, pending a `.pnpm` store walk) are
+// marked N/A rather than rendered as a misleading pass.
+const PNPM_LIVE_SECTIONS = new Set(['integrity', 'vuln', 'deprecated', 'package-json', 'npmrc', 'pnpm-config']);
+// The pnpm-config section has no meaning for an npm lockfile.
+const NPM_NA_SECTIONS = new Set(['pnpm-config']);
 
 export class ReportError extends Error {
   constructor(message, code, context = {}) {
@@ -34,7 +43,9 @@ const RULE_SECTION = {
   'pinned-versions': 'pinned',
   'no-orphan-packages': 'orphans',
   'unused-dependencies': 'unused',
-  'no-fund': 'fund'
+  'no-fund': 'fund',
+  'valid-pnpm-workspace': 'pnpm-config',
+  'valid-pnpm-field': 'pnpm-config'
 };
 
 // Display order and titles for the sections.
@@ -42,6 +53,7 @@ const SECTIONS = [
   { id: 'structure', title: 'Structure & format' },
   { id: 'package-json', title: 'package.json' },
   { id: 'npmrc', title: '.npmrc (config)' },
+  { id: 'pnpm-config', title: 'pnpm (workspace + manifest)' },
   { id: 'integrity', title: 'Integrity (registry)' },
   { id: 'vuln', title: 'Known vulnerabilities' },
   { id: 'deprecated', title: 'Deprecated packages' },
@@ -196,6 +208,12 @@ const SECTION_DESCRIBERS = {
 
 // Resolve a section's { status, summary } from its findings and the run's results.
 function describeSection(id, findings, state) {
+  if (state.flavor === 'pnpm' && !PNPM_LIVE_SECTIONS.has(id)) {
+    return { status: 'skip', summary: 'N/A (pnpm)' };
+  }
+  if (state.flavor !== 'pnpm' && NPM_NA_SECTIONS.has(id)) {
+    return { status: 'skip', summary: 'N/A (npm)' };
+  }
   const describer = SECTION_DESCRIBERS[id];
   if (describer) return describer(findings, state);
   return liveSection(findings, genericSummary(id, findings));
@@ -342,21 +360,35 @@ export async function runReport(target, options = {}) {
   }
 
   const opts = resolveRunOptions(options, dir);
+  const flavor = detectLockfileFlavor(lockfile);
+  const isPnpm = flavor === 'pnpm';
+
+  const buckets = {};
 
   // 1. Offline audit rules + install-script tally, bucketed into report sections.
+  //    runAudit self-gates by flavor: on pnpm only the config rules run
+  //    (package.json / .npmrc / pnpm-workspace.yaml + pnpm field); the npm
+  //    lockfile-shape rules no-op and their sections render N/A. The install-script
+  //    tally is npm-only (pnpm gates builds via onlyBuiltDependencies).
   const audit = runAudit({ lockfile, packageJson, filePath }, opts.auditConfig);
-  const scriptTally = tallyInstallScripts(lockfile, packageJson, opts.auditConfig);
-  const buckets = {};
   bucketAuditFindings(buckets, audit);
+  let scriptTally = { total: 0, allowed: [], blocked: [], v12Aware: false };
+  if (!isPnpm) {
+    scriptTally = tallyInstallScripts(lockfile, packageJson, opts.auditConfig);
+  }
 
-  // 2–4. Network + filesystem stages (each no-ops to null when disabled).
+  // 2–4. Network + filesystem stages (each no-ops to null when disabled). The
+  //    registry-backed scans work for both flavors; license is npm-only for now.
   const integrityResult = await runIntegrityStage(buckets, lockfile, opts);
   const vulnResult = await runVulnStage(buckets, lockfile, opts);
   const deprecationResult = await runDeprecationStage(buckets, lockfile, opts);
-  const { licenseResult, licenseSkip } = await runLicenseStage(buckets, lockfile, opts);
+  const { licenseResult, licenseSkip } = isPnpm
+    ? { licenseResult: null, licenseSkip: 'N/A (pnpm)' }
+    : await runLicenseStage(buckets, lockfile, opts);
 
   // Assemble ordered sections with status + one-line summary, then roll up totals.
   const sectionState = {
+    flavor,
     integrity: opts.integrity, integrityResult, vuln: opts.vuln, vulnResult,
     deprecated: opts.deprecated, deprecationResult, licenseSkip, licenseResult, scriptTally
   };
@@ -369,6 +401,7 @@ const DEFAULT_PASS_SUMMARY = {
   structure: 'valid',
   'package-json': 'valid',
   npmrc: 'valid',
+  'pnpm-config': 'valid',
   resolved: 'all TLS / trusted',
   'install-scripts': 'none',
   git: 'none',

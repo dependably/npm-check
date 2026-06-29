@@ -15,7 +15,8 @@ import { checkIntegrity, checkLicenses } from '../src/checker.js';
 import { checkVulnerabilities } from '../src/vuln.js';
 import { checkDeprecations } from '../src/deprecation.js';
 import { remediateDependencies } from '../src/remediate.js';
-import { detectLockfileVersion } from '../src/format-library.js';
+import { detectLockfileVersion, detectLockfileFlavor } from '../src/format-library.js';
+import { validatePnpmWorkspace } from '../src/pnpm-workspace-validator.js';
 import { fixChecksums } from '../src/checksum-fixer.js';
 import { pinVersions, detectIndent } from '../src/pinner.js';
 import { runAudit, formatAuditReport } from '../src/audit.js';
@@ -33,7 +34,9 @@ npm-check — npm lockfile toolkit
 Usage:
   npm-check [command] [file] [options]
 
-  With no command, npm-check runs the full report (all checks) on ./package-lock.json.
+  With no command, npm-check runs the full report (all checks) on ./package-lock.json
+  (or ./pnpm-lock.yaml when present). pnpm lockfiles support the read-only checks
+  (report/integrity/vuln/deprecated); the write/transform commands are npm-only.
 
 Commands:
   report [file]              Run ALL checks and print one grouped report (default)
@@ -172,19 +175,46 @@ function getVersion() {
   }
 }
 
+// Pick the default lockfile when none is given: prefer an existing
+// package-lock.json, else an existing pnpm-lock.yaml, else the npm default
+// (whose absence is reported downstream).
+function resolveDefaultLockfile() {
+  const npmLock = path.resolve('package-lock.json');
+  if (fs.existsSync(npmLock)) return npmLock;
+  const pnpmLock = path.resolve('pnpm-lock.yaml');
+  if (fs.existsSync(pnpmLock)) return pnpmLock;
+  return npmLock;
+}
+
 function getFilePath(arg1) {
   // Determine if arg1 is a file path or needs to use default
   if (!arg1 || arg1.startsWith('-')) {
-    return path.resolve('package-lock.json');
+    return resolveDefaultLockfile();
   }
 
   // Check if arg1 looks like a numeric target version or other command arg
   if (arg1.match(/^\d+$/)) {
-    return path.resolve('package-lock.json');
+    return resolveDefaultLockfile();
   }
 
   // arg1 is a file path
   return path.resolve(arg1);
+}
+
+// True when a path points at a pnpm (YAML) lockfile.
+function isPnpmLockPath(filePath) {
+  const base = path.basename(filePath).toLowerCase();
+  return base === 'pnpm-lock.yaml' || base.endsWith('.yaml') || base.endsWith('.yml');
+}
+
+// Guard the write/transform commands: a pnpm-lock.yaml is machine-generated and
+// must never be hand-patched. Refuse with guidance instead of corrupting it.
+function refuseIfPnpm(filePath, command) {
+  if (isPnpmLockPath(filePath)) {
+    console.error(`\n❌ \`${command}\` does not support pnpm-lock.yaml.`);
+    console.error('   pnpm lockfiles are machine-generated — regenerate with `pnpm install` instead.');
+    process.exit(1);
+  }
 }
 
 function ensureFileExists(filePath) {
@@ -420,7 +450,12 @@ function runValidateCommand() {
   const dir = path.dirname(filePath);
 
   const lockfile = parseLockfile(filePath);
-  const lockResult = validatePackageLock(lockfile);
+  const flavor = detectLockfileFlavor(lockfile);
+  const isPnpm = flavor === 'pnpm';
+
+  // The npm lockfile validator is npm-shape only; a pnpm-lock.yaml is
+  // machine-generated, so we validate the files that govern its install instead.
+  const lockResult = isPnpm ? null : validatePackageLock(lockfile);
 
   const pkgPath = path.join(dir, 'package.json');
   let pkgResult = null;
@@ -436,7 +471,13 @@ function runValidateCommand() {
 
   const npmrcPath = path.join(dir, '.npmrc');
   const npmrcResult = fs.existsSync(npmrcPath)
-    ? validateNpmrc(fs.readFileSync(npmrcPath, 'utf8'))
+    ? validateNpmrc(fs.readFileSync(npmrcPath, 'utf8'), isPnpm ? { flavor: 'pnpm' } : {})
+    : null;
+
+  // pnpm-workspace.yaml (pnpm projects only).
+  const wsPath = path.join(dir, 'pnpm-workspace.yaml');
+  const wsResult = isPnpm && fs.existsSync(wsPath)
+    ? validatePnpmWorkspace(fs.readFileSync(wsPath, 'utf8'))
     : null;
 
   // Errors are Error subclass instances, whose `message` is non-enumerable
@@ -446,22 +487,33 @@ function runValidateCommand() {
     ? { ...r, errors: r.errors.map((e) => ({ code: e.code, message: e.message })) }
     : r;
 
-  const out = {
-    'package-lock.json': normalizeResult(lockResult),
-    'package.json': normalizeResult(pkgResult) || 'not found (skipped)',
-    '.npmrc': normalizeResult(npmrcResult) || 'not found (skipped)'
-  };
+  const out = isPnpm
+    ? {
+      'pnpm-lock.yaml': 'machine-generated (structural validation skipped; regenerate with `pnpm install`)',
+      'package.json': normalizeResult(pkgResult) || 'not found (skipped)',
+      '.npmrc': normalizeResult(npmrcResult) || 'not found (skipped)',
+      'pnpm-workspace.yaml': normalizeResult(wsResult) || 'not found (skipped)'
+    }
+    : {
+      'package-lock.json': normalizeResult(lockResult),
+      'package.json': normalizeResult(pkgResult) || 'not found (skipped)',
+      '.npmrc': normalizeResult(npmrcResult) || 'not found (skipped)'
+    };
 
   console.log('\n📋 Validation Result:');
   console.log(JSON.stringify(out, null, 2));
 
-  const valid = lockResult.valid && (!pkgResult || pkgResult.valid) && (!npmrcResult || npmrcResult.valid);
+  const valid = (!lockResult || lockResult.valid)
+    && (!pkgResult || pkgResult.valid)
+    && (!npmrcResult || npmrcResult.valid)
+    && (!wsResult || wsResult.valid);
   process.exit(valid ? 0 : 1);
 }
 
 function runMigrateCommand() {
   const filePath = getFilePath(argv[1]);
   ensureFileExists(filePath);
+  refuseIfPnpm(filePath, 'migrate');
 
   // Get target version (default: 3)
   let target = 3;
@@ -491,6 +543,7 @@ function runMigrateCommand() {
 function runUpgradeCommand() {
   const filePath = getFilePath(argv[1]);
   ensureFileExists(filePath);
+  refuseIfPnpm(filePath, 'upgrade');
   const hasWrite = argv.includes('--write');
 
   const lockfile = parseLockfile(filePath);
@@ -541,6 +594,7 @@ function printChecksumResult(result, hasWrite) {
 async function runFixChecksumsCommand() {
   const filePath = getFilePath(argv[1]);
   ensureFileExists(filePath);
+  refuseIfPnpm(filePath, 'fix-checksums');
   const hasWrite = argv.includes('--write');
   const localFallback = argv.includes('--local-fallback');
   const { concurrency, timeoutMs, defaultRegistry } = parseNetworkFlags();
@@ -624,6 +678,7 @@ function runPinCommand() {
 function runPruneCommand() {
   const filePath = getFilePath(argv[1]);
   ensureFileExists(filePath);
+  refuseIfPnpm(filePath, 'prune');
   const hasWrite = argv.includes('--write');
 
   const lockfile = parseLockfile(filePath);
@@ -733,6 +788,7 @@ function runAuditCommand() {
 function runUpgradeHashesCommand() {
   const filePath = getFilePath(argv[1]);
   ensureFileExists(filePath);
+  refuseIfPnpm(filePath, 'upgrade-hashes');
   const hasWrite = argv.includes('--write');
 
   const lockfile = parseLockfile(filePath);
@@ -759,6 +815,7 @@ function runUpgradeHashesCommand() {
 function runDedupeCommand() {
   const filePath = getFilePath(argv[1]);
   ensureFileExists(filePath);
+  refuseIfPnpm(filePath, 'dedupe');
   const hasWrite = argv.includes('--write');
 
   const lockfile = parseLockfile(filePath);
@@ -792,6 +849,7 @@ function runDedupeCommand() {
 function runFixCommand() {
   const filePath = getFilePath(argv[1]);
   ensureFileExists(filePath);
+  refuseIfPnpm(filePath, 'fix');
   const hasWrite = argv.includes('--write');
 
   const lockfile = parseLockfile(filePath);
