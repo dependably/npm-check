@@ -189,12 +189,20 @@ describe('runReport', () => {
       fixedVersion: '>=1.2.0',
       url: 'https://x.test/42'
     });
-    // The same richness round-trips through `--format json`.
+    // The same richness round-trips through `--format json` as the shared envelope:
+    // the top-level finding carries the TRUE ladder severity, advisory data under
+    // `extra`, and the report-tier (gate) severity preserved under `extra.reportSeverity`.
     const json = JSON.parse(formatReport(report, { format: 'json' }));
-    const jf = json.sections.find((s) => s.id === 'vuln').findings.find((x) => x.advisoryId === 42);
-    expect(jf.advisorySeverity).toBe('critical');
-    expect(jf.url).toBe('https://x.test/42');
-    expect(jf.fixedVersion).toBe('>=1.2.0');
+    expect(json.tool).toBe('npm-check');
+    expect(json.schemaVersion).toBe('1.0');
+    const jf = json.findings.find((x) => x.ruleId === '42');
+    expect(jf.severity).toBe('critical'); // advisorySeverity → top-level ladder severity
+    expect(jf.category).toBe('vulnerability');
+    expect(jf.remediation).toBe('upgrade to >=1.2.0');
+    expect(jf.extra.advisoryId).toBe(42);
+    expect(jf.extra.fixedVersion).toBe('>=1.2.0');
+    expect(jf.extra.references).toContain('https://x.test/42');
+    expect(jf.extra.reportSeverity).toBe('error'); // the gate signal survives under extra
   });
 
   it('fails the report by default when the vuln scan cannot complete (registry error)', async () => {
@@ -282,7 +290,7 @@ describe('formatReport', () => {
     lockfile.packages['node_modules/good-pkg'].hasInstallScript = true;
     const out = formatReport(
       await runReport({ lockfile, packageJson: cleanPackageJson(), filePath: 'web/package-lock.json' }, baseOpts()),
-      { format: 'pretty' }
+      { format: 'human' }
     );
     expect(out).toContain('npm-check report — web/package-lock.json');
     expect(out).toContain('Integrity (registry)');
@@ -293,16 +301,26 @@ describe('formatReport', () => {
   it('renders all-clear when nothing is wrong', async () => {
     const out = formatReport(
       await runReport({ lockfile: cleanLockfile(), packageJson: cleanPackageJson(), filePath: 'package-lock.json' }, baseOpts()),
-      { format: 'pretty' }
+      { format: 'human' }
     );
     expect(out).toContain('✔ all checks passed');
   });
 
-  it('round-trips JSON', async () => {
+  it('emits the shared finding-schema envelope under --format json', async () => {
     const report = await runReport({ lockfile: cleanLockfile(), packageJson: cleanPackageJson(), filePath: 'package-lock.json' }, baseOpts());
     const json = JSON.parse(formatReport(report, { format: 'json' }));
-    expect(json.summary.pass).toBe(true);
-    expect(json.sections).toHaveLength(16);
+    // The six uniform core keys.
+    expect(json.tool).toBe('npm-check');
+    expect(typeof json.toolVersion).toBe('string');
+    expect(json.schemaVersion).toBe('1.0');
+    expect(json.target).toBe('package-lock.json');
+    expect(Array.isArray(json.findings)).toBe(true);
+    expect(json.summary.findings).toBe(json.findings.length); // never truncated
+    expect(json.summary.exitCode).toBe(0); // clean report → exit 0
+    expect(json.summary.bySeverity).toEqual({ critical: 0, high: 0, moderate: 0, low: 0, info: 0 });
+    // The report's section grouping + gate signal (pass/errors/warnings) live under extra.
+    expect(json.extra.sections).toHaveLength(16);
+    expect(json.extra.summary.pass).toBe(true);
   });
 
   it('rejects an unknown format', () => {

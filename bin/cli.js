@@ -12,7 +12,7 @@ import { fixPackageLock } from '../src/fixer.js';
 import { createBackup, listBackups, restoreFromLatestBackup, cleanOldBackups, BackupError } from '../src/backup.js';
 import { createProgressBar } from '../src/progress-reporter.js';
 import { checkIntegrity, checkLicenses } from '../src/checker.js';
-import { checkVulnerabilities } from '../src/vuln.js';
+import { checkVulnerabilities, vulnEnvelope } from '../src/vuln.js';
 import { checkDeprecations } from '../src/deprecation.js';
 import { remediateDependencies } from '../src/remediate.js';
 import { detectLockfileVersion, detectLockfileFlavor } from '../src/format-library.js';
@@ -66,7 +66,7 @@ Report Options:
   --no-deprecated            Skip the deprecation scan
   --no-license               Skip the license check
   --min-severity <level>     Vuln severity that fails the run (info|low|moderate|high|critical; default: high)
-  --format pretty|json       Output format (default: pretty)
+  --format human|json        Output format (default: human; json emits the shared finding schema)
   --strict                   Treat warnings as failures
   --max-warnings N           Fail if warnings exceed N (-1 = unlimited)
   --allow-unresolved         Don't fail when a registry-backed scan can't complete
@@ -87,7 +87,7 @@ Check Options:
 
 Vuln Options:
   --min-severity <level>     Severity that fails the run (info|low|moderate|high|critical; default: high)
-  --format pretty|json       Output format (default: pretty)
+  --format human|json        Output format (default: human; json emits the shared finding schema)
   --offline                  Skip the scan (report everything as skipped)
   --allow-unresolved         Don't fail on packages that can't be checked
                              (registry down/unsupported). Default: FAIL CLOSED — a scan
@@ -399,7 +399,7 @@ function parseReportOptions() {
     config,
     strict,
     maxWarnings,
-    format: parseFormatFlag(['pretty', 'json'], 'pretty'),
+    format: parseFormatFlag(['human', 'json'], 'human'),
     // Network/integrity + license toggles.
     integrity: !argv.includes('--offline') && !argv.includes('--no-integrity'),
     license: !argv.includes('--no-license'),
@@ -429,10 +429,10 @@ async function runReportCommand() {
     const lockfile = parseLockfile(filePath);
     const packageJson = loadSiblingPackageJson(filePath);
 
-    if ((opts.integrity || opts.vuln || opts.deprecated) && opts.format === 'pretty') {
+    if ((opts.integrity || opts.vuln || opts.deprecated) && opts.format === 'human') {
       console.log('🔎 Running all checks (querying the registry)…');
     }
-    const onProgress = opts.format === 'pretty' ? makeProgressReporter() : null;
+    const onProgress = opts.format === 'human' ? makeProgressReporter() : null;
 
     report = await runReport(
       { lockfile, packageJson, filePath: path.relative(process.cwd(), filePath) || filePath, dir },
@@ -448,7 +448,7 @@ async function runReportCommand() {
 
     if (onProgress) clearProgressLine();
     const rendered = formatReport(report, { format: opts.format });
-    console.log(opts.format === 'pretty' ? '\n' + rendered : rendered);
+    console.log(opts.format === 'human' ? '\n' + rendered : rendered);
   } catch (error) {
     console.error(`\n❌ Report error: ${error.message}`);
     process.exit(2);
@@ -1088,7 +1088,7 @@ async function runVulnCommand(command) {
   const filePath = getFilePath(argv[1]);
   requireLockfileOrExit2(filePath, 'vuln');
 
-  const format = parseFormatFlag(['pretty', 'json'], 'pretty');
+  const format = parseFormatFlag(['human', 'json'], 'human');
   const minSeverity = parseMinSeverityFlag();
   const offline = argv.includes('--offline');
   // Fail closed by default: a package the scan couldn't check (registry down /
@@ -1098,10 +1098,10 @@ async function runVulnCommand(command) {
   const { concurrency, timeoutMs, defaultRegistry } = parseNetworkFlags(2);
 
   const lockfile = parseLockfile(filePath);
-  const onProgress = format === 'pretty' ? makeProgressReporter() : null;
+  const onProgress = format === 'human' ? makeProgressReporter() : null;
 
   try {
-    if (format === 'pretty' && !offline) console.log('🛡️  Scanning locked packages for known vulnerabilities…');
+    if (format === 'human' && !offline) console.log('🛡️  Scanning locked packages for known vulnerabilities…');
     const result = await checkVulnerabilities(lockfile, {
       concurrency, timeoutMs, minSeverity, offline, failOnUnresolved, onProgress,
       ...registryOption(defaultRegistry)
@@ -1109,13 +1109,16 @@ async function runVulnCommand(command) {
 
     if (onProgress) clearProgressLine();
 
+    const exitCode = result.valid ? 0 : 1;
     if (format === 'json') {
-      console.log(JSON.stringify(result, null, 2));
+      // The shared finding-schema envelope is the ONLY thing on stdout in json mode.
+      const target = path.relative(process.cwd(), filePath) || filePath;
+      console.log(JSON.stringify(vulnEnvelope(result, { target, exitCode }), null, 2));
     } else {
       printVulnResult(result, minSeverity, failOnUnresolved);
     }
 
-    process.exit(result.valid ? 0 : 1);
+    process.exit(exitCode);
   } catch (error) {
     handleError(error, `${command} command failed`);
   }
