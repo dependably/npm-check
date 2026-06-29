@@ -165,6 +165,7 @@ The first column is the SPDX license identifier that must match exactly. Comment
 **Exit Codes:**
 - `0` – All checks passed
 - `1` – At least one check failed
+- `2` – Usage or operational error (invalid flag, missing/unreadable lockfile, registry/scan failure). See [Exit codes](#exit-codes).
 
 **Strict Mode:**
 
@@ -186,6 +187,33 @@ This is deliberately distinct from a package the registry **successfully reports
 - `--offline` (`vuln`, `deprecated`, `report`) — skip the network entirely; every candidate is reported as *skipped* rather than *unresolved*, and the run exits 0. This is the explicit "I am not scanning right now" mode.
 
 The same default applies to the programmatic API: `checkIntegrity`, `checkVulnerabilities`, and `checkDeprecations` now default `failOnUnresolved: true`; pass `failOnUnresolved: false` to restore lenient behavior.
+
+### Machine-readable output (`--format json`)
+
+`vuln --format json` and `report --format json` emit the **full** advisory record per finding — nothing is collapsed on the way to JSON. Each vulnerability finding carries:
+
+| Field | Meaning |
+| --- | --- |
+| `package` / `version` | The locked package and the version that is affected |
+| `advisoryId` | The registry advisory id (stable identifier for the advisory) |
+| `title` | Human-readable advisory title |
+| `severity` (`vuln`) / `advisorySeverity` (`report`) | The **true** advisory severity — `info` \| `low` \| `moderate` \| `high` \| `critical` (not collapsed to error/warn) |
+| `fixedVersion` | The patched version range the advisory recommends upgrading to (e.g. `>=4.17.21`), or `null` when the advisory publishes no fix |
+| `url` | Link to the advisory |
+
+In `report --format json` each vuln finding also keeps a `severity` of `error`/`warn` (its report tier, which drives the section status and the pass/fail gate) alongside `advisorySeverity` (the true 5-level severity above), so consumers no longer have to parse the severity out of the message string. `fixedVersion` is populated only from data the advisory actually provides — it is never fabricated.
+
+### Exit codes
+
+All subcommands follow one convention:
+
+| Code | Meaning |
+| --- | --- |
+| `0` | Clean run (and `--help` / `--version`) |
+| `1` | Findings — vulnerabilities at/above the threshold, audit problems, or a check that failed (a blocking result) |
+| `2` | Usage or operational error — unknown command, unknown/invalid flag, missing or unreadable lockfile, unsupported input (e.g. a v1 lockfile to a v3-only command), or an internal failure |
+
+A missing lockfile is `2` for **every** subcommand (it is a usage error, not a findings failure).
 
 ### Audit Command
 

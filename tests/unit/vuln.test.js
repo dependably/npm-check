@@ -49,6 +49,30 @@ describe('checkVulnerabilities', () => {
     expect(result.warnings).toHaveLength(0);
   });
 
+  it('surfaces the patched/fixed version on a finding when the advisory provides it', async () => {
+    const lockfile = lockfileWith(pkg('bad'));
+    const result = await checkVulnerabilities(lockfile, {
+      fetchAdvisories: fakeAdvisories({ bad: [adv('critical', { patched_versions: '>=2.0.0' })] })
+    });
+    expect(result.errors[0].fixedVersion).toBe('>=2.0.0');
+    // It also rides along on the per-package details advisories.
+    const detail = result.details.find((d) => d.vulnerable);
+    expect(detail.advisories[0].fixedVersion).toBe('>=2.0.0');
+  });
+
+  it('does not fabricate a fixedVersion when the advisory has none (or marks none available)', async () => {
+    const lockfile = lockfileWith({ ...pkg('a'), ...pkg('b') });
+    const result = await checkVulnerabilities(lockfile, {
+      fetchAdvisories: fakeAdvisories({
+        a: [adv('critical')], // no patched_versions field at all
+        b: [adv('critical', { patched_versions: '<0.0.0' })] // sentinel: no fix published
+      })
+    });
+    const byPkg = Object.fromEntries(result.errors.map((e) => [e.package, e.fixedVersion]));
+    expect(byPkg.a).toBeNull();
+    expect(byPkg.b).toBeNull();
+  });
+
   it('treats a below-threshold advisory as a warning, not a failure', async () => {
     const lockfile = lockfileWith(pkg('bad'));
     const result = await checkVulnerabilities(lockfile, {

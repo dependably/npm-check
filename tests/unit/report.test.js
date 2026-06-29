@@ -168,6 +168,35 @@ describe('runReport', () => {
     expect(vuln.findings.some((f) => /Prototype pollution/.test(f.message))).toBe(true);
   });
 
+  it('vuln findings carry the full advisory data (no collapse to error/warn + message)', async () => {
+    const report = await runReport(
+      { lockfile: cleanLockfile(), packageJson: cleanPackageJson(), filePath: 'package-lock.json' },
+      baseOpts({
+        fetchAdvisories: fakeAdvisories({
+          'good-pkg': [advisory('critical', { id: 42, url: 'https://x.test/42', patched_versions: '>=1.2.0' })]
+        })
+      })
+    );
+    const vuln = report.sections.find((s) => s.id === 'vuln');
+    const f = vuln.findings.find((x) => x.advisoryId === 42);
+    expect(f).toMatchObject({
+      severity: 'error', // report tier (drives the gate + icons)
+      package: 'good-pkg',
+      version: '1.0.0',
+      advisoryId: 42,
+      title: 'Prototype pollution',
+      advisorySeverity: 'critical', // the TRUE 5-level severity survives structurally
+      fixedVersion: '>=1.2.0',
+      url: 'https://x.test/42'
+    });
+    // The same richness round-trips through `--format json`.
+    const json = JSON.parse(formatReport(report, { format: 'json' }));
+    const jf = json.sections.find((s) => s.id === 'vuln').findings.find((x) => x.advisoryId === 42);
+    expect(jf.advisorySeverity).toBe('critical');
+    expect(jf.url).toBe('https://x.test/42');
+    expect(jf.fixedVersion).toBe('>=1.2.0');
+  });
+
   it('fails the report by default when the vuln scan cannot complete (registry error)', async () => {
     const report = await runReport(
       { lockfile: cleanLockfile(), packageJson: cleanPackageJson(), filePath: 'package-lock.json' },

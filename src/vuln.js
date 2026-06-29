@@ -39,6 +39,20 @@ function severityRank(severity) {
 }
 
 /**
+ * Extract the patched/fixed version range from an advisory, when the registry
+ * provides it. The npm/GitHub advisory shape carries this as `patched_versions`
+ * (e.g. ">=4.17.21"); the sentinel "<0.0.0" means "no fix is available yet".
+ * Returns null when absent — we never fabricate a fix that the data doesn't claim.
+ */
+function fixedVersionOf(advisory) {
+  const raw = advisory.patched_versions ?? advisory.patchedVersions ?? advisory.fixedVersion ?? null;
+  if (typeof raw !== 'string') return null;
+  const trimmed = raw.trim();
+  if (!trimmed || trimmed === '<0.0.0') return null; // no fix published
+  return trimmed;
+}
+
+/**
  * Walk the lockfile and collect the entries we can check via the bulk endpoint,
  * mirroring checker.js's skip logic. Mutates results.skipped for the rest.
  * Returns the candidate list ({ key, name, version, registryBase }).
@@ -124,7 +138,7 @@ function recordResolvedUnit(unitCandidates, advisoriesByName, results, threshold
       packagePath: cand.key,
       advisories: advisories.map((a) => ({
         id: a.id, title: a.title, severity: (a.severity || 'low').toLowerCase(),
-        vulnerable_versions: a.vulnerable_versions, url: a.url
+        vulnerable_versions: a.vulnerable_versions, fixedVersion: fixedVersionOf(a), url: a.url
       }))
     });
   }
@@ -142,6 +156,7 @@ function recordVuln(cand, advisory, results, threshold) {
     advisoryId: advisory.id,
     title: advisory.title,
     severity: (advisory.severity || 'low').toLowerCase(),
+    fixedVersion: fixedVersionOf(advisory), // null when the advisory publishes no fix
     url: advisory.url
   };
   if (severityRank(finding.severity) >= threshold) {
