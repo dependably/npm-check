@@ -60,7 +60,8 @@ describe('Integration: npm-check fix-checksums (real registry)', () => {
       await writeJSON(workspace.lockfilePath, v1);
 
       const result = await runCli(['fix-checksums', workspace.lockfilePath], { cwd: workspace.dir });
-      expect(result.code).toBe(1);
+      // Unsupported input (a v1 lockfile) is an operational error → exit 2 (suite convention).
+      expect(result.code).toBe(2);
       expect(result.stderr).toMatch(/migrate 3/);
     } finally {
       await workspace.cleanup();

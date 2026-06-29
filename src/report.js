@@ -96,16 +96,37 @@ function collectIntegrityFindings(buckets, integrityResult, failOnUnresolved) {
   }
 }
 
+// Normalize one advisory finding (from vuln.js's errors/warnings) into a report
+// finding that PRESERVES the full advisory data instead of collapsing it. `level`
+// is the report-tier severity (error|warn) that drives the icons, the section
+// status and the pass/fail rollup; `advisorySeverity` carries the TRUE 5-level
+// advisory severity (info|low|moderate|high|critical) so JSON consumers no longer
+// have to scrape it out of the message string. Mirrors `vuln --format json`.
+function advisoryFinding(level, f) {
+  return {
+    severity: level,
+    location: f.packagePath,
+    message: `${f.package}@${f.version}: ${f.title} (${f.severity})`,
+    package: f.package,
+    version: f.version,
+    advisoryId: f.advisoryId,
+    title: f.title,
+    advisorySeverity: f.severity,
+    fixedVersion: f.fixedVersion ?? null,
+    url: f.url ?? null
+  };
+}
+
 // Bucket vulnerability findings. Advisory findings are errors. Unresolved entries —
 // packages the scan could not check at all — are errors when failing closed (the
 // default), else warnings; rendered once here (not from `errors`, where they have no advisoryId).
 function collectVulnFindings(buckets, vulnResult, failOnUnresolved) {
   for (const err of vulnResult.errors) {
     if (!err.advisoryId) continue;
-    pushFinding(buckets, 'vuln', { severity: 'error', location: err.packagePath, message: `${err.package}@${err.version}: ${err.title} (${err.severity})` });
+    pushFinding(buckets, 'vuln', advisoryFinding('error', err));
   }
   for (const warn of vulnResult.warnings) {
-    pushFinding(buckets, 'vuln', { severity: 'warn', location: warn.packagePath, message: `${warn.package}@${warn.version}: ${warn.title} (${warn.severity})` });
+    pushFinding(buckets, 'vuln', advisoryFinding('warn', warn));
   }
   const unresolvedSeverity = failOnUnresolved ? 'error' : 'warn';
   for (const item of vulnResult.unresolvedItems) {

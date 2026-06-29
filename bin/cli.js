@@ -142,9 +142,10 @@ General Options:
   -v, --version              Show version
 
 Exit Codes:
-  0  success / audit passed
-  1  failure / audit found problems
-  2  audit operational error (bad config, unknown rule, unreadable file)
+  0  success — clean run, or --help / --version
+  1  findings — vulnerabilities / audit problems / checks failed (a blocking result)
+  2  usage or operational error — unknown command/flag, invalid flag value,
+     missing/unreadable lockfile, unsupported input, or an internal failure
 
 Examples:
   npm-check validate
@@ -212,21 +213,27 @@ function isPnpmLockPath(filePath) {
 
 // Guard the write/transform commands: a pnpm-lock.yaml is machine-generated and
 // must never be hand-patched. Refuse with guidance instead of corrupting it.
+// Exit 2: this is a usage error (the command was given input it cannot accept).
 function refuseIfPnpm(filePath, command) {
   if (isPnpmLockPath(filePath)) {
     console.error(`\n❌ \`${command}\` does not support pnpm-lock.yaml.`);
     console.error('   pnpm lockfiles are machine-generated — regenerate with `pnpm install` instead.');
-    process.exit(1);
+    process.exit(2);
   }
 }
 
+// Exit 2: a missing required input (the lockfile/file the command operates on) is
+// a usage error, per the suite convention — not a "findings" failure (exit 1).
 function ensureFileExists(filePath) {
   if (!fs.existsSync(filePath)) {
     console.error(`Error: File not found: ${filePath}`);
-    process.exit(1);
+    process.exit(2);
   }
 }
 
+// Operational / internal error handler. Exit 2 per the suite convention: a thrown
+// exception (bad input, unsupported lockfile, registry/scan failure, internal bug)
+// is an operational error, distinct from a clean "findings found" run (exit 1).
 function handleError(error, context = '') {
   console.error(`\n❌ ${context || 'Error'}:`);
   if (error instanceof BackupError) {
@@ -240,7 +247,7 @@ function handleError(error, context = '') {
   } else {
     console.error(`   ${error.message}`);
   }
-  process.exit(1);
+  process.exit(2);
 }
 
 // Build a progress callback that redraws the bar only when the percentage
@@ -263,7 +270,7 @@ function flagValue(name) {
 
 // Parse a flag's value as a positive integer, exiting with `code` on a bad value.
 // Returns `fallback` when the flag is absent.
-function parsePositiveIntFlag(name, fallback, label, code = 1) {
+function parsePositiveIntFlag(name, fallback, label, code = 2) {
   const raw = flagValue(name);
   if (raw === undefined) return fallback;
   const parsed = parseInt(raw, 10);
@@ -299,7 +306,8 @@ function parseMinSeverityFlag(fallback = 'high', code = 2) {
 }
 
 // The registry-verification flags shared by the network-backed commands.
-function parseNetworkFlags(code = 1) {
+// Invalid flag values are usage errors (exit 2) by default.
+function parseNetworkFlags(code = 2) {
   return {
     concurrency: parsePositiveIntFlag('--concurrency', 8, '--concurrency', code),
     timeoutMs: parsePositiveIntFlag('--timeout', 10000, '--timeout', code),
@@ -921,7 +929,7 @@ function runCleanBackupsCommand() {
       keepCount = parsed;
     } else {
       console.error('❌ Invalid --keep value. Must be a positive number');
-      process.exit(1);
+      process.exit(2);
     }
   }
 
@@ -939,7 +947,7 @@ function parseCheckType() {
   if (raw === undefined) return 'all';
   if (!['hash', 'license', 'all'].includes(raw)) {
     console.error('❌ Invalid check type. Use: hash, license, or all');
-    process.exit(1);
+    process.exit(2);
   }
   return raw;
 }
@@ -1307,9 +1315,10 @@ async function main() {
 
   const handler = COMMAND_HANDLERS[command];
   if (!handler) {
+    // Unknown command is a usage error → exit 2 (suite convention).
     console.error(`Unknown command: ${command}`);
     printHelp();
-    process.exit(1);
+    process.exit(2);
     return;
   }
 
