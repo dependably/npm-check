@@ -188,20 +188,48 @@ This is deliberately distinct from a package the registry **successfully reports
 
 The same default applies to the programmatic API: `checkIntegrity`, `checkVulnerabilities`, and `checkDeprecations` now default `failOnUnresolved: true`; pass `failOnUnresolved: false` to restore lenient behavior.
 
-### Machine-readable output (`--format json`)
+### Machine-readable output (`--format json` → the shared finding schema)
 
-`vuln --format json` and `report --format json` emit the **full** advisory record per finding — nothing is collapsed on the way to JSON. Each vulnerability finding carries:
+`vuln --format json` and `report --format json` emit the **Dependably suite's shared finding-schema envelope** (schema v1) — the same top-level shape every tool in the suite produces, so one consumer can parse any of them identically. In json mode stdout is exactly **one** JSON object (banners/progress go to stderr). The default human format is now `--format human` (it was `pretty`).
 
-| Field | Meaning |
-| --- | --- |
-| `package` / `version` | The locked package and the version that is affected |
-| `advisoryId` | The registry advisory id (stable identifier for the advisory) |
-| `title` | Human-readable advisory title |
-| `severity` (`vuln`) / `advisorySeverity` (`report`) | The **true** advisory severity — `info` \| `low` \| `moderate` \| `high` \| `critical` (not collapsed to error/warn) |
-| `fixedVersion` | The patched version range the advisory recommends upgrading to (e.g. `>=4.17.21`), or `null` when the advisory publishes no fix |
-| `url` | Link to the advisory |
+```json
+{
+  "tool": "npm-check",
+  "toolVersion": "1.6.1",
+  "schemaVersion": "1.0",
+  "target": "package-lock.json",
+  "summary": {
+    "scanned": 1,                 // packages examined
+    "findings": 1,                // == findings.length, never truncated
+    "bySeverity": { "critical": 0, "high": 1, "moderate": 0, "low": 0, "info": 0 },
+    "exitCode": 1                 // == the real process exit code
+  },
+  "findings": [
+    {
+      "severity": "high",                       // the ladder: critical|high|moderate|low|info
+      "ruleId": "GHSA-jf85-cpcp-j695",          // the advisory id (GHSA / npm id)
+      "category": "vulnerability",
+      "message": "Prototype Pollution in lodash",
+      "location": null,                          // a package advisory is not file-scoped
+      "remediation": "upgrade to >=4.17.12",
+      "extra": {
+        "package": "lodash",
+        "installedVersion": "4.17.10",
+        "fixedVersion": ">=4.17.12",
+        "advisoryId": "GHSA-jf85-cpcp-j695",
+        "cve": "CVE-2019-10744",
+        "vulnerableRange": "<4.17.12",
+        "references": ["https://github.com/advisories/GHSA-jf85-cpcp-j695"]
+      }
+    }
+  ],
+  "extra": { "scan": { "vulnerable": 1, "clean": 0, "unresolved": 0, "skipped": 1, "valid": false, "unresolvedItems": [] } }
+}
+```
 
-In `report --format json` each vuln finding also keeps a `severity` of `error`/`warn` (its report tier, which drives the section status and the pass/fail gate) alongside `advisorySeverity` (the true 5-level severity above), so consumers no longer have to parse the severity out of the message string. `fixedVersion` is populated only from data the advisory actually provides — it is never fabricated.
+Each advisory finding's top-level `severity` is the **true** advisory severity (`info`\|`low`\|`moderate`\|`high`\|`critical`) kept verbatim; the advisory payload (package, versions, advisory/CVE ids, vulnerable range, references) lives under `extra`. `fixedVersion` is populated only from data the advisory actually provides — it is never fabricated; `remediation` is derived from it.
+
+`report --format json` uses the same envelope. Its `findings` is the complete, flattened list across every report section, each mapped to the ladder (advisory findings keep their true severity; other findings map report-tier `error`→`high`, `warn`→`low`). The report-tier `error`/`warn` that drives the pass/fail gate is preserved under each finding's `extra.reportSeverity`, and the section table + the gate rollup (`errors`/`warnings`/`pass`) are preserved under the top-level `extra.sections` / `extra.summary`.
 
 ### Exit codes
 

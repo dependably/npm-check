@@ -10,6 +10,7 @@ import { checkIntegrity, checkLicenses } from './checker.js';
 import { checkVulnerabilities } from './vuln.js';
 import { checkDeprecations } from './deprecation.js';
 import { detectLockfileFlavor } from './format-library.js';
+import { buildEnvelope } from './schema.js';
 
 // Sections that apply to a pnpm lockfile: the registry-backed scans plus the
 // config validators (package.json, .npmrc, pnpm-workspace.yaml + pnpm field).
@@ -113,6 +114,9 @@ function advisoryFinding(level, f) {
     title: f.title,
     advisorySeverity: f.severity,
     fixedVersion: f.fixedVersion ?? null,
+    cve: f.cve ?? null,
+    vulnerableRange: f.vulnerableRange ?? null,
+    references: Array.isArray(f.references) ? f.references : (f.url ? [f.url] : []),
     url: f.url ?? null
   };
 }
@@ -307,7 +311,7 @@ function tallyInstallScripts(lockfile, packageJson, auditConfig) {
 function bucketAuditFindings(buckets, audit) {
   for (const f of audit.findings) {
     const id = RULE_SECTION[f.ruleId] || 'structure';
-    pushFinding(buckets, id, { severity: f.severity, location: f.packagePath, message: f.message });
+    pushFinding(buckets, id, { severity: f.severity, location: f.packagePath, message: f.message, ruleId: f.ruleId });
   }
 }
 
@@ -424,7 +428,19 @@ export async function runReport(target, options = {}) {
   };
   const { sections, summary } = assembleSections(buckets, sectionState, opts.maxWarnings);
 
-  return { filePath, sections, summary };
+  return { filePath, scanned: countExaminedPackages(lockfile), sections, summary };
+}
+
+// Count the package entries the report examined (the non-root lockfile entries):
+// v2/v3 keep them under `packages` (the "" root is excluded), v1 under `dependencies`.
+function countExaminedPackages(lockfile) {
+  if (lockfile && lockfile.packages && typeof lockfile.packages === 'object') {
+    return Object.keys(lockfile.packages).filter((k) => k !== '').length;
+  }
+  if (lockfile && lockfile.dependencies && typeof lockfile.dependencies === 'object') {
+    return Object.keys(lockfile.dependencies).length;
+  }
+  return 0;
 }
 
 const DEFAULT_PASS_SUMMARY = {
@@ -444,19 +460,108 @@ const DEFAULT_PASS_SUMMARY = {
 
 const ICON = { pass: '✔', warn: '⚠', error: '✖', skip: '·' };
 
+// Map each report section to a shared-schema `category`. The lockfile-hygiene
+// audit sections fold into `lint`; policy-ish sections into `policy`; the scan
+// sections keep their first-class categories.
+const SECTION_CATEGORY = {
+  structure: 'lint',
+  'package-json': 'lint',
+  npmrc: 'lint',
+  'pnpm-config': 'lint',
+  integrity: 'integrity',
+  vuln: 'vulnerability',
+  deprecated: 'deprecated',
+  resolved: 'lint',
+  licenses: 'policy',
+  'install-scripts': 'policy',
+  git: 'policy',
+  remote: 'policy',
+  pinned: 'policy',
+  orphans: 'lint',
+  unused: 'unused',
+  fund: 'lint'
+};
+
+// The report tier is error|warn; the shared ladder needs one of five strings.
+// Advisory findings carry their TRUE ladder severity (advisorySeverity); for every
+// other finding map error→high, warn→low (the suite's error/warn→ladder rule).
+function ladderSeverity(f) {
+  if (f.advisorySeverity) return f.advisorySeverity;
+  return f.severity === 'error' ? 'high' : 'low';
+}
+
+// Map one report finding (any section) into the shared Finding shape. The report
+// tier (error/warn) that drives the gate is preserved under `extra.reportSeverity`;
+// advisory findings additionally carry the vuln-tool `extra` payload.
+function reportFindingToSchema(sectionId, f) {
+  const isAdvisory = f.advisoryId != null || f.advisorySeverity != null;
+  const extra = { section: sectionId, reportSeverity: f.severity };
+  if (isAdvisory) {
+    extra.package = f.package ?? null;
+    extra.installedVersion = f.version ?? null;
+    extra.fixedVersion = f.fixedVersion ?? null;
+    extra.advisoryId = f.advisoryId ?? null;
+    extra.cve = f.cve ?? null;
+    extra.vulnerableRange = f.vulnerableRange ?? null;
+    extra.references = Array.isArray(f.references) ? f.references : (f.url ? [f.url] : []);
+  }
+  return {
+    severity: ladderSeverity(f),
+    ruleId: f.advisoryId != null ? String(f.advisoryId) : (f.ruleId || sectionId),
+    category: SECTION_CATEGORY[sectionId] || 'lint',
+    message: f.message,
+    location: f.location ? { file: f.location, line: null, column: null } : null,
+    remediation: f.fixedVersion ? `upgrade to ${f.fixedVersion}` : null,
+    extra
+  };
+}
+
+/**
+ * Wrap a runReport() result in the shared finding-schema envelope. The COMPLETE
+ * set of findings (every section, in section order) becomes the top-level
+ * `findings`; the section statuses/summaries and the report-tier rollup
+ * (errors/warnings/total/pass — the gate signal) are preserved under `extra`.
+ *
+ * @param {object} report   - a runReport() result
+ * @param {object} [meta]
+ * @param {string} [meta.target]   - path scanned, as given (defaults to report.filePath)
+ * @param {number} [meta.exitCode] - the real exit code (defaults to pass ? 0 : 1)
+ * @returns {object} the shared envelope
+ */
+export function reportEnvelope(report, meta = {}) {
+  const target = meta.target ?? report.filePath;
+  const exitCode = meta.exitCode ?? (report.summary.pass ? 0 : 1);
+  const findings = [];
+  for (const section of report.sections) {
+    for (const f of section.findings) findings.push(reportFindingToSchema(section.id, f));
+  }
+  return buildEnvelope({
+    target,
+    scanned: report.scanned ?? 0,
+    findings,
+    exitCode,
+    extra: {
+      sections: report.sections.map((s) => ({ id: s.id, title: s.title, status: s.status, summary: s.summary })),
+      summary: report.summary
+    }
+  });
+}
+
 /**
  * Render a report produced by runReport().
  * @param {object} report
- * @param {object} options - { format: 'pretty' | 'json' }
+ * @param {object} options - { format: 'human' | 'json', target?, exitCode? }
+ *   In 'json' mode the output is the shared finding-schema envelope (see schema.js).
  * @returns {string}
  */
 export function formatReport(report, options = {}) {
-  const { format = 'pretty' } = options;
+  const { format = 'human' } = options;
 
   if (format === 'json') {
-    return JSON.stringify(report, null, 2);
+    // The shared finding-schema envelope is the ONLY thing printed in json mode.
+    return JSON.stringify(reportEnvelope(report, { target: options.target, exitCode: options.exitCode }), null, 2);
   }
-  if (format !== 'pretty') {
+  if (format !== 'human') {
     throw new ReportError(`Unknown report format: ${format}`, 'UNKNOWN_FORMAT');
   }
 

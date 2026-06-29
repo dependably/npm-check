@@ -1,5 +1,5 @@
 // tests/unit/vuln.test.js
-import { checkVulnerabilities, VulnError } from '../../src/vuln.js';
+import { checkVulnerabilities, VulnError, vulnEnvelope } from '../../src/vuln.js';
 
 const HASH_A = 'sha512-' + 'A'.repeat(86) + '==';
 
@@ -209,5 +209,91 @@ describe('checkVulnerabilities', () => {
   it('rejects v1 lockfiles', async () => {
     await expect(checkVulnerabilities({ lockfileVersion: 1, dependencies: {} }, {}))
       .rejects.toThrow(VulnError);
+  });
+
+  it('captures cve, vulnerable range and references on a finding', async () => {
+    const lockfile = lockfileWith(pkg('bad'));
+    const result = await checkVulnerabilities(lockfile, {
+      fetchAdvisories: fakeAdvisories({
+        bad: [adv('critical', {
+          vulnerable_versions: '<2.0.0', cves: ['CVE-2024-9999'],
+          references: ['https://ref.test/a', { url: 'https://ref.test/b' }]
+        })]
+      })
+    });
+    const f = result.errors[0];
+    expect(f.cve).toBe('CVE-2024-9999');
+    expect(f.vulnerableRange).toBe('<2.0.0');
+    expect(f.references).toEqual(['https://ref.test/a', 'https://ref.test/b', 'https://example.test/advisory/1']);
+  });
+});
+
+describe('vulnEnvelope (shared finding schema)', () => {
+  it('wraps a result in the suite envelope with the six core keys', async () => {
+    const lockfile = lockfileWith(pkg('bad'));
+    const result = await checkVulnerabilities(lockfile, {
+      fetchAdvisories: fakeAdvisories({ bad: [adv('critical', { patched_versions: '>=2.0.0' })] })
+    });
+    const env = vulnEnvelope(result, { target: 'package-lock.json', exitCode: 1 });
+
+    expect(env.tool).toBe('npm-check');
+    expect(typeof env.toolVersion).toBe('string');
+    expect(env.schemaVersion).toBe('1.0');
+    expect(env.target).toBe('package-lock.json');
+    expect(env.summary.scanned).toBe(result.scanned);
+    expect(env.summary.findings).toBe(env.findings.length); // never truncated
+    expect(env.summary.exitCode).toBe(1); // matches the real exit code
+    expect(env.summary.bySeverity).toEqual({ critical: 1, high: 0, moderate: 0, low: 0, info: 0 });
+  });
+
+  it('maps an advisory to the Finding shape with advisory data under extra', async () => {
+    const lockfile = lockfileWith(pkg('bad'));
+    const result = await checkVulnerabilities(lockfile, {
+      fetchAdvisories: fakeAdvisories({
+        bad: [adv('high', { id: 1337, patched_versions: '>=2.0.0', vulnerable_versions: '<2.0.0', cves: ['CVE-2024-1'] })]
+      })
+    });
+    const env = vulnEnvelope(result, { target: 'package-lock.json', exitCode: 1 });
+    const f = env.findings[0];
+
+    expect(f.severity).toBe('high'); // npm ladder kept verbatim
+    expect(f.ruleId).toBe('1337'); // advisoryId
+    expect(f.category).toBe('vulnerability');
+    expect(f.message).toBe('Prototype pollution'); // advisory title
+    expect(f.location).toBeNull(); // a package advisory is not file-scoped
+    expect(f.remediation).toBe('upgrade to >=2.0.0');
+    expect(f.extra).toEqual({
+      package: 'bad',
+      installedVersion: '1.0.0',
+      fixedVersion: '>=2.0.0',
+      advisoryId: 1337,
+      cve: 'CVE-2024-1',
+      vulnerableRange: '<2.0.0',
+      references: ['https://example.test/advisory/1']
+    });
+  });
+
+  it('includes below-threshold warnings in findings and preserves scan state under extra', async () => {
+    const lockfile = lockfileWith(pkg('bad'));
+    const result = await checkVulnerabilities(lockfile, {
+      minSeverity: 'high', fetchAdvisories: fakeAdvisories({ bad: [adv('low')] })
+    });
+    const env = vulnEnvelope(result, { target: 'package-lock.json', exitCode: 0 });
+    expect(env.findings).toHaveLength(1);
+    expect(env.findings[0].severity).toBe('low');
+    expect(env.summary.bySeverity.low).toBe(1);
+    expect(env.extra.scan.vulnerable).toBe(1);
+    expect(env.extra.scan.valid).toBe(true);
+  });
+
+  it('keeps unresolved scan state in extra (gate signal) with zero advisory findings', async () => {
+    const lockfile = lockfileWith(pkg('good'));
+    const result = await checkVulnerabilities(lockfile, { fetchAdvisories: () => Promise.resolve(null) });
+    const env = vulnEnvelope(result, { target: 'package-lock.json', exitCode: 1 });
+    expect(env.findings).toHaveLength(0);
+    expect(env.summary.findings).toBe(0);
+    expect(env.summary.exitCode).toBe(1); // fail-closed: scan couldn't complete
+    expect(env.extra.scan.unresolved).toBe(1);
+    expect(env.extra.scan.valid).toBe(false);
   });
 });

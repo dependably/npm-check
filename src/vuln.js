@@ -17,6 +17,7 @@
 import { createProgressReporter } from './progress-reporter.js';
 import { forEachPackageEntry } from './format-library.js';
 import { DEFAULT_REGISTRY, postJson } from './integrity.js';
+import { buildEnvelope } from './schema.js';
 
 /**
  * Custom error class for vuln-scan operations
@@ -50,6 +51,33 @@ function fixedVersionOf(advisory) {
   const trimmed = raw.trim();
   if (!trimmed || trimmed === '<0.0.0') return null; // no fix published
   return trimmed;
+}
+
+/**
+ * Extract the CVE identifier from an advisory, when present. The npm/GitHub
+ * advisory shape carries it as `cves` (array), `cve`, or `cve_id`. Returns null
+ * when absent — we never fabricate one.
+ */
+function cveOf(advisory) {
+  const raw = (Array.isArray(advisory.cves) ? advisory.cves[0] : null)
+    ?? advisory.cve ?? advisory.cve_id ?? null;
+  return typeof raw === 'string' && raw.trim() ? raw.trim() : null;
+}
+
+/**
+ * Collect reference URLs from an advisory (its `references` list plus its own
+ * `url`), de-duplicated. References may be plain strings or `{ url }` objects.
+ */
+function referencesOf(advisory) {
+  const refs = [];
+  if (Array.isArray(advisory.references)) {
+    for (const r of advisory.references) {
+      const url = typeof r === 'string' ? r : (r && r.url);
+      if (url) refs.push(url);
+    }
+  }
+  if (advisory.url) refs.push(advisory.url);
+  return [...new Set(refs)];
 }
 
 /**
@@ -157,6 +185,9 @@ function recordVuln(cand, advisory, results, threshold) {
     title: advisory.title,
     severity: (advisory.severity || 'low').toLowerCase(),
     fixedVersion: fixedVersionOf(advisory), // null when the advisory publishes no fix
+    cve: cveOf(advisory), // null when the advisory carries no CVE
+    vulnerableRange: advisory.vulnerable_versions ?? null,
+    references: referencesOf(advisory),
     url: advisory.url
   };
   if (severityRank(finding.severity) >= threshold) {
@@ -336,4 +367,66 @@ export async function checkVulnerabilities(lockfileData, options = {}) {
   if (reporter) reporter.finish();
 
   return results;
+}
+
+/**
+ * Map one advisory finding (from results.errors/warnings) into the suite's shared
+ * Finding shape. The advisory's TRUE severity is already the ladder vocabulary
+ * (info|low|moderate|high|critical), so it becomes the top-level `severity`
+ * verbatim; the advisory payload rides under `extra` per the vuln-tool contract.
+ */
+function toSchemaFinding(f) {
+  return {
+    severity: (f.severity || 'low').toLowerCase(),
+    ruleId: f.advisoryId != null ? String(f.advisoryId) : 'NPM-ADVISORY',
+    category: 'vulnerability',
+    message: f.title,
+    location: null, // a package advisory is not file-scoped
+    remediation: f.fixedVersion ? `upgrade to ${f.fixedVersion}` : null,
+    extra: {
+      package: f.package,
+      installedVersion: f.version,
+      fixedVersion: f.fixedVersion ?? null,
+      advisoryId: f.advisoryId ?? null,
+      cve: f.cve ?? null,
+      vulnerableRange: f.vulnerableRange ?? null,
+      references: Array.isArray(f.references) ? f.references : (f.url ? [f.url] : [])
+    }
+  };
+}
+
+/**
+ * Wrap a checkVulnerabilities() result in the shared finding-schema envelope.
+ * `findings` is the COMPLETE list of advisory findings (errors with an advisoryId
+ * plus warnings); scan-completeness state (unresolved/skipped/clean, which drives
+ * the fail-closed gate) is preserved under `extra.scan` so nothing is lost.
+ *
+ * @param {object} result   - a checkVulnerabilities() result
+ * @param {object} meta
+ * @param {string} meta.target   - the lockfile path scanned, as given
+ * @param {number} meta.exitCode - the real process exit code (0/1/2)
+ * @returns {object} the shared envelope
+ */
+export function vulnEnvelope(result, { target, exitCode }) {
+  const advisories = [
+    ...result.errors.filter((e) => e.advisoryId != null),
+    ...result.warnings
+  ];
+  const findings = advisories.map(toSchemaFinding);
+  return buildEnvelope({
+    target,
+    scanned: result.scanned,
+    findings,
+    exitCode,
+    extra: {
+      scan: {
+        vulnerable: result.vulnerable,
+        clean: result.clean,
+        unresolved: result.unresolved,
+        skipped: result.skipped,
+        valid: result.valid,
+        unresolvedItems: result.unresolvedItems
+      }
+    }
+  });
 }
