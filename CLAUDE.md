@@ -212,9 +212,10 @@ npm-check fix-checksums --write package-lock.json
 npm-check pin --write
 npm-check prune --write package-lock.json
 npm-check unused
-npm-check audit --strict
-npm-check vuln --min-severity critical
-npm-check deprecated --fail-on-deprecated
+npm-check unused --format json           # machine-readable (boolean --json is retired)
+npm-check audit --fail-on count=0        # CI gate: any warning fails
+npm-check vuln --fail-on severity=critical
+npm-check deprecated --fail-on count=0   # fail on any deprecation
 npm-check remediate --write              # bump deprecated/vulnerable direct deps, then npm install
 npm-check dedupe --write package-lock.json
 npm-check check --check hash package-lock.json
@@ -228,7 +229,7 @@ The default command (bare `npm-check`, or `npm-check report [file]`). Runs **eve
 
 - Sections: Structure & format, package.json, .npmrc (config), Integrity (registry), Known vulnerabilities, Resolved URLs, Licenses, Install scripts, Pinned versions, Orphaned packages, Unused dependencies
 - Network/filesystem checks degrade gracefully: integrity → `--offline`/`--no-integrity` to skip; licenses auto-skip when there's no `node_modules` or no approved-licenses CSV
-- Exit 0 unless an error-severity finding exists (or `--strict`/`--max-warnings` budget is exceeded)
+- Exit 0 unless an error-severity finding exists (or the `--fail-on count=`/`severity=` gate trips). The CI gate is the suite-wide repeatable `--fail-on <key>=<value>`: `count=<N>` (warning-count budget; `count=0` == old `--strict`) and `severity=<level>`. The legacy `--strict` / `--max-warnings` / `--min-severity` / `--fail-on-deprecated` flags are thin **deprecated aliases** (still functional, emit a stderr notice). `-v` is **not** a version alias — version is `--version` (long-only).
 - **Key Functions:** `runReport()` returns `{filePath, sections, summary}`; `formatReport()` renders pretty or JSON
 
 ### 7. Updater (`updater.js`)
@@ -277,7 +278,7 @@ Opinionated, configurable lockfile linter for CI (non-zero exit on failure):
 - **npm v12 readiness** (the three breaking opt-ins): `install-scripts` reconciles with package.json `allowScripts` (pinned `name@version` or name-only) and flags pending/denied scripts; `no-git-deps` and `no-remote-deps` flag deps that will need `--allow-git` / `--allow-remote`. The report's Install scripts section shows `total · allowed · blocked` when the project is `allowScripts`-aware.
 - Each rule is `{id, description, defaultSeverity, check(context)}` — extensible
 - Severities error/warn/off with per-rule options; `maxWarnings` budget
-- Config file discovery (`.npm-checkrc.json`, `npm-check.config.json`) with CLI overrides
+- Config resolution (suite convention): the shared `.dependably-check` — discovered by walking up to the repo root, or pointed at by `--config <file>` — is the PRIMARY source (npm-check reads its `common` then `npm` sections for `rules`/`maxWarnings`, via `extractSharedAuditSettings`); a tool-local `.npm-checkrc.json` / `npm-check.config.json` in cwd is a FALLBACK that overrides the shared settings; CLI flags override files
 - Stylish (ESLint-like) and JSON report formats
 - CLI exit codes: 0 pass, 1 findings failure, 2 operational error
 
@@ -349,7 +350,7 @@ Turns the deprecated/vulnerable *findings* into *action* — the write counterpa
 - **Scope is deliberate:** npm-check is lockfile-first and does not re-resolve the graph — that's `npm install`'s job. So it edits package.json ranges + the lockfile root only; the caller runs `npm install` afterward to materialize the tree. Transitive findings (a flagged package that isn't a direct dep) are reported as **guidance** (bump the parent or add an npm `override`), not auto-written
 - Skips complex/git/file/url/alias ranges with a reason; warns when a dep is already at latest yet still flagged (`latest-still-affected`) or the registry is unreachable
 - Uses `fetchLatestVersion()`/`fetchPackument()` helpers added to `integrity.js`
-- Surfaced as the standalone `remediate` CLI command (`--write` to apply, `--min-severity`, `--no-deprecated`)
+- Surfaced as the standalone `remediate` CLI command (`--write` to apply, `--fail-on severity=<level>`, `--no-deprecated`)
 
 **Key Functions:**
 - `remediateDependencies(lockfile, packageJson, options)` - Returns `{packageJson, lockfile, bumped, guidance, skipped, warnings, changed}`

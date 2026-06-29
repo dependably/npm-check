@@ -100,13 +100,13 @@ npm-check check --check license --strict
 
 # Scan locked packages for known vulnerabilities (npm advisory endpoint; no node_modules)
 npm-check vuln
-npm-check vuln --min-severity critical
+npm-check vuln --fail-on severity=critical
 npm-check vuln --allow-unresolved      # don't fail if some packages can't be scanned
 npm-check vuln --offline               # skip the network entirely (everything skipped)
 
 # Surface npm's "deprecated" warnings straight from the lockfile
 npm-check deprecated
-npm-check deprecated --fail-on-deprecated
+npm-check deprecated --fail-on count=0  # fail CI on any deprecation
 
 # Bump deprecated/vulnerable DIRECT deps to latest, then run npm install
 npm-check remediate --write
@@ -249,10 +249,10 @@ The `audit` command is an opinionated linter for `package-lock.json` best practi
 
 ```bash
 npm-check audit                          # Lint ./package-lock.json with default rules
-npm-check audit --strict                 # Treat any warning as failure
+npm-check audit --fail-on count=0        # Treat any warning as failure
 npm-check audit --format json            # Machine-readable output
 npm-check audit --rule pinned-versions:error --rule secure-resolved:off
-npm-check audit --config ./my-audit.json
+npm-check audit --config ./.dependably-check
 ```
 
 **Default Rules:**
@@ -273,7 +273,7 @@ npm-check audit --config ./my-audit.json
 
 **Configuration File:**
 
-The audit looks for `.npm-checkrc.json`, then `npm-check.config.json`, in the current directory (or pass `--config <path>`). CLI flags override file settings. Rule entries are `"error"`, `"warn"`, `"off"`, or `[severity, options]`:
+Config resolution follows the suite-wide convention: `--config <file>` (or, when omitted, a `.dependably-check` discovered by walking up to the repo root) is the **primary** source — npm-check reads its `common` then `npm` sections for `rules`/`maxWarnings`. A tool-local `.npm-checkrc.json` (then `npm-check.config.json`) in the current directory is a **fallback** that overrides the shared settings. CLI flags override file settings. Rule entries are `"error"`, `"warn"`, `"off"`, or `[severity, options]`:
 
 ```json
 {
@@ -301,8 +301,10 @@ The audit looks for `.npm-checkrc.json`, then `npm-check.config.json`, in the cu
 
 **Audit Exit Codes:**
 - `0` – Audit passed
-- `1` – Findings failure (errors present, or warnings exceed `maxWarnings`)
+- `1` – Findings failure (errors present, or warnings exceed `maxWarnings` / `--fail-on count=`)
 - `2` – Operational error (bad config, unknown rule, unreadable file)
+
+> The CI gate is the suite-wide `--fail-on <key>=<value>` (repeatable): `--fail-on count=<N>` fails when the warning count exceeds N (`count=0` fails on any warning), and `--fail-on severity=<level>` fails on findings at/above a severity. The older `--strict` / `--max-warnings` / `--min-severity` / `--fail-on-deprecated` flags are **deprecated aliases** that still work but emit a notice and will be removed.
 
 ### Fix-Checksums Command
 
@@ -350,7 +352,7 @@ Flags dependencies declared in `package.json` that the application never imports
 ```bash
 npm-check unused                         # Scan the current directory
 npm-check unused ./my-app --include-dev  # Also check devDependencies
-npm-check unused --json                  # Machine-readable output
+npm-check unused --format json           # Machine-readable output
 ```
 
 The scan walks source files (`.js`, `.mjs`, `.cjs`, `.jsx`, `.ts`, `.tsx`, `.vue`, `.svelte`, skipping `node_modules`, `dist`, etc.) for `require()`, `import`, dynamic `import()`, and re-export specifiers. Packages mentioned in npm scripts count as used (CLI tools), and `@types/foo` counts as used when `foo` is. Results are **heuristic and report-only** — packages loaded via config files or runtime magic can be false positives, so nothing is removed automatically.

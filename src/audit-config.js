@@ -123,17 +123,67 @@ export function findSharedConfig(cwd = process.cwd()) {
   }
 }
 
+// Union of `common.allowedRegistryHosts` and `npm.allowedRegistryHosts` from a
+// parsed shared config (deduped, common first). Other sections are ignored.
+function collectSharedHosts(parsed) {
+  const collect = (section) => {
+    const hosts = section && section.allowedRegistryHosts;
+    return Array.isArray(hosts) ? hosts.filter((h) => typeof h === 'string') : [];
+  };
+  return [...new Set([...collect(parsed.common), ...collect(parsed.npm)])];
+}
+
+// Pull npm-check's audit settings (`rules`, `maxWarnings`) out of a shared
+// `.dependably-check` object: the `common` section is the base, the `npm`
+// section overrides it. Mirrors how the other suite tools read their section.
+function extractSharedAuditSettings(parsed) {
+  const pick = (section) => {
+    const out = {};
+    if (section && typeof section === 'object') {
+      if (section.rules !== undefined) out.rules = section.rules;
+      if (section.maxWarnings !== undefined) out.maxWarnings = section.maxWarnings;
+    }
+    return out;
+  };
+  return { ...pick(parsed && parsed.common), ...pick(parsed && parsed.npm) };
+}
+
+// True when a parsed config is the shared `.dependably-check` shape (sectioned
+// by tool) rather than the legacy flat tool-config shape (top-level rules/maxWarnings).
+function isSharedShape(configPath, parsed) {
+  if (path.basename(configPath) === SHARED_CONFIG_FILENAME) return true;
+  if (!parsed || typeof parsed !== 'object') return false;
+  const hasToolKeys = 'rules' in parsed || 'maxWarnings' in parsed;
+  const hasSharedSections = 'common' in parsed || 'npm' in parsed;
+  return !hasToolKeys && hasSharedSections;
+}
+
+// Read + JSON-parse a tool-config file, raising CONFIG_READ / CONFIG_PARSE.
+function readJsonConfig(configPath) {
+  let raw;
+  try {
+    raw = fs.readFileSync(configPath, 'utf8');
+  } catch (e) {
+    throw new AuditConfigError(`Cannot read config file: ${e.message}`, 'CONFIG_READ', { configPath });
+  }
+  try {
+    return JSON.parse(raw);
+  } catch (e) {
+    throw new AuditConfigError(`Invalid JSON in ${configPath}: ${e.message}`, 'CONFIG_PARSE', { configPath });
+  }
+}
+
 /**
- * Read and parse the shared `.dependably-check` file, returning the union of
- * `common.allowedRegistryHosts` and `npm.allowedRegistryHosts` (deduped). Other
- * tool sections and unknown keys are ignored.
+ * Read and parse the shared `.dependably-check` file, returning its registry-host
+ * allowlist and npm-check audit settings (`rules`/`maxWarnings`). Other tool
+ * sections and unknown keys are ignored.
  *
  * @param {string} cwd - Directory to start discovery from
- * @returns {{ allowedRegistryHosts: string[], sharedPath: string|null }}
+ * @returns {{ allowedRegistryHosts: string[], sharedPath: string|null, auditSettings: object }}
  */
 export function loadSharedConfig(cwd = process.cwd()) {
   const sharedPath = findSharedConfig(cwd);
-  if (!sharedPath) return { allowedRegistryHosts: [], sharedPath: null };
+  if (!sharedPath) return { allowedRegistryHosts: [], sharedPath: null, auditSettings: {} };
 
   let raw;
   try {
@@ -149,57 +199,64 @@ export function loadSharedConfig(cwd = process.cwd()) {
     throw new AuditConfigError(`Invalid JSON in ${sharedPath}: ${e.message}`, 'SHARED_CONFIG_PARSE', { sharedPath });
   }
 
-  const collect = (section) => {
-    const hosts = section && section.allowedRegistryHosts;
-    return Array.isArray(hosts) ? hosts.filter((h) => typeof h === 'string') : [];
+  return {
+    allowedRegistryHosts: collectSharedHosts(parsed),
+    sharedPath,
+    auditSettings: extractSharedAuditSettings(parsed)
   };
-  const allowedRegistryHosts = [...new Set([...collect(parsed.common), ...collect(parsed.npm)])];
-  return { allowedRegistryHosts, sharedPath };
 }
 
 export function loadAuditConfig(cwd = process.cwd(), explicitPath = null) {
-  let userConfig = {};
+  // The shared `.dependably-check` (discovered by walking up to the repo root)
+  // is the PRIMARY config source — its `common`/`npm` sections supply the base
+  // audit settings and the registry-host allowlist. A tool-specific
+  // `.npm-checkrc.json` (or an explicit `--config`) overrides it.
+  const shared = loadSharedConfig(cwd);
+
+  let toolConfig = {};
   let configPath = null;
+  let explicitSharedHosts = [];
 
   if (explicitPath) {
     configPath = path.resolve(explicitPath);
     if (!fs.existsSync(configPath)) {
       throw new AuditConfigError(`Config file not found: ${configPath}`, 'CONFIG_NOT_FOUND');
     }
+    const parsed = readJsonConfig(configPath);
+    if (isSharedShape(configPath, parsed)) {
+      // `--config` points at a `.dependably-check`: read npm-check's settings
+      // from its common/npm sections and take its registry-host allowlist too.
+      toolConfig = extractSharedAuditSettings(parsed);
+      explicitSharedHosts = collectSharedHosts(parsed);
+    } else {
+      // Legacy flat tool-config (.npm-checkrc.json shape) given explicitly.
+      toolConfig = parsed;
+    }
   } else {
+    // Discover a tool-specific config in the working directory (fallback for
+    // back-compat; the shared `.dependably-check` above is the primary source).
     for (const name of CONFIG_FILENAMES) {
       const candidate = path.join(cwd, name);
       if (fs.existsSync(candidate)) {
         configPath = candidate;
+        toolConfig = readJsonConfig(candidate);
         break;
       }
     }
   }
 
-  if (configPath) {
-    let raw;
-    try {
-      raw = fs.readFileSync(configPath, 'utf8');
-    } catch (e) {
-      throw new AuditConfigError(`Cannot read config file: ${e.message}`, 'CONFIG_READ', { configPath });
-    }
-    try {
-      userConfig = JSON.parse(raw);
-    } catch (e) {
-      throw new AuditConfigError(`Invalid JSON in ${configPath}: ${e.message}`, 'CONFIG_PARSE', { configPath });
-    }
-  }
-
-  const config = mergeConfig(userConfig, configPath);
+  // Shared audit settings are the base; the tool-specific config overrides them.
+  const userConfig = { ...shared.auditSettings, ...toolConfig };
+  const config = mergeConfig(userConfig, configPath || shared.sharedPath);
 
   // Layer the shared `.dependably-check` hosts ADDITIVELY onto whatever
   // secure-resolved.allowedHosts resolved to (built-in default or a
   // tool-config replacement) — public npm always stays trusted.
-  const { allowedRegistryHosts, sharedPath } = loadSharedConfig(cwd);
-  if (allowedRegistryHosts.length > 0) {
-    extendAllowedHosts(config, allowedRegistryHosts);
+  const hosts = [...new Set([...shared.allowedRegistryHosts, ...explicitSharedHosts])];
+  if (hosts.length > 0) {
+    extendAllowedHosts(config, hosts);
   }
-  config.sharedConfigPath = sharedPath;
+  config.sharedConfigPath = shared.sharedPath;
 
   return config;
 }

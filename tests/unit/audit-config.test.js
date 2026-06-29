@@ -224,6 +224,47 @@ describe('shared .dependably-check config', () => {
     expect(config.rules['secure-resolved'].options.allowedHosts).toContain('shared.example.com');
   });
 
+  it('reads npm-check audit settings (rules/maxWarnings) from the npm section', () => {
+    fs.writeFileSync(path.join(tmpDir, '.git'), '');
+    fs.writeFileSync(
+      path.join(tmpDir, SHARED_CONFIG_FILENAME),
+      JSON.stringify({
+        common: { maxWarnings: 3 },
+        npm: { rules: { 'pinned-versions': 'off' }, maxWarnings: 1 }
+      })
+    );
+
+    const config = loadAuditConfig(tmpDir);
+    // npm section overrides common for maxWarnings, and supplies a rule override.
+    expect(config.maxWarnings).toBe(1);
+    expect(config.rules['pinned-versions'].severity).toBe('off');
+  });
+
+  it('--config can point directly at a .dependably-check file (shared shape)', () => {
+    const explicit = path.join(tmpDir, SHARED_CONFIG_FILENAME);
+    fs.writeFileSync(
+      explicit,
+      JSON.stringify({ npm: { maxWarnings: 9, rules: { 'no-fund': 'off' } } })
+    );
+
+    const config = loadAuditConfig(tmpDir, explicit);
+    expect(config.maxWarnings).toBe(9);
+    expect(config.rules['no-fund'].severity).toBe('off');
+    expect(config.configPath).toBe(explicit);
+  });
+
+  it('a tool-specific .npm-checkrc.json overrides the shared audit settings', () => {
+    fs.writeFileSync(path.join(tmpDir, '.git'), '');
+    fs.writeFileSync(
+      path.join(tmpDir, SHARED_CONFIG_FILENAME),
+      JSON.stringify({ npm: { maxWarnings: 2 } })
+    );
+    fs.writeFileSync(path.join(tmpDir, '.npm-checkrc.json'), JSON.stringify({ maxWarnings: 8 }));
+
+    const config = loadAuditConfig(tmpDir);
+    expect(config.maxWarnings).toBe(8);
+  });
+
   it('throws AuditConfigError with the path on malformed .dependably-check JSON', () => {
     fs.writeFileSync(path.join(tmpDir, '.git'), '');
     fs.writeFileSync(path.join(tmpDir, SHARED_CONFIG_FILENAME), '{ not valid json');

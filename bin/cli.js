@@ -59,19 +59,27 @@ Commands:
   restore [file]             Restore from latest backup
   clean-backups [file]       Clean old backup files with optional --keep N
 
+CI Gate (the one mechanism — repeatable):
+  --fail-on severity=<level> Fail if any finding is at/above the level
+                             (info|low|moderate|high|critical)
+  --fail-on count=<N>        Fail if the total finding count exceeds N
+                             (replaces --max-warnings; count=0 == old --strict)
+  Default gate (no --fail-on): vulnerabilities trip the run; the fail-closed
+  default on packages that could not be scanned stays on (see --allow-unresolved).
+  Deprecated aliases (still work, will be removed): --min-severity → --fail-on severity=,
+  --max-warnings → --fail-on count=, --strict → --fail-on count=0, --fail-on-deprecated.
+
 Report Options:
   --offline                  Skip all network checks (integrity + vuln + deprecated); offline rules only
   --no-integrity             Skip the integrity check
   --no-vuln                  Skip the known-vulnerability scan
   --no-deprecated            Skip the deprecation scan
   --no-license               Skip the license check
-  --min-severity <level>     Vuln severity that fails the run (info|low|moderate|high|critical; default: high)
+  --config <file>            Suite config (.dependably-check), discovered by walking
+                             up to the repo root; .npm-checkrc.json is a fallback
   --format human|json        Output format (default: human; json emits the shared finding schema)
-  --strict                   Treat warnings as failures
-  --max-warnings N           Fail if warnings exceed N (-1 = unlimited)
   --allow-unresolved         Don't fail when a registry-backed scan can't complete
                              (registry down / endpoint unsupported). Default: FAIL CLOSED
-  --fail-on-deprecated       Fail when a locked package is deprecated (default: warn)
   --concurrency / --timeout / --registry / --licenses-csv   (as in Check Options)
 
 Check Options:
@@ -86,7 +94,7 @@ Check Options:
   --allow-unresolved         Don't fail on entries that can't be verified (default: FAIL CLOSED)
 
 Vuln Options:
-  --min-severity <level>     Severity that fails the run (info|low|moderate|high|critical; default: high)
+  --fail-on severity=<level> Severity that fails the run (default: high)
   --format human|json        Output format (default: human; json emits the shared finding schema)
   --offline                  Skip the scan (report everything as skipped)
   --allow-unresolved         Don't fail on packages that can't be checked
@@ -99,7 +107,8 @@ Vuln Options:
 Deprecated Options:
   --format pretty|json       Output format (default: pretty)
   --offline                  Skip the scan (report everything as skipped)
-  --fail-on-deprecated       Fail the run when a locked package is deprecated (default: warn)
+  --fail-on ...              Fail the run when a locked package is deprecated
+                             (--fail-on-deprecated is a deprecated alias; default: warn)
   --allow-unresolved         Don't fail on packages that can't be checked (default: FAIL CLOSED)
   --concurrency N            Parallel registry requests (default: 8)
   --timeout MS               Per-request timeout in milliseconds (default: 10000)
@@ -114,7 +123,7 @@ Fix-Checksums Options:
 
 Remediate Options:
   --write                    Apply the bumps to package.json + lockfile root (backs up first)
-  --min-severity <level>     Advisory level that counts a dep as vulnerable (default: high)
+  --fail-on severity=<level> Advisory level that counts a dep as vulnerable (default: high)
   --no-deprecated            Don't treat deprecated direct deps as remediation targets
   --format pretty|json       Output format (default: pretty)
   --registry <url>           Registry for entries without a derivable base
@@ -126,20 +135,20 @@ Pin Options:
 
 Unused Options:
   --include-dev              Also check devDependencies (off by default)
-  --json                     Machine-readable output
+  --format human|json        Output format (default: human; json is machine-readable)
 
 Audit Options:
-  --config <path>            Audit config file (default: discover .npm-checkrc.json
-                             or npm-check.config.json in the current directory)
+  --config <file>            Suite config (.dependably-check), discovered by walking
+                             up to the repo root; .npm-checkrc.json is a fallback
   --rule <id>:<severity>     Override a rule severity (error|warn|off); repeatable
-  --max-warnings N           Fail when warnings exceed N (default: unlimited)
-  --strict                   Shorthand for --max-warnings 0
+  --fail-on count=<N>        Fail when the warning count exceeds N (count=0 fails on
+                             any warning; --max-warnings / --strict are deprecated aliases)
   --format stylish|json      Report format (default: stylish)
 
 General Options:
   --write                    Write changes to file (creates backup)
   -h, --help                 Show this help
-  -v, --version              Show version
+  --version                  Show version (long-only; -v is NOT version)
 
 Exit Codes:
   0  success — clean run, or --help / --version
@@ -155,12 +164,12 @@ Examples:
   npm-check prune --write                      # Remove orphaned lockfile entries
   npm-check unused                             # Flag never-imported dependencies
   npm-check audit                              # Lint with default rules
-  npm-check audit --strict --format json
+  npm-check audit --fail-on count=0 --format json   # Any warning fails the run
   npm-check audit --rule pinned-versions:error
   npm-check vuln                               # Scan for known vulnerabilities
-  npm-check vuln --min-severity critical --format json
+  npm-check vuln --fail-on severity=critical --format json
   npm-check deprecated                         # Scan for deprecated packages (npm ci warnings)
-  npm-check deprecated --fail-on-deprecated    # Fail CI when any locked package is deprecated
+  npm-check deprecated --fail-on count=0       # Fail CI when any locked package is deprecated
   npm-check check --check hash                 # Only verify integrity
   npm-check restore
   npm-check clean-backups --keep 5
@@ -294,15 +303,74 @@ function parseFormatFlag(allowed, fallback, code = 2) {
 
 const SEVERITIES = ['info', 'low', 'moderate', 'high', 'critical'];
 
-// Validate a --min-severity flag against the severity ladder, exiting on a bad value.
-function parseMinSeverityFlag(fallback = 'high', code = 2) {
-  const raw = flagValue('--min-severity');
-  if (raw === undefined) return fallback;
-  if (!SEVERITIES.includes(raw)) {
-    console.error(`❌ Invalid --min-severity value. Use: ${SEVERITIES.join(', ')}`);
-    process.exit(code);
+// Emit a one-line deprecation notice to stderr (never stdout, so machine output
+// stays clean). Each retired flag is a thin alias that still maps onto --fail-on.
+function warnDeprecated(oldFlag, replacement) {
+  console.error(`⚠️  ${oldFlag} is deprecated; use \`${replacement}\` instead.`);
+}
+
+// Parse the unified, repeatable CI gate: `--fail-on <key>=<value>`.
+//   severity=<info|low|moderate|high|critical>  trip if any finding is at/above
+//   count=<N>                                   trip if total findings exceed N
+// Returns { severity, count } with each null when unset. Bad input is exit 2.
+function parseFailOn(code = 2) {
+  const out = { severity: null, count: null };
+  argv.forEach((arg, i) => {
+    if (arg !== '--fail-on') return;
+    const spec = argv[i + 1];
+    if (!spec || !spec.includes('=')) {
+      console.error('❌ Invalid --fail-on. Use --fail-on <key>=<value> (severity=<level> or count=<N>)');
+      process.exit(code);
+    }
+    const eq = spec.indexOf('=');
+    const key = spec.slice(0, eq);
+    const value = spec.slice(eq + 1);
+    if (key === 'severity') {
+      if (!SEVERITIES.includes(value)) {
+        console.error(`❌ Invalid --fail-on severity value. Use: ${SEVERITIES.join(', ')}`);
+        process.exit(code);
+      }
+      out.severity = value;
+    } else if (key === 'count') {
+      const n = parseInt(value, 10);
+      if (isNaN(n) || n < 0 || String(n) !== value.trim()) {
+        console.error('❌ Invalid --fail-on count value. Must be a non-negative integer');
+        process.exit(code);
+      }
+      out.count = n;
+    } else {
+      console.error(`❌ Unknown --fail-on key "${key}". Use: severity or count`);
+      process.exit(code);
+    }
+  });
+  return out;
+}
+
+// `--fail-on-deprecated` is retired in favour of the unified `--fail-on`, but
+// kept as a thin deprecated alias (deprecation has no place on the severity
+// ladder, so it stays a distinct toggle that still fails the run when set).
+function resolveFailOnDeprecated() {
+  if (!argv.includes('--fail-on-deprecated')) return false;
+  warnDeprecated('--fail-on-deprecated', '--fail-on (deprecations fail when this is set)');
+  return true;
+}
+
+// Resolve the severity gate (the level at/above which a finding fails the run).
+// Precedence: `--fail-on severity=` > the deprecated `--min-severity` alias > fallback.
+function resolveSeverityGate(fallback = 'high', code = 2) {
+  const failOn = parseFailOn(code);
+  if (failOn.severity) return failOn.severity;
+
+  const legacy = flagValue('--min-severity');
+  if (legacy !== undefined) {
+    if (!SEVERITIES.includes(legacy)) {
+      console.error(`❌ Invalid --min-severity value. Use: ${SEVERITIES.join(', ')}`);
+      process.exit(code);
+    }
+    warnDeprecated('--min-severity', '--fail-on severity=<level>');
+    return legacy;
   }
-  return raw;
+  return fallback;
 }
 
 // The registry-verification flags shared by the network-backed commands.
@@ -365,9 +433,20 @@ function applyRuleOverrides(config) {
   }
 }
 
-// Resolve the --max-warnings flag onto an audit config (--strict forces 0).
+// Resolve the finding-count gate onto an audit config.
+// Precedence: `--fail-on count=N` > the deprecated `--strict` / `--max-warnings`
+// aliases. `count=N` (and `--max-warnings N`) trip when warnings exceed N;
+// `--strict` is shorthand for count=0 (any warning fails).
 function applyMaxWarnings(config) {
-  if (argv.includes('--strict')) config.maxWarnings = 0;
+  const failOn = parseFailOn();
+  if (failOn.count !== null) {
+    config.maxWarnings = failOn.count;
+    return;
+  }
+  if (argv.includes('--strict')) {
+    warnDeprecated('--strict', '--fail-on count=0');
+    config.maxWarnings = 0;
+  }
   const raw = flagValue('--max-warnings');
   if (raw === undefined) return;
   const parsed = parseInt(raw, 10);
@@ -375,6 +454,7 @@ function applyMaxWarnings(config) {
     console.error('❌ Invalid --max-warnings value. Must be a number');
     process.exit(2);
   }
+  warnDeprecated('--max-warnings', '--fail-on count=<N>');
   config.maxWarnings = parsed;
 }
 
@@ -391,9 +471,12 @@ function parseReportOptions() {
   const config = loadAuditConfig(process.cwd(), flagValue('--config') || null);
   applyRuleOverrides(config);
 
-  const strict = argv.includes('--strict');
+  // The count gate (`--fail-on count=`, or the deprecated `--strict`/`--max-warnings`)
+  // lands on config.maxWarnings. `strict` stays a separate signal for the license
+  // check (treat unknown-license warnings as failures).
   applyMaxWarnings(config);
-  const maxWarnings = strict ? 0 : config.maxWarnings;
+  const strict = argv.includes('--strict');
+  const maxWarnings = config.maxWarnings;
 
   return {
     config,
@@ -408,8 +491,8 @@ function parseReportOptions() {
     // Fail closed by default: a registry-backed scan that couldn't complete must not
     // pass the report. `--allow-unresolved` opts back into the old lenient behavior.
     failOnUnresolved: !argv.includes('--allow-unresolved'),
-    failOnDeprecated: argv.includes('--fail-on-deprecated'),
-    minSeverity: parseMinSeverityFlag(),
+    failOnDeprecated: resolveFailOnDeprecated(),
+    minSeverity: resolveSeverityGate(),
     concurrency: parsePositiveIntFlag('--concurrency', 8, '--concurrency', 2),
     timeoutMs: parsePositiveIntFlag('--timeout', 10000, '--timeout', 2),
     defaultRegistry: flagValue('--registry'),
@@ -727,7 +810,9 @@ function runUnusedCommand() {
     dir = path.resolve(argv[1]);
   }
   const includeDev = argv.includes('--include-dev');
-  const asJson = argv.includes('--json');
+  // Machine output is selected with `--format json` (the suite-wide spelling);
+  // the old boolean `--json` switch is retired.
+  const asJson = parseFormatFlag(['human', 'json'], 'human') === 'json';
 
   const packageJsonPath = path.join(dir, 'package.json');
   ensureFileExists(packageJsonPath);
@@ -1089,7 +1174,7 @@ async function runVulnCommand(command) {
   requireLockfileOrExit2(filePath, 'vuln');
 
   const format = parseFormatFlag(['human', 'json'], 'human');
-  const minSeverity = parseMinSeverityFlag();
+  const minSeverity = resolveSeverityGate();
   const offline = argv.includes('--offline');
   // Fail closed by default: a package the scan couldn't check (registry down /
   // endpoint unsupported) must not pass as "no vulnerabilities". Opt out with
@@ -1160,7 +1245,7 @@ function printDeprecatedResult(result, failOnUnresolved) {
   } else if (result.deprecated === 0) {
     console.log('\n✅ No deprecated packages found');
   } else if (result.valid) {
-    console.log('\n⚠️  Deprecated packages found (warnings; pass --fail-on-deprecated to fail the run)');
+    console.log('\n⚠️  Deprecated packages found (warnings; pass --fail-on count=0 to fail the run)');
   } else {
     console.log('\n❌ Deprecated packages found');
   }
@@ -1172,7 +1257,10 @@ async function runDeprecatedCommand(command) {
 
   const format = parseFormatFlag(['pretty', 'json'], 'pretty');
   const offline = argv.includes('--offline');
-  const failOnDeprecated = argv.includes('--fail-on-deprecated');
+  // Deprecation isn't on the severity ladder, so the canonical gate spelling is
+  // `--fail-on count=0` (fail on any deprecation); `--fail-on-deprecated` is the
+  // deprecated alias for the same effect.
+  const failOnDeprecated = resolveFailOnDeprecated() || parseFailOn().count === 0;
   // Fail closed by default: a package the scan couldn't check must not pass as
   // clean. `--allow-unresolved` (or `--offline`) opts back into lenient behavior.
   const failOnUnresolved = !argv.includes('--allow-unresolved');
@@ -1238,7 +1326,7 @@ async function runRemediateCommand(command) {
   ensureFileExists(lockfilePath);
 
   const format = parseFormatFlag(['pretty', 'json'], 'pretty');
-  const minSeverity = parseMinSeverityFlag();
+  const minSeverity = resolveSeverityGate();
   const includeDeprecated = !argv.includes('--no-deprecated');
   const defaultRegistry = flagValue('--registry');
 
@@ -1308,7 +1396,9 @@ async function main() {
     return;
   }
 
-  if (argv.includes('-v') || argv.includes('--version')) {
+  // Version is long-only (`--version`); `-v` is intentionally NOT a version alias
+  // (canonical suite vocabulary: `-v` is never version).
+  if (argv.includes('--version')) {
     console.log(`npm-check version ${getVersion()}`);
     return;
   }

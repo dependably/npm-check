@@ -73,5 +73,14 @@ describe('Integration: CLI exit codes (suite convention)', () => {
     expect(help.code).toBe(0);
     const version = await runCli(['--version'], { cwd: emptyDir });
     expect(version.code).toBe(0);
+    expect(version.stdout).toMatch(/npm-check version/);
+  });
+
+  test('-v is NOT a version alias (version is long-only)', async () => {
+    // `-v` must not print the version banner; it falls through to the default
+    // report command, which exits 2 here because emptyDir has no lockfile.
+    const result = await runCli(['-v'], { cwd: emptyDir });
+    expect(result.stdout).not.toMatch(/npm-check version/);
+    expect(result.code).toBe(2);
   });
 });
