@@ -14,6 +14,7 @@ import { checkVulnerabilities } from './vuln.js';
 import { classifyRange } from './pinner.js';
 import { forEachPackageEntry } from './format-library.js';
 import { deriveRegistryBase, DEFAULT_REGISTRY, fetchLatestVersion } from './integrity.js';
+import { buildEnvelope } from './schema.js';
 
 export class RemediationError extends Error {
   constructor(message, code, context = {}) {
@@ -157,7 +158,7 @@ async function processFlagged(name, reasons, ctx) {
 
   const rangeType = classifyRange(direct.range);
   if (!['exact', 'caret', 'tilde'].includes(rangeType)) {
-    buckets.skipped.push({ package: name, section: direct.section, range: direct.range, reason: `${rangeType} range — bump manually` });
+    buckets.skipped.push({ package: name, section: direct.section, range: direct.range, reasons: reasonList, reason: `${rangeType} range — bump manually` });
     return;
   }
 
@@ -271,4 +272,107 @@ export async function remediateDependencies(lockfile, packageJson, options = {})
     warnings: buckets.warnings,
     changed: buckets.bumped.length > 0
   };
+}
+
+// A remediation finding's reason set decides its category/severity/ruleId. A vuln
+// reason outranks a deprecation (it cleared the severity threshold, default high);
+// a deprecation-only finding is a soft `low` signal. remediate's buckets don't
+// retain the advisory's own id/severity, so the ruleId is a stable category id.
+function severityForReasons(reasons) {
+  return reasons.includes('vulnerable') ? 'high' : 'low';
+}
+function categoryForReasons(reasons) {
+  return reasons.includes('vulnerable') ? 'vulnerability' : 'deprecated';
+}
+function ruleIdForReasons(reasons) {
+  return reasons.includes('vulnerable') ? 'vulnerable' : 'deprecated';
+}
+
+/**
+ * Wrap a remediateDependencies() result in the shared finding-schema envelope.
+ * Each flagged direct/transitive dependency becomes one Finding: a planned bump,
+ * transitive/latest-still-affected guidance, or a manual-range skip. Operational
+ * warnings (unreachable registry, unvetted-latest) and the `changed` flag ride
+ * under `extra`. Mirrors vuln.js's vulnEnvelope.
+ *
+ * @param {object} result   - a remediateDependencies() result
+ * @param {object} meta
+ * @param {string} meta.target    - the directory/manifest scanned, as given
+ * @param {number} [meta.scanned] - packages examined (0 when unknown)
+ * @param {number} [meta.exitCode]- the real process exit code (default 0)
+ * @returns {object} the shared envelope
+ */
+export function remediateEnvelope(result, { target, scanned = 0, exitCode = 0 } = {}) {
+  const findings = [];
+
+  for (const b of result.bumped) {
+    findings.push({
+      severity: severityForReasons(b.reasons),
+      ruleId: ruleIdForReasons(b.reasons),
+      category: categoryForReasons(b.reasons),
+      message: `${b.package} ${b.from} → ${b.to} (${b.reasons.join(', ')})`,
+      location: null,
+      remediation: `upgrade to ${b.latest}`,
+      extra: {
+        package: b.package,
+        installedVersion: b.fromVersion ?? null,
+        fixedVersion: b.latest,
+        section: b.section,
+        action: 'bump',
+        reasons: b.reasons
+      }
+    });
+  }
+
+  for (const g of result.guidance) {
+    const isLatest = g.kind === 'latest-still-affected';
+    findings.push({
+      severity: severityForReasons(g.reasons),
+      ruleId: ruleIdForReasons(g.reasons),
+      category: categoryForReasons(g.reasons),
+      message: `${g.package}: ${g.reasons.join(', ')}${isLatest ? '; latest still affected' : ' (transitive)'}`,
+      location: null,
+      remediation: isLatest
+        ? `latest (${g.range}) is still affected — no fix available yet`
+        : 'upgrade the parent dependency or add an npm override',
+      extra: {
+        package: g.package,
+        action: 'guidance',
+        kind: g.kind,
+        reasons: g.reasons,
+        ...(g.range ? { range: g.range } : {})
+      }
+    });
+  }
+
+  for (const s of result.skipped) {
+    const reasons = Array.isArray(s.reasons) ? s.reasons : [];
+    findings.push({
+      severity: severityForReasons(reasons),
+      ruleId: ruleIdForReasons(reasons),
+      category: categoryForReasons(reasons),
+      message: `${s.section}/${s.package} (${s.range}): ${s.reason}`,
+      location: null,
+      remediation: 'bump the range manually',
+      extra: {
+        package: s.package,
+        section: s.section,
+        action: 'skip',
+        range: s.range,
+        reason: s.reason,
+        reasons
+      }
+    });
+  }
+
+  return buildEnvelope({
+    target,
+    scanned,
+    findings,
+    exitCode,
+    extra: {
+      changed: result.changed,
+      warnings: result.warnings
+    }
+  });
 }

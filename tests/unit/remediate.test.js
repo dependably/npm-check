@@ -1,5 +1,5 @@
 // tests/unit/remediate.test.js
-import { remediateDependencies, RemediationError } from '../../src/remediate.js';
+import { remediateDependencies, RemediationError, remediateEnvelope } from '../../src/remediate.js';
 
 const HASH = 'sha512-' + 'A'.repeat(86) + '==';
 const reg = 'https://registry.npmjs.org';
@@ -134,5 +134,75 @@ describe('remediateDependencies', () => {
     await expect(remediateDependencies({ lockfileVersion: 1 }, {})).rejects.toThrow(RemediationError);
     await expect(remediateDependencies(null, {})).rejects.toThrow(RemediationError);
     await expect(remediateDependencies(lockfileWith({}), null)).rejects.toThrow(RemediationError);
+  });
+});
+
+describe('remediateEnvelope (shared finding schema)', () => {
+  it('wraps a result in the suite envelope with the six core keys', async () => {
+    const lockfile = lockfileWith(pkgEntry('eslint', '8.57.1'), { devDependencies: { eslint: '^8.0.0' } });
+    const packageJson = { name: 'demo', version: '1.0.0', devDependencies: { eslint: '^8.0.0' } };
+    const result = await remediateDependencies(lockfile, packageJson, {
+      fetchManifest: deprecate(['eslint']), fetchAdvisories: advise({}), fetchLatest: latest({ eslint: '9.39.0' })
+    });
+    const env = remediateEnvelope(result, { target: '.', scanned: 1, exitCode: 0 });
+
+    expect(env.tool).toBe('npm-check');
+    expect(typeof env.toolVersion).toBe('string');
+    expect(env.schemaVersion).toBe('1.0');
+    expect(env.target).toBe('.');
+    expect(env.summary.scanned).toBe(1);
+    expect(env.summary.findings).toBe(env.findings.length); // never truncated
+    expect(env.summary.exitCode).toBe(0); // remediate always exits 0
+  });
+
+  it('maps a planned bump to a Finding with the upgrade target under extra', async () => {
+    const lockfile = lockfileWith(pkgEntry('eslint', '8.57.1'), { devDependencies: { eslint: '^8.0.0' } });
+    const packageJson = { name: 'demo', version: '1.0.0', devDependencies: { eslint: '^8.0.0' } };
+    const result = await remediateDependencies(lockfile, packageJson, {
+      fetchManifest: deprecate(['eslint']), fetchAdvisories: advise({}), fetchLatest: latest({ eslint: '9.39.0' })
+    });
+    const env = remediateEnvelope(result, { target: '.', scanned: 1, exitCode: 0 });
+    const f = env.findings.find((x) => x.extra.package === 'eslint');
+
+    expect(f.severity).toBe('low'); // deprecation-only → low
+    expect(f.ruleId).toBe('deprecated');
+    expect(f.category).toBe('deprecated');
+    expect(f.location).toBeNull();
+    expect(f.remediation).toBe('upgrade to 9.39.0');
+    expect(f.extra).toMatchObject({
+      package: 'eslint', section: 'devDependencies', action: 'bump', fixedVersion: '9.39.0'
+    });
+    expect(f.extra.reasons).toContain('deprecated');
+  });
+
+  it('raises a vulnerable remediation to high severity / vulnerability category', async () => {
+    const lockfile = lockfileWith(pkgEntry('lodash', '4.17.20'), { dependencies: { lodash: '^4.17.20' } });
+    const packageJson = { name: 'demo', version: '1.0.0', dependencies: { lodash: '^4.17.20' } };
+    const result = await remediateDependencies(lockfile, packageJson, {
+      fetchManifest: deprecate([]), fetchAdvisories: advise({ lodash: [adv('high')] }), fetchLatest: latest({ lodash: '4.17.21' })
+    });
+    const env = remediateEnvelope(result, { target: '.', scanned: 1, exitCode: 0 });
+    const f = env.findings.find((x) => x.extra.package === 'lodash');
+    expect(f.severity).toBe('high');
+    expect(f.category).toBe('vulnerability');
+    expect(f.ruleId).toBe('vulnerable');
+    expect(f.extra.reasons).toContain('vulnerable');
+    expect(env.summary.bySeverity.high).toBeGreaterThanOrEqual(1);
+  });
+
+  it('maps a transitive flagged package to guidance with no bump', async () => {
+    const lockfile = lockfileWith(
+      { ...pkgEntry('eslint', '8.57.1'), 'node_modules/eslint/node_modules/minimatch': { version: '3.0.0', resolved: `${reg}/minimatch/-/minimatch-3.0.0.tgz`, integrity: HASH } },
+      { dependencies: { eslint: '^8.0.0' } }
+    );
+    const packageJson = { name: 'demo', version: '1.0.0', dependencies: { eslint: '^8.0.0' } };
+    const result = await remediateDependencies(lockfile, packageJson, {
+      fetchManifest: deprecate(['minimatch']), fetchAdvisories: advise({}), fetchLatest: latest({ eslint: '8.57.1' })
+    });
+    const env = remediateEnvelope(result, { target: '.', scanned: 2, exitCode: 0 });
+    const f = env.findings.find((x) => x.extra.package === 'minimatch');
+    expect(f.extra.action).toBe('guidance');
+    expect(f.extra.kind).toBe('transitive');
+    expect(f.remediation).toMatch(/parent|override/);
   });
 });

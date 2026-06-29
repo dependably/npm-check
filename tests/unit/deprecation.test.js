@@ -1,5 +1,5 @@
 // tests/unit/deprecation.test.js
-import { checkDeprecations, DeprecationError } from '../../src/deprecation.js';
+import { checkDeprecations, DeprecationError, deprecationEnvelope } from '../../src/deprecation.js';
 
 const HASH_A = 'sha512-' + 'A'.repeat(86) + '==';
 
@@ -187,5 +187,63 @@ describe('checkDeprecations', () => {
   it('rejects v1 lockfiles', async () => {
     await expect(checkDeprecations({ lockfileVersion: 1, dependencies: {} }, {}))
       .rejects.toThrow(DeprecationError);
+  });
+});
+
+describe('deprecationEnvelope (shared finding schema)', () => {
+  it('wraps a result in the suite envelope with the six core keys', async () => {
+    const lockfile = lockfileWith(pkg('old'));
+    const result = await checkDeprecations(lockfile, {
+      fetchManifest: fakeManifests({ old: 'use new-pkg instead' })
+    });
+    const env = deprecationEnvelope(result, { target: 'package-lock.json', exitCode: 0 });
+
+    expect(env.tool).toBe('npm-check');
+    expect(typeof env.toolVersion).toBe('string');
+    expect(env.schemaVersion).toBe('1.0');
+    expect(env.target).toBe('package-lock.json');
+    expect(env.summary.scanned).toBe(result.scanned);
+    expect(env.summary.findings).toBe(env.findings.length); // never truncated
+    expect(env.summary.exitCode).toBe(0); // matches the real exit code
+  });
+
+  it('maps a default (warning) deprecation to a low-severity Finding', async () => {
+    const lockfile = lockfileWith(pkg('old'));
+    const result = await checkDeprecations(lockfile, {
+      fetchManifest: fakeManifests({ old: 'use new-pkg instead' })
+    });
+    const env = deprecationEnvelope(result, { target: 'package-lock.json', exitCode: 0 });
+    expect(env.findings).toHaveLength(1);
+    const f = env.findings[0];
+    expect(f.severity).toBe('low'); // a deprecation warning is a soft signal
+    expect(f.ruleId).toBe('deprecated');
+    expect(f.category).toBe('deprecated');
+    expect(f.message).toBe('old@1.0.0: use new-pkg instead');
+    expect(f.location).toBeNull(); // package-level, not file-scoped
+    expect(f.remediation).toBe('replace deprecated package');
+    expect(f.extra).toEqual({ package: 'old', installedVersion: '1.0.0', gate: 'warn' });
+    expect(env.summary.bySeverity).toEqual({ critical: 0, high: 0, moderate: 0, low: 1, info: 0 });
+  });
+
+  it('raises a found deprecation to high severity under failOnDeprecated', async () => {
+    const lockfile = lockfileWith(pkg('old'));
+    const result = await checkDeprecations(lockfile, {
+      failOnDeprecated: true, fetchManifest: fakeManifests({ old: 'gone' })
+    });
+    const env = deprecationEnvelope(result, { target: 'package-lock.json', exitCode: 1 });
+    expect(env.findings).toHaveLength(1);
+    expect(env.findings[0].severity).toBe('high');
+    expect(env.findings[0].extra.gate).toBe('error');
+    expect(env.summary.exitCode).toBe(1);
+  });
+
+  it('keeps unresolved scan state under extra with zero deprecation findings', async () => {
+    const lockfile = lockfileWith(pkg('mystery'));
+    const result = await checkDeprecations(lockfile, { fetchManifest: () => Promise.resolve(null) });
+    const env = deprecationEnvelope(result, { target: 'package-lock.json', exitCode: 1 });
+    expect(env.findings).toHaveLength(0); // unresolved entries are NOT deprecation findings
+    expect(env.summary.findings).toBe(0);
+    expect(env.extra.scan.unresolved).toBe(1);
+    expect(env.extra.scan.valid).toBe(false); // fail-closed: scan couldn't complete
   });
 });

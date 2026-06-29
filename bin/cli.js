@@ -13,8 +13,8 @@ import { createBackup, listBackups, restoreFromLatestBackup, cleanOldBackups, Ba
 import { createProgressBar } from '../src/progress-reporter.js';
 import { checkIntegrity, checkLicenses } from '../src/checker.js';
 import { checkVulnerabilities, vulnEnvelope } from '../src/vuln.js';
-import { checkDeprecations } from '../src/deprecation.js';
-import { remediateDependencies } from '../src/remediate.js';
+import { checkDeprecations, deprecationEnvelope } from '../src/deprecation.js';
+import { remediateDependencies, remediateEnvelope } from '../src/remediate.js';
 import { detectLockfileVersion, detectLockfileFlavor } from '../src/format-library.js';
 import { validatePnpmWorkspace } from '../src/pnpm-workspace-validator.js';
 import { fixChecksums } from '../src/checksum-fixer.js';
@@ -39,25 +39,31 @@ Usage:
   (report/integrity/vuln/deprecated); the write/transform commands are npm-only.
 
 Commands:
-  report [file]              Run ALL checks and print one grouped report (default)
-  validate [file]            Validate package-lock.json, package.json, and .npmrc
-  migrate [file] [target]    Migrate to target version (1, 2, or 3; default: 3)
-  upgrade [file]             Upgrade lockfile to version 3 (alias for migrate 3)
-  upgrade-hashes [file]      Upgrade integrity hashes sha1→sha512
-  fix-checksums [file]       Fill missing/placeholder/sha1 hashes from the registry
-  pin [dir]                  Pin ^/~ ranges in package.json to lockfile versions
-  prune [file]               Remove orphaned packages unreachable from the dependency graph
-  unused [dir]               Flag declared dependencies the application never imports
-  audit [file]               Lint lockfile for best practices (non-zero exit on failure)
-  vuln [file]                Scan locked packages for known vulnerabilities (registry advisories)
-  deprecated [file]          Scan locked packages for deprecation notices (the npm ci warnings)
-  remediate [dir]            Bump direct deps that are deprecated/vulnerable to latest (then npm install)
-  dedupe [file]              Deduplicate packages in lockfile
-  fix [file] [--write]       Run automated fixer with optional write
-  check [file]               Verify integrity hashes and licenses
-  backups [file]             List all backups for a file
-  restore [file]             Restore from latest backup
-  clean-backups [file]       Clean old backup files with optional --keep N
+
+  Read & report (inspect; never mutate the lockfile):
+    report [file]            Run ALL checks and print one grouped report (default)
+    validate [file]          Validate package-lock.json, package.json, and .npmrc
+    vuln [file]              Scan locked packages for known vulnerabilities (registry advisories)
+    deprecated [file]        Scan locked packages for deprecation notices (the npm ci warnings)
+    check [file]             Verify integrity hashes and licenses
+    audit [file]             Lint lockfile for best practices (non-zero exit on failure)
+    unused [dir]             Flag declared dependencies the application never imports
+
+  Fix & transform (npm-only; mutate the lockfile with --write):
+    fix [file] [--write]     Run automated fixer with optional write
+    fix-checksums [file]     Fill missing/placeholder/sha1 hashes from the registry
+    upgrade-hashes [file]    Upgrade integrity hashes sha1→sha512
+    migrate [file] [target]  Migrate to target version (1, 2, or 3; default: 3)
+                             (alias: upgrade — \`npm-check upgrade\` == \`migrate 3\`)
+    pin [dir]                Pin ^/~ ranges in package.json to lockfile versions
+    prune [file]             Remove orphaned packages unreachable from the dependency graph
+    dedupe [file]            Deduplicate packages in lockfile
+    remediate [dir]          Bump direct deps that are deprecated/vulnerable to latest (then npm install)
+
+  Backups:
+    backups [file]           List all backups for a file
+    restore [file]           Restore from latest backup
+    clean-backups [file]     Clean old backup files with optional --keep N
 
 CI Gate (the one mechanism — repeatable):
   --fail-on severity=<level> Fail if any finding is at/above the level
@@ -105,7 +111,7 @@ Vuln Options:
   --registry <url>           Registry for entries without a derivable base
 
 Deprecated Options:
-  --format pretty|json       Output format (default: pretty)
+  --format human|json        Output format (default: human; json emits the shared finding schema)
   --offline                  Skip the scan (report everything as skipped)
   --fail-on ...              Fail the run when a locked package is deprecated
                              (--fail-on-deprecated is a deprecated alias; default: warn)
@@ -125,7 +131,7 @@ Remediate Options:
   --write                    Apply the bumps to package.json + lockfile root (backs up first)
   --fail-on severity=<level> Advisory level that counts a dep as vulnerable (default: high)
   --no-deprecated            Don't treat deprecated direct deps as remediation targets
-  --format pretty|json       Output format (default: pretty)
+  --format human|json        Output format (default: human; json emits the shared finding schema)
   --registry <url>           Registry for entries without a derivable base
   (only DIRECT deps are bumped; transitive findings are reported as guidance.
    Run 'npm install' afterward to re-resolve the tree.)
@@ -1255,7 +1261,7 @@ async function runDeprecatedCommand(command) {
   const filePath = getFilePath(argv[1]);
   requireLockfileOrExit2(filePath, 'deprecated');
 
-  const format = parseFormatFlag(['pretty', 'json'], 'pretty');
+  const format = parseFormatFlag(['human', 'json'], 'human');
   const offline = argv.includes('--offline');
   // Deprecation isn't on the severity ladder, so the canonical gate spelling is
   // `--fail-on count=0` (fail on any deprecation); `--fail-on-deprecated` is the
@@ -1267,10 +1273,10 @@ async function runDeprecatedCommand(command) {
   const { concurrency, timeoutMs, defaultRegistry } = parseNetworkFlags(2);
 
   const lockfile = parseLockfile(filePath);
-  const onProgress = format === 'pretty' ? makeProgressReporter() : null;
+  const onProgress = format === 'human' ? makeProgressReporter() : null;
 
   try {
-    if (format === 'pretty' && !offline) console.log('📉 Scanning locked packages for deprecation notices…');
+    if (format === 'human' && !offline) console.log('📉 Scanning locked packages for deprecation notices…');
     const result = await checkDeprecations(lockfile, {
       concurrency, timeoutMs, offline, failOnDeprecated, failOnUnresolved, onProgress,
       ...registryOption(defaultRegistry)
@@ -1278,13 +1284,16 @@ async function runDeprecatedCommand(command) {
 
     if (onProgress) clearProgressLine();
 
+    const exitCode = result.valid ? 0 : 1;
     if (format === 'json') {
-      console.log(JSON.stringify(result, null, 2));
+      // The shared finding-schema envelope is the ONLY thing on stdout in json mode.
+      const target = path.relative(process.cwd(), filePath) || filePath;
+      console.log(JSON.stringify(deprecationEnvelope(result, { target, exitCode }), null, 2));
     } else {
       printDeprecatedResult(result, failOnUnresolved);
     }
 
-    process.exit(result.valid ? 0 : 1);
+    process.exit(exitCode);
   } catch (error) {
     handleError(error, `${command} command failed`);
   }
@@ -1325,7 +1334,7 @@ async function runRemediateCommand(command) {
   ensureFileExists(packageJsonPath);
   ensureFileExists(lockfilePath);
 
-  const format = parseFormatFlag(['pretty', 'json'], 'pretty');
+  const format = parseFormatFlag(['human', 'json'], 'human');
   const minSeverity = resolveSeverityGate();
   const includeDeprecated = !argv.includes('--no-deprecated');
   const defaultRegistry = flagValue('--registry');
@@ -1334,10 +1343,10 @@ async function runRemediateCommand(command) {
   const packageJson = JSON.parse(packageJsonRaw);
   const lockfile = parseLockfile(lockfilePath);
 
-  const onProgress = format === 'pretty' ? makeProgressReporter() : null;
+  const onProgress = format === 'human' ? makeProgressReporter() : null;
 
   try {
-    if (format === 'pretty') console.log('🩹 Scanning for remediable direct dependencies…');
+    if (format === 'human') console.log('🩹 Scanning for remediable direct dependencies…');
     const result = await remediateDependencies(lockfile, packageJson, {
       minSeverity, includeDeprecated, onProgress,
       ...registryOption(defaultRegistry)
@@ -1345,7 +1354,12 @@ async function runRemediateCommand(command) {
     if (onProgress) clearProgressLine();
 
     if (format === 'json') {
-      console.log(JSON.stringify(result, null, 2));
+      // The shared finding-schema envelope is the ONLY thing on stdout in json mode.
+      // remediate is an action command, not a CI gate — it always exits 0.
+      const target = path.relative(process.cwd(), dir) || dir;
+      const scanned = lockfile && lockfile.packages && typeof lockfile.packages === 'object'
+        ? Object.keys(lockfile.packages).filter((k) => k !== '').length : 0;
+      console.log(JSON.stringify(remediateEnvelope(result, { target, scanned, exitCode: 0 }), null, 2));
       process.exit(0);
     }
 

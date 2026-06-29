@@ -12,6 +12,7 @@
 import { createProgressReporter } from './progress-reporter.js';
 import { forEachPackageEntry } from './format-library.js';
 import { DEFAULT_REGISTRY, fetchPackumentManifest } from './integrity.js';
+import { buildEnvelope } from './schema.js';
 
 /**
  * Custom error class for deprecation-scan operations
@@ -262,4 +263,63 @@ export async function checkDeprecations(lockfileData, options = {}) {
   if (reporter) reporter.finish();
 
   return results;
+}
+
+/**
+ * Map one deprecation notice (from results.errors/warnings) into the suite's shared
+ * Finding shape. Deprecation is not itself on the severity ladder, so the gate bucket
+ * (error when failOnDeprecated, else warn) becomes a top-level ladder string the same
+ * way report.js maps it — error→`high`, warn→`low` — and rides on under `extra.gate`.
+ * `category` is `deprecated`; `location` is null (a deprecation is package-level).
+ */
+function toSchemaFinding(f, gate) {
+  return {
+    severity: gate === 'error' ? 'high' : 'low',
+    ruleId: 'deprecated',
+    category: 'deprecated',
+    message: `${f.package}@${f.version}: ${f.message}`,
+    location: null, // a deprecation notice is not file-scoped
+    remediation: 'replace deprecated package',
+    extra: {
+      package: f.package,
+      installedVersion: f.version,
+      gate
+    }
+  };
+}
+
+/**
+ * Wrap a checkDeprecations() result in the shared finding-schema envelope.
+ * `findings` is the COMPLETE list of deprecation notices (errors that carry a
+ * message — i.e. the failOnDeprecated case — plus warnings); scan-completeness
+ * state (clean/unresolved/skipped, which drives the fail-closed gate) is preserved
+ * under `extra.scan` so nothing is lost. Mirrors vuln.js's vulnEnvelope.
+ *
+ * @param {object} result   - a checkDeprecations() result
+ * @param {object} meta
+ * @param {string} meta.target   - the lockfile path scanned, as given
+ * @param {number} meta.exitCode - the real process exit code (0/1/2)
+ * @returns {object} the shared envelope
+ */
+export function deprecationEnvelope(result, { target, exitCode }) {
+  const findings = [
+    ...result.errors.filter((e) => e.message).map((e) => toSchemaFinding(e, 'error')),
+    ...result.warnings.map((w) => toSchemaFinding(w, 'warn'))
+  ];
+  return buildEnvelope({
+    target,
+    scanned: result.scanned,
+    findings,
+    exitCode,
+    extra: {
+      scan: {
+        deprecated: result.deprecated,
+        clean: result.clean,
+        unresolved: result.unresolved,
+        skipped: result.skipped,
+        valid: result.valid,
+        unresolvedItems: result.unresolvedItems
+      }
+    }
+  });
 }
