@@ -69,7 +69,8 @@ Report Options:
   --format pretty|json       Output format (default: pretty)
   --strict                   Treat warnings as failures
   --max-warnings N           Fail if warnings exceed N (-1 = unlimited)
-  --fail-on-unresolved       Fail when integrity can't be verified (registry down/missing)
+  --allow-unresolved         Don't fail when a registry-backed scan can't complete
+                             (registry down / endpoint unsupported). Default: FAIL CLOSED
   --fail-on-deprecated       Fail when a locked package is deprecated (default: warn)
   --concurrency / --timeout / --registry / --licenses-csv   (as in Check Options)
 
@@ -82,13 +83,15 @@ Check Options:
   --concurrency N            Parallel registry requests for hash check (default: 8)
   --timeout MS               Per-request timeout in milliseconds (default: 10000)
   --registry <url>           Registry for entries without a derivable base
-  --fail-on-unresolved       Fail when an entry can't be verified (registry down/missing)
+  --allow-unresolved         Don't fail on entries that can't be verified (default: FAIL CLOSED)
 
 Vuln Options:
   --min-severity <level>     Severity that fails the run (info|low|moderate|high|critical; default: high)
   --format pretty|json       Output format (default: pretty)
   --offline                  Skip the scan (report everything as skipped)
-  --fail-on-unresolved       Fail when a package can't be checked (registry down/unsupported)
+  --allow-unresolved         Don't fail on packages that can't be checked
+                             (registry down/unsupported). Default: FAIL CLOSED — a scan
+                             that couldn't run never reports "clean"
   --concurrency N            Parallel registry requests (default: 8)
   --timeout MS               Per-request timeout in milliseconds (default: 10000)
   --registry <url>           Registry for entries without a derivable base
@@ -97,7 +100,7 @@ Deprecated Options:
   --format pretty|json       Output format (default: pretty)
   --offline                  Skip the scan (report everything as skipped)
   --fail-on-deprecated       Fail the run when a locked package is deprecated (default: warn)
-  --fail-on-unresolved       Fail when a package can't be checked (registry down/missing)
+  --allow-unresolved         Don't fail on packages that can't be checked (default: FAIL CLOSED)
   --concurrency N            Parallel registry requests (default: 8)
   --timeout MS               Per-request timeout in milliseconds (default: 10000)
   --registry <url>           Registry for entries without a derivable base
@@ -394,7 +397,9 @@ function parseReportOptions() {
     license: !argv.includes('--no-license'),
     vuln: !argv.includes('--offline') && !argv.includes('--no-vuln'),
     deprecated: !argv.includes('--offline') && !argv.includes('--no-deprecated'),
-    failOnUnresolved: argv.includes('--fail-on-unresolved'),
+    // Fail closed by default: a registry-backed scan that couldn't complete must not
+    // pass the report. `--allow-unresolved` opts back into the old lenient behavior.
+    failOnUnresolved: !argv.includes('--allow-unresolved'),
     failOnDeprecated: argv.includes('--fail-on-deprecated'),
     minSeverity: parseMinSeverityFlag(),
     concurrency: parsePositiveIntFlag('--concurrency', 8, '--concurrency', 2),
@@ -962,8 +967,10 @@ function printHashResult(hashResult, failOnUnresolved) {
     hashResult.unresolvedItems.forEach(item => {
       console.log(`     • ${item.package}@${item.version}: ${item.reason}`);
     });
-    if (!failOnUnresolved) {
-      console.log('   (unresolved entries do not fail the check; pass --fail-on-unresolved to fail closed)');
+    if (failOnUnresolved) {
+      console.log('   (unresolved entries fail the check — they could not be verified; pass --allow-unresolved to treat them as non-fatal)');
+    } else {
+      console.log('   (unresolved entries are NOT failing the check because --allow-unresolved is set)');
     }
   }
 }
@@ -997,7 +1004,9 @@ async function runCheckCommand(command) {
   const checkType = parseCheckType();
   const strict = argv.includes('--strict');
   const licensesCsv = flagValue('--licenses-csv') || './approved-licenses.csv';
-  const failOnUnresolved = argv.includes('--fail-on-unresolved');
+  // Fail closed by default: an entry we couldn't verify against the registry must
+  // not pass as "verified". `--allow-unresolved` opts back into lenient behavior.
+  const failOnUnresolved = !argv.includes('--allow-unresolved');
   // Registry-verification flags (hash check)
   const { concurrency, timeoutMs, defaultRegistry } = parseNetworkFlags();
 
@@ -1058,11 +1067,13 @@ function printVulnResult(result, minSeverity, failOnUnresolved) {
     result.unresolvedItems.forEach(item => {
       console.log(`     • ${item.package}@${item.version}: ${item.reason}`);
     });
-    if (!failOnUnresolved) {
-      console.log('   (unresolved entries do not fail the scan; pass --fail-on-unresolved to fail closed)');
+    if (failOnUnresolved) {
+      console.log('   (unresolved entries FAIL the scan — these packages could not be checked; pass --allow-unresolved to treat them as non-fatal)');
+    } else {
+      console.log('   (unresolved entries are NOT failing the scan because --allow-unresolved is set)');
     }
   }
-  console.log(result.valid ? '\n✅ No known vulnerabilities at/above the threshold' : '\n❌ Known vulnerabilities found');
+  console.log(result.valid ? '\n✅ No known vulnerabilities at/above the threshold' : '\n❌ Scan failed (vulnerabilities found or packages could not be scanned)');
 }
 
 async function runVulnCommand(command) {
@@ -1072,7 +1083,10 @@ async function runVulnCommand(command) {
   const format = parseFormatFlag(['pretty', 'json'], 'pretty');
   const minSeverity = parseMinSeverityFlag();
   const offline = argv.includes('--offline');
-  const failOnUnresolved = argv.includes('--fail-on-unresolved');
+  // Fail closed by default: a package the scan couldn't check (registry down /
+  // endpoint unsupported) must not pass as "no vulnerabilities". Opt out with
+  // `--allow-unresolved` (or skip the network entirely with `--offline`).
+  const failOnUnresolved = !argv.includes('--allow-unresolved');
   const { concurrency, timeoutMs, defaultRegistry } = parseNetworkFlags(2);
 
   const lockfile = parseLockfile(filePath);
@@ -1124,11 +1138,15 @@ function printDeprecatedResult(result, failOnUnresolved) {
     result.unresolvedItems.forEach(item => {
       console.log(`     • ${item.package}@${item.version}: ${item.reason}`);
     });
-    if (!failOnUnresolved) {
-      console.log('   (unresolved entries do not fail the scan; pass --fail-on-unresolved to fail closed)');
+    if (failOnUnresolved) {
+      console.log('   (unresolved entries FAIL the scan — these packages could not be checked; pass --allow-unresolved to treat them as non-fatal)');
+    } else {
+      console.log('   (unresolved entries are NOT failing the scan because --allow-unresolved is set)');
     }
   }
-  if (result.deprecated === 0) {
+  if (!result.valid && result.deprecated === 0) {
+    console.log('\n❌ Scan incomplete — some packages could not be checked (see unresolved above)');
+  } else if (result.deprecated === 0) {
     console.log('\n✅ No deprecated packages found');
   } else if (result.valid) {
     console.log('\n⚠️  Deprecated packages found (warnings; pass --fail-on-deprecated to fail the run)');
@@ -1144,7 +1162,9 @@ async function runDeprecatedCommand(command) {
   const format = parseFormatFlag(['pretty', 'json'], 'pretty');
   const offline = argv.includes('--offline');
   const failOnDeprecated = argv.includes('--fail-on-deprecated');
-  const failOnUnresolved = argv.includes('--fail-on-unresolved');
+  // Fail closed by default: a package the scan couldn't check must not pass as
+  // clean. `--allow-unresolved` (or `--offline`) opts back into lenient behavior.
+  const failOnUnresolved = !argv.includes('--allow-unresolved');
   const { concurrency, timeoutMs, defaultRegistry } = parseNetworkFlags(2);
 
   const lockfile = parseLockfile(filePath);

@@ -168,6 +168,40 @@ describe('runReport', () => {
     expect(vuln.findings.some((f) => /Prototype pollution/.test(f.message))).toBe(true);
   });
 
+  it('fails the report by default when the vuln scan cannot complete (registry error)', async () => {
+    const report = await runReport(
+      { lockfile: cleanLockfile(), packageJson: cleanPackageJson(), filePath: 'package-lock.json' },
+      baseOpts({ fetchAdvisories: () => Promise.reject(new Error('ECONNREFUSED')) })
+    );
+    expect(report.summary.pass).toBe(false);
+    expect(report.summary.errors).toBeGreaterThanOrEqual(1);
+    const vuln = report.sections.find((s) => s.id === 'vuln');
+    expect(vuln.status).toBe('error');
+    expect(vuln.findings.some((f) => /could not scan/.test(f.message))).toBe(true);
+  });
+
+  it('fails the report by default when integrity cannot be verified (registry error)', async () => {
+    const report = await runReport(
+      { lockfile: cleanLockfile(), packageJson: cleanPackageJson(), filePath: 'package-lock.json' },
+      baseOpts({ fetchIntegrity: () => Promise.reject(new Error('ETIMEDOUT')) })
+    );
+    expect(report.summary.pass).toBe(false);
+    const integrity = report.sections.find((s) => s.id === 'integrity');
+    expect(integrity.status).toBe('error');
+  });
+
+  it('downgrades an incomplete scan to a warning under --allow-unresolved (failOnUnresolved:false)', async () => {
+    const report = await runReport(
+      { lockfile: cleanLockfile(), packageJson: cleanPackageJson(), filePath: 'package-lock.json' },
+      baseOpts({ failOnUnresolved: false, fetchAdvisories: () => Promise.reject(new Error('ECONNREFUSED')) })
+    );
+    // maxWarnings defaults to -1 (unlimited) → warnings alone still pass
+    expect(report.summary.pass).toBe(true);
+    expect(report.summary.errors).toBe(0);
+    const vuln = report.sections.find((s) => s.id === 'vuln');
+    expect(vuln.status).toBe('warn');
+  });
+
   it('shows allowed/blocked install-script counts for an npm v12 (allowScripts) file', async () => {
     const lockfile = cleanLockfile();
     lockfile.packages['node_modules/good-pkg'].hasInstallScript = true;

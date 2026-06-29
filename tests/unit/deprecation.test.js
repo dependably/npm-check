@@ -82,33 +82,39 @@ describe('checkDeprecations', () => {
     expect(result.warnings[0].message).toBe('deprecated');
   });
 
-  it('marks packages unresolved (non-fatal) when the registry 404s', async () => {
+  // P0 fail-closed: the registry couldn't return a manifest → the scan didn't
+  // complete for that package, so by default it must FAIL (never silently pass).
+  it('fails closed by default when the registry 404s (scan incomplete)', async () => {
     const lockfile = lockfileWith(pkg('gone'));
     const result = await checkDeprecations(lockfile, {
       fetchManifest: fakeManifests({ gone: null })
     });
-    expect(result.valid).toBe(true);
+    expect(result.valid).toBe(false);
     expect(result.unresolved).toBe(1);
+    expect(result.errors).toHaveLength(1);
     expect(result.unresolvedItems[0].reason).toMatch(/no manifest/);
   });
 
-  it('fails closed on unresolved when failOnUnresolved is set', async () => {
-    const lockfile = lockfileWith(pkg('gone'));
-    const result = await checkDeprecations(lockfile, {
-      failOnUnresolved: true, fetchManifest: fakeManifests({ gone: null })
-    });
-    expect(result.valid).toBe(false);
-    expect(result.errors).toHaveLength(1);
-  });
-
-  it('treats a network error as unresolved (not failed) by default', async () => {
+  it('fails closed by default when a network error aborts the scan', async () => {
     const lockfile = lockfileWith(pkg('good'));
     const result = await checkDeprecations(lockfile, {
       fetchManifest: () => Promise.reject(new Error('ETIMEDOUT'))
     });
+    expect(result.valid).toBe(false);
+    expect(result.unresolved).toBe(1);
+    expect(result.errors).toHaveLength(1);
+    expect(result.unresolvedItems[0].reason).toMatch(/unreachable/);
+  });
+
+  // Explicit opt-out (CLI: --allow-unresolved) keeps unresolved non-fatal.
+  it('keeps unresolved non-fatal when failOnUnresolved is opted out', async () => {
+    const lockfile = lockfileWith(pkg('gone'));
+    const result = await checkDeprecations(lockfile, {
+      failOnUnresolved: false, fetchManifest: fakeManifests({ gone: null })
+    });
     expect(result.valid).toBe(true);
     expect(result.unresolved).toBe(1);
-    expect(result.unresolvedItems[0].reason).toMatch(/unreachable/);
+    expect(result.errors).toHaveLength(0);
   });
 
   it('does no network work when offline', async () => {

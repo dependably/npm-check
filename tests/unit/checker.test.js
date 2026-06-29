@@ -277,7 +277,9 @@ describe('checkIntegrity', () => {
     expect(result.errors[0].actual).toBe(HASH_A);   // lockfile
   });
 
-  it('marks unresolved (not failed) when the registry has no hash', async () => {
+  // P0 fail-closed: the registry has no authoritative hash → integrity could not be
+  // verified, so by default the run FAILS (an unverifiable entry is not "verified").
+  it('fails closed by default when the registry has no hash', async () => {
     const lockfile = {
       lockfileVersion: 3,
       packages: {
@@ -288,13 +290,14 @@ describe('checkIntegrity', () => {
       }
     };
     const result = await checkIntegrity(lockfile, { fetchIntegrity: fakeRegistry({}) });
-    expect(result.valid).toBe(true);
+    expect(result.valid).toBe(false);
     expect(result.unresolved).toBe(1);
-    expect(result.failed).toBe(0);
+    expect(result.failed).toBe(1);
     expect(result.unresolvedItems[0].package).toBe('ghost');
   });
 
-  it('fails closed on unresolved when failOnUnresolved is set', async () => {
+  // Explicit opt-out (CLI: --allow-unresolved) keeps unresolved entries non-fatal.
+  it('keeps unresolved non-fatal when failOnUnresolved is opted out', async () => {
     const lockfile = {
       lockfileVersion: 3,
       packages: {
@@ -304,12 +307,13 @@ describe('checkIntegrity', () => {
         }
       }
     };
-    const result = await checkIntegrity(lockfile, { fetchIntegrity: fakeRegistry({}), failOnUnresolved: true });
-    expect(result.valid).toBe(false);
-    expect(result.failed).toBe(1);
+    const result = await checkIntegrity(lockfile, { fetchIntegrity: fakeRegistry({}), failOnUnresolved: false });
+    expect(result.valid).toBe(true);
+    expect(result.unresolved).toBe(1);
+    expect(result.failed).toBe(0);
   });
 
-  it('treats a registry network error as unresolved by default', async () => {
+  it('fails closed by default when a registry network error aborts verification', async () => {
     const lockfile = {
       lockfileVersion: 3,
       packages: {
@@ -320,8 +324,9 @@ describe('checkIntegrity', () => {
       }
     };
     const result = await checkIntegrity(lockfile, { fetchIntegrity: () => Promise.reject(new Error('ETIMEDOUT')) });
-    expect(result.valid).toBe(true);
+    expect(result.valid).toBe(false);
     expect(result.unresolved).toBe(1);
+    expect(result.failed).toBe(1);
     expect(result.unresolvedItems[0].reason).toMatch(/unreachable/);
   });
 });

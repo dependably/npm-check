@@ -107,8 +107,11 @@ function groupCandidates(candidates) {
 }
 
 /**
- * Record an unresolved unit — registry unreachable or version not found — against
- * every lockfile entry that shares it (non-fatal unless failOnUnresolved).
+ * Record an unresolved unit — registry unreachable or version not found, i.e. the
+ * scan could not complete for these entries — against every lockfile entry that
+ * shares it. Fails the run when failOnUnresolved (the default), so a registry
+ * outage can never be mistaken for "no deprecations". This is the operational
+ * scan-failure case, distinct from a clean unit (manifest fetched, not deprecated).
  */
 function recordUnresolved(unit, networkError, failOnUnresolved, results) {
   const reason = networkError
@@ -185,11 +188,14 @@ async function processUnit(unit, fetcher, failOnDeprecated, failOnUnresolved, re
  *
  * Outcomes per entry:
  *   - deprecated: registry manifest carries a `deprecated` message
- *   - clean:      manifest fetched, not deprecated
- *   - unresolved: registry unreachable or version not found (non-fatal by default)
+ *   - clean:      manifest fetched, not deprecated (obtained data, nothing found)
+ *   - unresolved: registry unreachable or version not found — the scan could not
+ *                 complete (FAILS the run by default; fail-closed)
  *   - skipped:    not checkable this way (root/workspace/link/git/file/bundled, missing version)
  *
- * Deprecated entries are warnings by default; pass `failOnDeprecated` to make them errors.
+ * Deprecated entries are warnings by default (npm itself only warns); pass
+ * `failOnDeprecated` to make a *found* deprecation an error. Note this is separate
+ * from `failOnUnresolved`, which governs whether a scan that *couldn't run* fails.
  *
  * @param {object} lockfileData - Parsed lockfile data (v2/v3)
  * @param {object} options
@@ -197,8 +203,9 @@ async function processUnit(unit, fetcher, failOnDeprecated, failOnUnresolved, re
  * @param {number} options.timeoutMs - Per-request timeout (default: 10000)
  * @param {string} options.defaultRegistry - Registry for entries without a derivable base
  * @param {boolean} options.offline - Skip all network; report everything as skipped
- * @param {boolean} options.failOnDeprecated - Treat deprecated entries as failures (default: false)
- * @param {boolean} options.failOnUnresolved - Treat unresolved entries as failures
+ * @param {boolean} options.failOnDeprecated - Treat a *found* deprecation as a failure (default: false)
+ * @param {boolean} options.failOnUnresolved - Fail the run when the scan can't complete
+ *   (registry unreachable / version not found). Default true (fail closed); set false to tolerate.
  * @param {Function} options.fetchManifest - Injectable (name, version, registryBase) => Promise<object|null>
  * @param {Function} options.onProgress - Progress callback
  * @returns {Promise<object>} Results object with summary and details
@@ -210,7 +217,7 @@ export async function checkDeprecations(lockfileData, options = {}) {
     defaultRegistry = DEFAULT_REGISTRY,
     offline = false,
     failOnDeprecated = false,
-    failOnUnresolved = false,
+    failOnUnresolved = true, // fail closed: a scan that couldn't complete must not pass as "clean"
     fetchManifest = null,
     onProgress = null
   } = options;
