@@ -125,13 +125,14 @@ describe('Integration: CLI vocabulary (--format json replaces boolean --json)', 
     }
   }, 30000);
 
-  test('the retired boolean --json switch no longer produces JSON', async () => {
+  test('the retired boolean --json switch is now a rejected unknown option (exit 2)', async () => {
     const ws = await createTestWorkspace('unpinned-v3');
     try {
       const r = await runCli(['unused', ws.dir, '--json'], { cwd: ws.dir });
-      // --json is now an unknown flag: ignored, human output is printed instead.
-      expect(() => JSON.parse(r.stdout)).toThrow();
-      expect(r.stdout).toMatch(/Scanned/);
+      // --json was retired: rather than be silently ignored (a fail-open), an
+      // unrecognized option is a usage error — exit 2 with `unknown option`.
+      expect(r.code).toBe(2);
+      expect(r.stderr).toMatch(/unknown option: '--json'/);
     } finally {
       await ws.cleanup();
     }
