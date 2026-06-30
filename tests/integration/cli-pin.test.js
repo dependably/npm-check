@@ -63,6 +63,33 @@ describe('Integration: npm-check pin', () => {
     }
   }, 30000);
 
+  // Regression: a flag before the positional (`pin --write <path>`) must not
+  // shadow the path. Previously `pin` read only argv[1], so the flag landed
+  // there and the target silently fell back to cwd — writing to the wrong
+  // project. Run from an unrelated cwd, point at the target's lockfile *file*
+  // path, and assert only the target is rewritten.
+  test('--write before a lockfile path targets that project, not cwd', async () => {
+    const target = await createTestWorkspace('unpinned-v3');
+    const elsewhere = await createTestWorkspace('unpinned-v3');
+    try {
+      const cwdBefore = await readJSON(elsewhere.packageJsonPath);
+
+      const result = await runCli(['pin', '--write', target.lockfilePath], { cwd: elsewhere.dir });
+      expect(result.code).toBe(0);
+
+      // Target project was pinned…
+      const targetPkg = await readJSON(target.packageJsonPath);
+      expect(targetPkg.dependencies.lodash).toBe('4.17.21');
+
+      // …and the cwd project was left completely untouched.
+      const cwdAfter = await readJSON(elsewhere.packageJsonPath);
+      expect(cwdAfter).toEqual(cwdBefore);
+    } finally {
+      await target.cleanup();
+      await elsewhere.cleanup();
+    }
+  }, 30000);
+
   test('pinned project passes the audit pinned-versions rule', async () => {
     const workspace = await createTestWorkspace('unpinned-v3');
     try {

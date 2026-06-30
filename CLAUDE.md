@@ -177,6 +177,7 @@ Verification engine for package integrity and licenses:
 - Check licenses against approved CSV list
 - Distinguish between rejected, unknown, and approved licenses
 - Support strict mode for license enforcement
+- Reads each package's license from its installed `package.json`, falling back to the lockfile entry's own `license` field when the package isn't on disk (a partial `node_modules`) — so the check stays lockfile-first (like integrity/vuln/deprecated) instead of reporting `UNKNOWN` for every uninstalled entry the lockfile already describes
 
 **Key Functions:**
 - `checkIntegrity()` - Verify package hashes

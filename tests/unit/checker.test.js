@@ -607,6 +607,33 @@ describe('checkLicenses', () => {
     expect(result.warnings[0].reason).toBe('package-json-not-found');
   });
 
+  it('falls back to the lockfile license when the package is not installed', async () => {
+    fs.mkdirSync(NODE_MODULES_PATH, { recursive: true });
+    // Note: no package directory is created on disk for `uninstalled` — only the
+    // lockfile carries its license, as happens with a partial node_modules.
+    createLicensesCsv(CSV_PATH, ['ISC']);
+
+    const lockfile = {
+      packages: {
+        'node_modules/uninstalled': {
+          name: 'uninstalled',
+          version: '1.0.0',
+          license: 'ISC'
+        }
+      }
+    };
+
+    const result = await checkLicenses(lockfile, {
+      nodeModulesPath: NODE_MODULES_PATH,
+      csvPath: CSV_PATH,
+      strict: false
+    });
+
+    expect(result.valid).toBe(true);
+    expect(result.unknown).toBe(0);
+    expect(result.approved).toBe(1);
+  });
+
   it('should handle parenthesized SPDX expressions', async () => {
     fs.mkdirSync(NODE_MODULES_PATH, { recursive: true });
     createTestPackage(TEST_DIR, 'pkg', '(MIT OR Apache-2.0)');
