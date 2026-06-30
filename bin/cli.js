@@ -307,6 +307,50 @@ function parseFormatFlag(allowed, fallback, code = 2) {
   return raw;
 }
 
+// Every option token the CLI recognizes, split by whether it consumes the
+// following token as its value. Used by rejectUnknownOptions() to fail closed
+// on an unrecognized `-`/`--` token (a typo'd flag must never be silently
+// dropped — that is a fail-open that can disable a CI gate).
+//
+// VALUED flags consume the next argv token (`--format json`); its value must
+// NOT itself be treated as an unknown option. BOOLEAN flags stand alone.
+// Keep these in sync with the flags parsed throughout this file.
+const VALUED_OPTIONS = new Set([
+  '--format', '--config', '--fail-on', '--concurrency', '--timeout',
+  '--registry', '--licenses-csv', '--check', '--rule', '--keep',
+  // deprecated valued aliases (still parsed)
+  '--min-severity', '--max-warnings'
+]);
+const BOOLEAN_OPTIONS = new Set([
+  '--offline', '--allow-unresolved',
+  '--no-integrity', '--no-vuln', '--no-deprecated', '--no-license',
+  '--include-dev', '--include-peer', '--write', '--local-fallback',
+  '--version', '--help', '-h',
+  // deprecated boolean aliases (still parsed)
+  '--strict', '--fail-on-deprecated'
+]);
+
+// Reject any unrecognized option token, matching the unknown-command behavior
+// (and the .NET suite tools): print `unknown option: '<x>'` to stderr and exit 2
+// (a usage error). Positionals (the lockfile/dir/target), the VALUE that follows
+// a valued flag (`--format json`, `--registry <url>`), and recognized flags all
+// pass through untouched.
+function rejectUnknownOptions() {
+  for (let i = 0; i < argv.length; i++) {
+    const tok = argv[i];
+    if (typeof tok !== 'string' || !tok.startsWith('-') || tok === '-') {
+      continue; // positional / command / a bare '-'
+    }
+    if (VALUED_OPTIONS.has(tok)) {
+      i++; // skip this flag's value so a value like `-1` is never mis-read as a flag
+      continue;
+    }
+    if (BOOLEAN_OPTIONS.has(tok)) continue;
+    console.error(`unknown option: '${tok}'`);
+    process.exit(2);
+  }
+}
+
 const SEVERITIES = ['info', 'low', 'moderate', 'high', 'critical'];
 
 // Emit a one-line deprecation notice to stderr (never stdout, so machine output
@@ -1416,6 +1460,10 @@ async function main() {
     console.log(`npm-check version ${getVersion()}`);
     return;
   }
+
+  // Fail closed on a typo'd/unknown flag (exit 2) — a silently-dropped option
+  // could disable the CI gate. Runs after --help/--version so those still work.
+  rejectUnknownOptions();
 
   // Bare `npm-check` (no command, or only flags) runs the full report.
   const command = (!argv[0] || argv[0].startsWith('-')) ? 'report' : argv[0];

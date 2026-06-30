@@ -68,6 +68,42 @@ describe('Integration: CLI exit codes (suite convention)', () => {
     expect(result.stderr).toMatch(/Invalid --format/);
   });
 
+  // An UNKNOWN flag must be a usage error (exit 2), not silently dropped — a
+  // typo'd flag (e.g. `--fail-no severity=high`) could otherwise disable the CI
+  // gate while the run still exits 0 (a fail-open).
+  test.each(['vuln', 'report', 'deprecated', 'audit'])(
+    'exits 2 on an unknown flag (%s --bogusflag), not 0',
+    async (command) => {
+      const result = await runCli([command, '--offline', '--bogusflag'], { cwd: lockDir });
+      expect(result.code).toBe(2);
+      expect(result.stderr).toMatch(/unknown option: '--bogusflag'/);
+    },
+    30000
+  );
+
+  test('exits 2 on a typo of a real flag (--fail-no instead of --fail-on)', async () => {
+    const result = await runCli(['vuln', '--offline', '--fail-no', 'severity=high'], { cwd: lockDir });
+    expect(result.code).toBe(2);
+    expect(result.stderr).toMatch(/unknown option: '--fail-no'/);
+  });
+
+  // Recognized flags — including valued flags whose VALUE is a positional-looking
+  // token — must still parse cleanly (no false rejection of values/positionals).
+  test('recognized flags still parse: vuln --offline --format json --fail-on severity=high', async () => {
+    const result = await runCli(
+      ['vuln', 'package-lock.json', '--offline', '--format', 'json', '--fail-on', 'severity=high'],
+      { cwd: lockDir }
+    );
+    expect(result.code).toBe(0);
+    expect(() => JSON.parse(result.stdout)).not.toThrow();
+  }, 30000);
+
+  test('a positional lockfile path is not mistaken for an unknown option', async () => {
+    const result = await runCli(['audit', 'package-lock.json', '--offline'], { cwd: lockDir });
+    // exit 0 or 1 (findings) are both fine — the point is it is NOT a usage error.
+    expect(result.code).not.toBe(2);
+  }, 30000);
+
   test('--help and --version exit 0', async () => {
     const help = await runCli(['--help'], { cwd: emptyDir });
     expect(help.code).toBe(0);

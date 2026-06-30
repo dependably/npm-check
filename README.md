@@ -21,14 +21,34 @@ A comprehensive tool for validating, migrating, fixing, and updating npm `packag
 
 ## Installation
 
-Published to the private registry. Point the `@dependably` scope at it, then install:
+**From source (works today)** — clone the repo and link the `npm-check` bin onto
+your PATH. Requires Node.js ≥ 22 and npm ≥ 10:
+
+```bash
+git clone https://gitlab.northwardlabs.ca/moonlitlabs/npm-check.git
+cd npm-check
+npm install
+npm link            # puts the `npm-check` command on your PATH
+npm-check --version
+```
+
+`npm link` is reversible with `npm unlink -g @dependably/npm-check`. If you'd
+rather not touch your global prefix, install it globally from the checkout
+(`npm install -g .`) or just run the CLI directly without installing:
+
+```bash
+node bin/cli.js --help          # from inside the cloned repo
+```
+
+**Once published** — `@dependably/npm-check` is not yet on a public registry.
+When it is, point the `@dependably` scope at the registry and install globally:
 
 ```bash
 npm config set @dependably:registry https://dependably.northwardlabs.ca/
 npm install -g @dependably/npm-check
 ```
 
-The CLI is still invoked as `npm-check`.
+Either way the CLI is invoked as `npm-check`.
 
 ## Quick Start
 
