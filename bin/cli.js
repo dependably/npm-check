@@ -271,7 +271,7 @@ function makeProgressReporter() {
   let lastProgress = null;
   return (progress) => {
     if (!lastProgress || progress.percentage !== lastProgress.percentage) {
-      process.stdout.write(`\r${createProgressBar(progress)} ${progress.stage}`);
+      process.stderr.write(`\r${createProgressBar(progress)} ${progress.stage}`);
       lastProgress = progress;
     }
   };
@@ -329,6 +329,28 @@ const BOOLEAN_OPTIONS = new Set([
   // deprecated boolean aliases (still parsed)
   '--strict', '--fail-on-deprecated'
 ]);
+
+// Collect the positional arguments after the command word (argv[0]), correctly
+// skipping flags AND the value token that follows a valued flag. Reading a fixed
+// slot like argv[1] is a footgun: `pin --write <path>` puts the flag in argv[1],
+// so the path is never seen and a dir-oriented command silently falls back to
+// cwd — which once wrote to the wrong project. Always resolve a target through
+// this so flag order never changes which file is touched.
+function positionals() {
+  const out = [];
+  let i = 1; // skip argv[0], the command word
+  while (i < argv.length) {
+    const tok = argv[i];
+    if (typeof tok === 'string' && tok.startsWith('-') && tok !== '-') {
+      if (VALUED_OPTIONS.has(tok)) i++; // also skip this flag's value
+      i++;
+      continue;
+    }
+    out.push(tok);
+    i++;
+  }
+  return out;
+}
 
 // Reject any unrecognized option token, matching the unknown-command behavior
 // (and the .NET suite tools): print `unknown option: '<x>'` to stderr and exit 2
@@ -442,12 +464,21 @@ function registryOption(defaultRegistry) {
 
 // Clear the in-progress progress bar line.
 function clearProgressLine() {
-  process.stdout.write('\r' + ' '.repeat(80) + '\r');
+  process.stderr.write('\r' + ' '.repeat(80) + '\r');
 }
 
 // Resolve the directory argument for dir-oriented commands (pin/unused/remediate).
+// Accepts either a directory or a lockfile/package.json file path (deriving the
+// directory from it), so `pin path/to/package-lock.json` targets the right
+// project the same way the file-oriented commands do.
 function getDirArg() {
-  return argv[1] && !argv[1].startsWith('-') ? path.resolve(argv[1]) : process.cwd();
+  const pos = positionals()[0];
+  if (!pos) return process.cwd();
+  const resolved = path.resolve(pos);
+  if (fs.existsSync(resolved) && fs.statSync(resolved).isFile()) {
+    return path.dirname(resolved);
+  }
+  return resolved;
 }
 
 // Write `data` as pretty JSON to a file, creating a backup first.
@@ -553,8 +584,8 @@ function parseReportOptions() {
 }
 
 async function runReportCommand() {
-  // `report` takes its file from argv[1] only when invoked explicitly.
-  const filePath = getFilePath(argv[0] === 'report' ? argv[1] : undefined);
+  // `report` takes its file positional only when invoked explicitly.
+  const filePath = getFilePath(argv[0] === 'report' ? positionals()[0] : undefined);
   requireLockfileOrExit2(filePath, 'report');
 
   let report;
@@ -565,7 +596,7 @@ async function runReportCommand() {
     const packageJson = loadSiblingPackageJson(filePath);
 
     if ((opts.integrity || opts.vuln || opts.deprecated) && opts.format === 'human') {
-      console.log('🔎 Running all checks (querying the registry)…');
+      console.error('🔎 Running all checks (querying the registry)…');
     }
     const onProgress = opts.format === 'human' ? makeProgressReporter() : null;
 
@@ -628,7 +659,7 @@ function normalizeValidationResult(r) {
 }
 
 function runValidateCommand() {
-  const filePath = getFilePath(argv[1]);
+  const filePath = getFilePath(positionals()[0]);
   ensureFileExists(filePath);
   const dir = path.dirname(filePath);
 
@@ -664,17 +695,17 @@ function runValidateCommand() {
 }
 
 function runMigrateCommand() {
-  const filePath = getFilePath(argv[1]);
+  // `migrate [target] [file]` — the numeric target and the file path may appear
+  // in either order; split the positionals by shape rather than by fixed slot.
+  const pos = positionals();
+  const numericArg = pos.find((a) => /^\d+$/.test(a));
+  const fileArg = pos.find((a) => !/^\d+$/.test(a));
+  const filePath = getFilePath(fileArg);
   ensureFileExists(filePath);
   refuseIfPnpm(filePath, 'migrate');
 
   // Get target version (default: 3)
-  let target = 3;
-  if (argv[1] && argv[1].match(/^\d+$/) && !argv[1].startsWith('/')) {
-    target = parseInt(argv[1], 10);
-  } else if (argv[2] && argv[2].match(/^\d+$/)) {
-    target = parseInt(argv[2], 10);
-  }
+  const target = numericArg ? parseInt(numericArg, 10) : 3;
 
   const hasWrite = argv.includes('--write');
 
@@ -694,7 +725,7 @@ function runMigrateCommand() {
 }
 
 function runUpgradeCommand() {
-  const filePath = getFilePath(argv[1]);
+  const filePath = getFilePath(positionals()[0]);
   ensureFileExists(filePath);
   refuseIfPnpm(filePath, 'upgrade');
   const hasWrite = argv.includes('--write');
@@ -745,7 +776,7 @@ function printChecksumResult(result, hasWrite) {
 }
 
 async function runFixChecksumsCommand() {
-  const filePath = getFilePath(argv[1]);
+  const filePath = getFilePath(positionals()[0]);
   ensureFileExists(filePath);
   refuseIfPnpm(filePath, 'fix-checksums');
   const hasWrite = argv.includes('--write');
@@ -778,10 +809,7 @@ async function runFixChecksumsCommand() {
 
 function runPinCommand() {
   // pin operates on a directory containing both package.json and the lockfile
-  let dir = process.cwd();
-  if (argv[1] && !argv[1].startsWith('-')) {
-    dir = path.resolve(argv[1]);
-  }
+  const dir = getDirArg();
   const hasWrite = argv.includes('--write');
   const includePeer = argv.includes('--include-peer');
 
@@ -829,7 +857,7 @@ function runPinCommand() {
 }
 
 function runPruneCommand() {
-  const filePath = getFilePath(argv[1]);
+  const filePath = getFilePath(positionals()[0]);
   ensureFileExists(filePath);
   refuseIfPnpm(filePath, 'prune');
   const hasWrite = argv.includes('--write');
@@ -862,10 +890,7 @@ function runPruneCommand() {
 }
 
 function runUnusedCommand() {
-  let dir = process.cwd();
-  if (argv[1] && !argv[1].startsWith('-')) {
-    dir = path.resolve(argv[1]);
-  }
+  const dir = getDirArg();
   const includeDev = argv.includes('--include-dev');
   // Machine output is selected with `--format json` (the suite-wide spelling);
   // the old boolean `--json` switch is retired.
@@ -912,7 +937,7 @@ function runUnusedCommand() {
 }
 
 function runAuditCommand() {
-  const filePath = getFilePath(argv[1]);
+  const filePath = getFilePath(positionals()[0]);
 
   let report;
   try {
@@ -941,7 +966,7 @@ function runAuditCommand() {
 }
 
 function runUpgradeHashesCommand() {
-  const filePath = getFilePath(argv[1]);
+  const filePath = getFilePath(positionals()[0]);
   ensureFileExists(filePath);
   refuseIfPnpm(filePath, 'upgrade-hashes');
   const hasWrite = argv.includes('--write');
@@ -954,7 +979,7 @@ function runUpgradeHashesCommand() {
   const upgraded = upgradeIntegrityHashes(lockfile, { onProgress });
 
   // Clear progress line and show completion
-  process.stdout.write('\r' + ' '.repeat(80) + '\r');
+  clearProgressLine();
   console.log('\n✅ Upgraded integrity hashes');
 
   if (hasWrite) {
@@ -968,7 +993,7 @@ function runUpgradeHashesCommand() {
 }
 
 function runDedupeCommand() {
-  const filePath = getFilePath(argv[1]);
+  const filePath = getFilePath(positionals()[0]);
   ensureFileExists(filePath);
   refuseIfPnpm(filePath, 'dedupe');
   const hasWrite = argv.includes('--write');
@@ -983,7 +1008,7 @@ function runDedupeCommand() {
   const afterCount = deduped.packages ? Object.keys(deduped.packages).length : 0;
 
   // Clear progress line and show completion
-  process.stdout.write('\r' + ' '.repeat(80) + '\r');
+  clearProgressLine();
   console.log(`\n✅ Deduplication complete`);
   console.log(`   Packages: ${beforeCount} → ${afterCount} (removed ${beforeCount - afterCount})`);
   if (afterCount === beforeCount && beforeCount > 0) {
@@ -1002,7 +1027,7 @@ function runDedupeCommand() {
 }
 
 function runFixCommand() {
-  const filePath = getFilePath(argv[1]);
+  const filePath = getFilePath(positionals()[0]);
   ensureFileExists(filePath);
   refuseIfPnpm(filePath, 'fix');
   const hasWrite = argv.includes('--write');
@@ -1035,7 +1060,7 @@ function runFixCommand() {
 }
 
 function runBackupsCommand() {
-  const filePath = getFilePath(argv[1]);
+  const filePath = getFilePath(positionals()[0]);
   const fileName = path.basename(filePath);
 
   const backups = listBackups(fileName);
@@ -1051,7 +1076,7 @@ function runBackupsCommand() {
 }
 
 function runRestoreCommand() {
-  const filePath = getFilePath(argv[1]);
+  const filePath = getFilePath(positionals()[0]);
   ensureFileExists(filePath);
 
   restoreFromLatestBackup(filePath);
@@ -1059,7 +1084,7 @@ function runRestoreCommand() {
 }
 
 function runCleanBackupsCommand() {
-  const filePath = getFilePath(argv[1]);
+  const filePath = getFilePath(positionals()[0]);
   const fileName = path.basename(filePath);
 
   // Parse --keep flag
@@ -1148,7 +1173,7 @@ function printLicenseResult(licenseResult, strict) {
 }
 
 async function runCheckCommand(command) {
-  const filePath = getFilePath(argv[1]);
+  const filePath = getFilePath(positionals()[0]);
   ensureFileExists(filePath);
 
   const checkType = parseCheckType();
@@ -1227,7 +1252,7 @@ function printVulnResult(result, minSeverity, failOnUnresolved) {
 }
 
 async function runVulnCommand(command) {
-  const filePath = getFilePath(argv[1]);
+  const filePath = getFilePath(positionals()[0]);
   requireLockfileOrExit2(filePath, 'vuln');
 
   const format = parseFormatFlag(['human', 'json'], 'human');
@@ -1309,7 +1334,7 @@ function printDeprecatedResult(result, failOnUnresolved) {
 }
 
 async function runDeprecatedCommand(command) {
-  const filePath = getFilePath(argv[1]);
+  const filePath = getFilePath(positionals()[0]);
   requireLockfileOrExit2(filePath, 'deprecated');
 
   const format = parseFormatFlag(['human', 'json'], 'human');

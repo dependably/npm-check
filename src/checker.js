@@ -175,48 +175,42 @@ async function verifyPackageLicense(packagePath, approvedLicenses, nodeModulesPa
   const pkgName = packagePath.replace(/^node_modules\//, '');
   const pkgJsonPath = path.join(nodeModulesPath, pkgName, 'package.json');
 
-  // Check if package.json exists
-  if (!fs.existsSync(pkgJsonPath)) {
+  // Resolve the license preferring the installed package.json, but falling back
+  // to the lockfile's own `license` field when the package isn't on disk (a
+  // partial node_modules) or omits it. This keeps the license check lockfile-
+  // first — consistent with the integrity/vuln/deprecated checks, which all
+  // work without a full install — instead of reporting UNKNOWN for every
+  // uninstalled entry whose license the lockfile already records.
+  let license;
+  const pkgJsonExists = fs.existsSync(pkgJsonPath);
+  if (pkgJsonExists) {
+    try {
+      license = JSON.parse(fs.readFileSync(pkgJsonPath, 'utf8')).license;
+    } catch (e) {
+      return { valid: false, error: e.message, package: pkgName };
+    }
+  }
+  if (!license && pkgData && pkgData.license) {
+    license = pkgData.license;
+  }
+
+  if (!license) {
     return {
       valid: !strict,
+      package: pkgName,
       license: 'UNKNOWN',
       approved: false,
-      package: pkgName,
-      reason: 'package-json-not-found'
+      reason: pkgJsonExists ? 'no-license' : 'package-json-not-found'
     };
   }
 
-  try {
-    // Read license field from package.json
-    const pkgJson = JSON.parse(fs.readFileSync(pkgJsonPath, 'utf8'));
-    const license = pkgJson.license;
-
-    if (!license) {
-      return {
-        valid: !strict,
-        package: pkgName,
-        license: 'UNKNOWN',
-        approved: false,
-        reason: 'no-license'
-      };
-    }
-
-    // Check against approved list
-    const isApproved = isLicenseApproved(license, approvedLicenses);
-
-    return {
-      valid: isApproved,
-      package: pkgName,
-      license,
-      approved: isApproved
-    };
-  } catch (e) {
-    return {
-      valid: false,
-      error: e.message,
-      package: pkgName
-    };
-  }
+  const isApproved = isLicenseApproved(license, approvedLicenses);
+  return {
+    valid: isApproved,
+    package: pkgName,
+    license,
+    approved: isApproved
+  };
 }
 
 /**
