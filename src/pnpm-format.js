@@ -109,66 +109,82 @@ function classifyPnpmPackage(version, entry) {
  * @param {object} lockfile - Parsed pnpm lockfile
  * @param {function} callback - Called with each entry's info
  */
-export function forEachPnpmPackageEntry(lockfile, callback) {
+// Per-package registry config, read from `lockfile.__npmCheckMeta` (stamped by the
+// parser from the sibling .npmrc); absent meta falls back to public-registry defaults.
+function pnpmRegistryConfig(lockfile) {
   const meta = lockfile && lockfile.__npmCheckMeta;
-  const registryConfig = {
+  return {
     registry: (meta && meta.registry) || DEFAULT_REGISTRY,
     scopedRegistries: (meta && meta.scopedRegistries) || {}
   };
+}
 
-  // 1. Importers: the root project ('.') and each workspace package. These have no
-  //    integrity to verify; emit them so counts/iteration match the npm root+workspace
-  //    entries (the checkers skip both).
+// Emit one importer (the root project '.' or a workspace package). These have no
+// integrity to verify; emitting them keeps counts/iteration aligned with the npm
+// root+workspace entries (the checkers skip both).
+function emitPnpmImporter(importerKey, callback) {
+  const isRoot = importerKey === '.';
+  const node = { name: null, version: null, integrity: null, registryBase: null, kind: isRoot ? 'root' : 'workspace', path: importerKey };
+  callback({
+    key: importerKey,
+    entry: {},
+    name: null,
+    isRoot,
+    isWorkspaceSource: !isRoot,
+    isLink: false,
+    isBundled: false,
+    isGitDep: false,
+    isFileDep: false,
+    registryBase: null,
+    node
+  });
+}
+
+// Emit one resolved `packages` entry (keyed by `name@version`).
+function emitPnpmPackage(depPath, entry, registryConfig, callback) {
+  const { name, version } = parsePnpmDepPath(depPath);
+  const { kind, flags } = classifyPnpmPackage(version, entry);
+  const resolution = (entry && entry.resolution) || {};
+  const integrity = resolution.integrity || null;
+  const registryBase = kind === 'registry' ? resolvePnpmRegistryBase(name, registryConfig) : null;
+
+  // Synthesize an npm-shaped `entry` so the existing checkers read it unchanged:
+  // version + integrity are the fields they consult; `resolved` is null for pnpm
+  // registry deps (the registry comes from `registryBase`, not a URL).
+  const synthEntry = {
+    version: version || undefined,
+    integrity: integrity || undefined,
+    resolved: resolution.tarball || undefined,
+    deprecated: entry && entry.deprecated
+  };
+
+  callback({
+    key: depPath,
+    entry: synthEntry,
+    name,
+    isRoot: false,
+    isWorkspaceSource: false,
+    isLink: flags.isLink,
+    isBundled: flags.isBundled,
+    isGitDep: flags.isGitDep,
+    isFileDep: flags.isFileDep,
+    registryBase,
+    node: { name, version: version || null, integrity, registryBase, kind, path: depPath }
+  });
+}
+
+export function forEachPnpmPackageEntry(lockfile, callback) {
+  const registryConfig = pnpmRegistryConfig(lockfile);
+
+  // 1. Importers: the root project ('.') and each workspace package.
   const importers = (lockfile && lockfile.importers) || {};
   for (const importerKey of Object.keys(importers)) {
-    const isRoot = importerKey === '.';
-    const node = { name: null, version: null, integrity: null, registryBase: null, kind: isRoot ? 'root' : 'workspace', path: importerKey };
-    callback({
-      key: importerKey,
-      entry: {},
-      name: null,
-      isRoot,
-      isWorkspaceSource: !isRoot,
-      isLink: false,
-      isBundled: false,
-      isGitDep: false,
-      isFileDep: false,
-      registryBase: null,
-      node
-    });
+    emitPnpmImporter(importerKey, callback);
   }
 
   // 2. Packages: the resolved dependency set, keyed by `name@version`.
   const packages = (lockfile && lockfile.packages) || {};
   for (const [depPath, entry] of Object.entries(packages)) {
-    const { name, version } = parsePnpmDepPath(depPath);
-    const { kind, flags } = classifyPnpmPackage(version, entry);
-    const resolution = (entry && entry.resolution) || {};
-    const integrity = resolution.integrity || null;
-    const registryBase = kind === 'registry' ? resolvePnpmRegistryBase(name, registryConfig) : null;
-
-    // Synthesize an npm-shaped `entry` so the existing checkers read it unchanged:
-    // version + integrity are the fields they consult; `resolved` is null for pnpm
-    // registry deps (the registry comes from `registryBase`, not a URL).
-    const synthEntry = {
-      version: version || undefined,
-      integrity: integrity || undefined,
-      resolved: resolution.tarball || undefined,
-      deprecated: entry && entry.deprecated
-    };
-
-    callback({
-      key: depPath,
-      entry: synthEntry,
-      name,
-      isRoot: false,
-      isWorkspaceSource: false,
-      isLink: flags.isLink,
-      isBundled: flags.isBundled,
-      isGitDep: flags.isGitDep,
-      isFileDep: flags.isFileDep,
-      registryBase,
-      node: { name, version: version || null, integrity, registryBase, kind, path: depPath }
-    });
+    emitPnpmPackage(depPath, entry, registryConfig, callback);
   }
 }

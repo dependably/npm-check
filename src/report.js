@@ -97,6 +97,13 @@ function collectIntegrityFindings(buckets, integrityResult, failOnUnresolved) {
   }
 }
 
+// Coerce an advisory's references into an array: an explicit `references` array
+// wins, else the single `url` (if any) becomes a one-element list, else empty.
+function referencesOf(f) {
+  if (Array.isArray(f.references)) return f.references;
+  return f.url ? [f.url] : [];
+}
+
 // Normalize one advisory finding (from vuln.js's errors/warnings) into a report
 // finding that PRESERVES the full advisory data instead of collapsing it. `level`
 // is the report-tier severity (error|warn) that drives the icons, the section
@@ -116,7 +123,7 @@ function advisoryFinding(level, f) {
     fixedVersion: f.fixedVersion ?? null,
     cve: f.cve ?? null,
     vulnerableRange: f.vulnerableRange ?? null,
-    references: Array.isArray(f.references) ? f.references : (f.url ? [f.url] : []),
+    references: referencesOf(f),
     url: f.url ?? null
   };
 }
@@ -493,18 +500,24 @@ function ladderSeverity(f) {
 // Map one report finding (any section) into the shared Finding shape. The report
 // tier (error/warn) that drives the gate is preserved under `extra.reportSeverity`;
 // advisory findings additionally carry the vuln-tool `extra` payload.
+// The advisory-specific slice of a finding's `extra` payload (only populated for
+// vuln/advisory findings); kept separate so reportFindingToSchema stays flat.
+function advisoryExtra(f) {
+  return {
+    package: f.package ?? null,
+    installedVersion: f.version ?? null,
+    fixedVersion: f.fixedVersion ?? null,
+    advisoryId: f.advisoryId ?? null,
+    cve: f.cve ?? null,
+    vulnerableRange: f.vulnerableRange ?? null,
+    references: referencesOf(f)
+  };
+}
+
 function reportFindingToSchema(sectionId, f) {
   const isAdvisory = f.advisoryId != null || f.advisorySeverity != null;
   const extra = { section: sectionId, reportSeverity: f.severity };
-  if (isAdvisory) {
-    extra.package = f.package ?? null;
-    extra.installedVersion = f.version ?? null;
-    extra.fixedVersion = f.fixedVersion ?? null;
-    extra.advisoryId = f.advisoryId ?? null;
-    extra.cve = f.cve ?? null;
-    extra.vulnerableRange = f.vulnerableRange ?? null;
-    extra.references = Array.isArray(f.references) ? f.references : (f.url ? [f.url] : []);
-  }
+  if (isAdvisory) Object.assign(extra, advisoryExtra(f));
   return {
     severity: ladderSeverity(f),
     ruleId: f.advisoryId != null ? String(f.advisoryId) : (f.ruleId || sectionId),
