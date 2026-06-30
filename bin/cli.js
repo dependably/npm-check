@@ -336,8 +336,10 @@ const BOOLEAN_OPTIONS = new Set([
 // a valued flag (`--format json`, `--registry <url>`), and recognized flags all
 // pass through untouched.
 function rejectUnknownOptions() {
-  for (let i = 0; i < argv.length; i++) {
+  let i = 0;
+  while (i < argv.length) {
     const tok = argv[i];
+    i++;
     if (typeof tok !== 'string' || !tok.startsWith('-') || tok === '-') {
       continue; // positional / command / a bare '-'
     }
@@ -590,69 +592,74 @@ async function runReportCommand() {
   process.exit(report.summary.pass ? 0 : 1);
 }
 
+// Validate the sibling package.json (if present). A malformed manifest is itself a
+// validation failure to report — not a reason to abort the whole command.
+function loadPackageJsonResult(dir) {
+  const pkgPath = path.join(dir, 'package.json');
+  if (!fs.existsSync(pkgPath)) return null;
+  try {
+    return validatePackageJson(JSON.parse(fs.readFileSync(pkgPath, 'utf8')));
+  } catch (e) {
+    return { valid: false, errors: [{ code: 'PJ_PARSE_ERROR', message: `package.json is not valid JSON: ${e.message}` }], warnings: [] };
+  }
+}
+
+// Validate the project-level .npmrc (if present), threading the flavor through so
+// pnpm-ignored keys are flagged.
+function loadNpmrcResult(dir, isPnpm) {
+  const npmrcPath = path.join(dir, '.npmrc');
+  if (!fs.existsSync(npmrcPath)) return null;
+  return validateNpmrc(fs.readFileSync(npmrcPath, 'utf8'), isPnpm ? { flavor: 'pnpm' } : {});
+}
+
+// Validate pnpm-workspace.yaml (pnpm projects only).
+function loadPnpmWorkspaceResult(dir, isPnpm) {
+  const wsPath = path.join(dir, 'pnpm-workspace.yaml');
+  if (!isPnpm || !fs.existsSync(wsPath)) return null;
+  return validatePnpmWorkspace(fs.readFileSync(wsPath, 'utf8'));
+}
+
+// Errors are Error subclass instances, whose `message` is non-enumerable and so
+// vanishes under JSON.stringify — normalize to {code, message} so the JSON output
+// is actually readable.
+function normalizeValidationResult(r) {
+  if (!r || typeof r !== 'object' || !Array.isArray(r.errors)) return r;
+  return { ...r, errors: r.errors.map((e) => ({ code: e.code, message: e.message })) };
+}
+
 function runValidateCommand() {
   const filePath = getFilePath(argv[1]);
   ensureFileExists(filePath);
   const dir = path.dirname(filePath);
 
   const lockfile = parseLockfile(filePath);
-  const flavor = detectLockfileFlavor(lockfile);
-  const isPnpm = flavor === 'pnpm';
+  const isPnpm = detectLockfileFlavor(lockfile) === 'pnpm';
 
   // The npm lockfile validator is npm-shape only; a pnpm-lock.yaml is
   // machine-generated, so we validate the files that govern its install instead.
   const lockResult = isPnpm ? null : validatePackageLock(lockfile);
+  const pkgResult = loadPackageJsonResult(dir);
+  const npmrcResult = loadNpmrcResult(dir, isPnpm);
+  const wsResult = loadPnpmWorkspaceResult(dir, isPnpm);
 
-  const pkgPath = path.join(dir, 'package.json');
-  let pkgResult = null;
-  if (fs.existsSync(pkgPath)) {
-    try {
-      pkgResult = validatePackageJson(JSON.parse(fs.readFileSync(pkgPath, 'utf8')));
-    } catch (e) {
-      // A malformed manifest is itself a validation failure to report —
-      // not a reason to abort the whole command (the lockfile result still matters).
-      pkgResult = { valid: false, errors: [{ code: 'PJ_PARSE_ERROR', message: `package.json is not valid JSON: ${e.message}` }], warnings: [] };
-    }
-  }
-
-  const npmrcPath = path.join(dir, '.npmrc');
-  const npmrcResult = fs.existsSync(npmrcPath)
-    ? validateNpmrc(fs.readFileSync(npmrcPath, 'utf8'), isPnpm ? { flavor: 'pnpm' } : {})
-    : null;
-
-  // pnpm-workspace.yaml (pnpm projects only).
-  const wsPath = path.join(dir, 'pnpm-workspace.yaml');
-  const wsResult = isPnpm && fs.existsSync(wsPath)
-    ? validatePnpmWorkspace(fs.readFileSync(wsPath, 'utf8'))
-    : null;
-
-  // Errors are Error subclass instances, whose `message` is non-enumerable
-  // and so vanishes under JSON.stringify — normalize to {code, message} so
-  // the JSON output is actually readable.
-  const normalizeResult = (r) => r && typeof r === 'object' && Array.isArray(r.errors)
-    ? { ...r, errors: r.errors.map((e) => ({ code: e.code, message: e.message })) }
-    : r;
-
+  const norm = (r, fallback) => normalizeValidationResult(r) || fallback;
   const out = isPnpm
     ? {
       'pnpm-lock.yaml': 'machine-generated (structural validation skipped; regenerate with `pnpm install`)',
-      'package.json': normalizeResult(pkgResult) || 'not found (skipped)',
-      '.npmrc': normalizeResult(npmrcResult) || 'not found (skipped)',
-      'pnpm-workspace.yaml': normalizeResult(wsResult) || 'not found (skipped)'
+      'package.json': norm(pkgResult, 'not found (skipped)'),
+      '.npmrc': norm(npmrcResult, 'not found (skipped)'),
+      'pnpm-workspace.yaml': norm(wsResult, 'not found (skipped)')
     }
     : {
-      'package-lock.json': normalizeResult(lockResult),
-      'package.json': normalizeResult(pkgResult) || 'not found (skipped)',
-      '.npmrc': normalizeResult(npmrcResult) || 'not found (skipped)'
+      'package-lock.json': normalizeValidationResult(lockResult),
+      'package.json': norm(pkgResult, 'not found (skipped)'),
+      '.npmrc': norm(npmrcResult, 'not found (skipped)')
     };
 
   console.log('\n📋 Validation Result:');
   console.log(JSON.stringify(out, null, 2));
 
-  const valid = (!lockResult || lockResult.valid)
-    && (!pkgResult || pkgResult.valid)
-    && (!npmrcResult || npmrcResult.valid)
-    && (!wsResult || wsResult.valid);
+  const valid = [lockResult, pkgResult, npmrcResult, wsResult].every((r) => !r || r.valid);
   process.exit(valid ? 0 : 1);
 }
 

@@ -390,7 +390,7 @@ function toSchemaFinding(f) {
       advisoryId: f.advisoryId ?? null,
       cve: f.cve ?? null,
       vulnerableRange: f.vulnerableRange ?? null,
-      references: Array.isArray(f.references) ? f.references : (f.url ? [f.url] : [])
+      references: referencesOf(f)
     }
   };
 }
