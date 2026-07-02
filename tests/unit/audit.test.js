@@ -312,6 +312,35 @@ describe('runAudit', () => {
       expect(pinned[0].severity).toBe('warn');
       expect(pinned[0].message).toMatch(/rule skipped/);
     });
+
+    it('flags caret/tilde in npm `overrides` (nested), skipping $-refs and exacts', () => {
+      const packageJson = cleanPackageJson();
+      packageJson.overrides = {
+        'caret-pkg': '^4.0.0',                     // flagged
+        nested: { '.': '~2.0.0', child: '3.0.0' }, // '.' flagged; child exact → not
+        reffed: '$good-pkg',                        // $-ref → not flagged
+        pinned: '5.0.0'                             // exact → not flagged
+      };
+      const report = runAudit({ lockfile: cleanLockfile(), packageJson });
+      const paths = report.findings
+        .filter((f) => f.ruleId === 'pinned-versions')
+        .map((f) => f.packagePath);
+      expect(paths).toContain('package.json#overrides/caret-pkg');
+      expect(paths).toContain('package.json#overrides/nested > .');
+      expect(paths).not.toContain('package.json#overrides/nested > child');
+      expect(paths.some((p) => p.includes('reffed'))).toBe(false);
+      expect(paths.some((p) => p.includes('pinned'))).toBe(false);
+    });
+
+    it('flags caret/tilde in the pnpm.overrides field too', () => {
+      const packageJson = cleanPackageJson();
+      packageJson.pnpm = { overrides: { 'foo@1': '^1.2.0', bar: '2.0.0' } };
+      const report = runAudit({ lockfile: cleanLockfile(), packageJson });
+      const pinned = report.findings.filter((f) => f.ruleId === 'pinned-versions');
+      const paths = pinned.map((f) => f.packagePath);
+      expect(paths).toContain('package.json#pnpm.overrides/foo@1');
+      expect(paths.some((p) => p.includes('/bar'))).toBe(false); // exact, not flagged
+    });
   });
 
   describe('lockfile-sync rule', () => {

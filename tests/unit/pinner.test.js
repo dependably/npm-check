@@ -183,6 +183,42 @@ describe('pinVersions', () => {
     expect(() => pinVersions(null, {})).toThrow(PinnerError);
     expect(() => pinVersions({}, null)).toThrow(PinnerError);
   });
+
+  it('pins caret/tilde ranges inside npm `overrides` (incl. nested), leaving refs/exacts alone', () => {
+    const packageJson = {
+      name: 'p', version: '1.0.0',
+      dependencies: { foo: '^1.0.0' },
+      overrides: {
+        'caret-pkg': '^4.17.20',                     // → 4.17.21
+        nested: { '.': '~2.1.0', child: '3.0.0' },   // '.' → nested resolves 2.1.5; child exact
+        reffed: '$foo',                              // reference — untouched, not reported
+        complex: '>=1.0.0'                           // complex — skipped
+      }
+    };
+    const lockfile = {
+      name: 'p', version: '1.0.0', lockfileVersion: 3,
+      packages: {
+        '': { name: 'p', version: '1.0.0', dependencies: { foo: '^1.0.0' } },
+        'node_modules/foo': { version: '1.2.3' },
+        'node_modules/caret-pkg': { version: '4.17.21' },
+        'node_modules/nested': { version: '2.1.5' }
+      }
+    };
+
+    const result = pinVersions(packageJson, lockfile);
+    const ov = result.packageJson.overrides;
+    expect(ov['caret-pkg']).toBe('4.17.21');
+    expect(ov.nested['.']).toBe('2.1.5');
+    expect(ov.nested.child).toBe('3.0.0');   // exact — untouched
+    expect(ov.reffed).toBe('$foo');          // $-ref — untouched
+    expect(ov.complex).toBe('>=1.0.0');      // complex — untouched
+    expect(result.changes).toContainEqual({ section: 'overrides', name: 'caret-pkg', from: '^4.17.20', to: '4.17.21' });
+    expect(result.changes).toContainEqual({ section: 'overrides', name: 'nested > .', from: '~2.1.0', to: '2.1.5' });
+    expect(result.skipped).toContainEqual({ section: 'overrides', name: 'complex', range: '>=1.0.0', reason: 'complex-range' });
+    // The $-reference is neither changed nor skipped (it's not a range).
+    expect(result.changes.some((c) => c.name === 'reffed')).toBe(false);
+    expect(result.skipped.some((s) => s.name === 'reffed')).toBe(false);
+  });
 });
 
 describe('detectIndent', () => {

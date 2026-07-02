@@ -1,5 +1,6 @@
 // src/pinner.js
 import { detectLockfileVersion, LOCKFILE_VERSIONS } from './format-library.js';
+import { walkOverrides } from './overrides.js';
 
 export class PinnerError extends Error {
   constructor(message, code, context = {}) {
@@ -108,6 +109,33 @@ function pinDependency(ctx, deps, section, name, range) {
 }
 
 /**
+ * Pin caret/tilde ranges inside the npm `overrides` field to their lockfile-
+ * resolved versions. `overrides` is nested and never mirrored into packages[''],
+ * so there is no lockfile-root sync — the caller runs `npm install` to reconcile.
+ * `$`-references and non-caret/tilde forms are left alone (reported in skipped).
+ * @param {object} ctx - Shared context (see pinDependency)
+ * @param {object} overrides - The (cloned) package.json `overrides` object
+ */
+function pinOverrides(ctx, overrides) {
+  if (!overrides || typeof overrides !== 'object') return;
+  for (const { path, name, range, container, key } of walkOverrides(overrides)) {
+    const kind = classifyRange(range);
+    if (kind === 'exact') continue;
+    if (kind !== 'caret' && kind !== 'tilde') {
+      ctx.skipped.push({ section: 'overrides', name: path, range, reason: `${kind}-range` });
+      continue;
+    }
+    const resolvedVersion = resolvedVersionFor(ctx.sourceLockfile, name, ctx.hasPackages);
+    if (!resolvedVersion) {
+      ctx.skipped.push({ section: 'overrides', name: path, range, reason: 'not-in-lockfile' });
+      continue;
+    }
+    container[key] = resolvedVersion;
+    ctx.changes.push({ section: 'overrides', name: path, from: range, to: resolvedVersion });
+  }
+}
+
+/**
  * Pin caret/tilde ranges in package.json to the exact versions resolved in
  * the lockfile, and keep the lockfile's root entry (packages['']) in sync.
  * All other range forms are left alone and reported in `skipped`.
@@ -151,6 +179,11 @@ export function pinVersions(packageJson, lockfile, options = {}) {
       pinDependency(ctx, deps, section, name, range);
     }
   }
+
+  // npm `overrides` (nested) — pnpm.overrides is deliberately left alone: `pin`
+  // refuses pnpm lockfiles, and its selector keys don't map to a resolvable
+  // package name here. The audit `pinned-versions` rule still flags both.
+  pinOverrides(ctx, newPackageJson.overrides);
 
   if (skipped.some((s) => s.reason === 'not-in-lockfile')) {
     warnings.push('some dependencies are missing from the lockfile; run `npm install` to sync it');
