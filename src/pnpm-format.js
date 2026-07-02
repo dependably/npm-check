@@ -41,20 +41,56 @@ export function resolvePnpmRegistryBase(name, registryConfig = {}) {
 }
 
 /**
- * Split a pnpm depPath into { name, version }.
- * depPaths look like `lodash@4.17.21`, `@scope/pkg@1.0.0`, or peer-suffixed
- * `foo@1.0.0(react@18.0.0)` — the peer suffix is stripped FIRST so the inner
- * `@` of a peer (`react@18`) can't be mistaken for the version separator.
- * Local deps surface as `name@file:../x` / `name@link:../x`.
+ * Split a pnpm depPath into { name, version }. Handles every pnpm key form the
+ * flavor layer routes here:
+ *   - v9 (`lockfileVersion '9.0'`):   `lodash@4.17.21`, `@scope/pkg@1.0.0`
+ *   - v6 (`'6.0'`, pnpm 8):           `/lodash@4.17.21`, `/@scope/pkg@1.0.0`
+ *   - v5 (`'5.x'`, pnpm 6-7):         `/lodash/4.17.21`, `/@scope/pkg/1.0.0`
+ * plus peer suffixes: paren style `foo@1.0.0(react@18.0.0)` (v6/v9) and the older
+ * v5 underscore style `react-dom/16.13.1_react@16.13.1`.
+ *
+ * The paren peer suffix is stripped FIRST so the inner `@` of a peer (`react@18`)
+ * can't be mistaken for the version separator. A leading `/` (v5/v6 key form) is then
+ * stripped, and the name↔version separator is located past any `@scope/` prefix:
+ * whichever of `@` (v6/v9) or `/` (v5) comes first delimits the version. Local deps
+ * surface as `name@file:../x` / `name@link:../x`.
  * @param {string} depPath - Key from the pnpm `packages` map
  * @returns {{ name: string, version: string|null }}
  */
 export function parsePnpmDepPath(depPath) {
+  // 1. Strip a paren-style peer suffix (`(react@18.0.0)`, v6/v9).
   const parenIdx = depPath.indexOf('(');
-  const bare = parenIdx === -1 ? depPath : depPath.slice(0, parenIdx);
-  const at = bare.lastIndexOf('@');
-  if (at <= 0) return { name: bare, version: null }; // unscoped name with no version, or '@'-less key
-  return { name: bare.slice(0, at), version: bare.slice(at + 1) || null };
+  let bare = parenIdx === -1 ? depPath : depPath.slice(0, parenIdx);
+
+  // 2. Strip the leading slash of the v5/v6 key forms (v9 keys have none).
+  if (bare.startsWith('/')) bare = bare.slice(1);
+
+  // 3. Locate the name↔version separator past any `@scope/` prefix. The name is
+  //    either `pkg` or `@scope/pkg`, so begin the search after the scope's slash.
+  let searchStart = 0;
+  if (bare.startsWith('@')) {
+    const scopeSlash = bare.indexOf('/');
+    if (scopeSlash !== -1) searchStart = scopeSlash + 1;
+  }
+  const atSep = bare.indexOf('@', searchStart);
+  const slashSep = bare.indexOf('/', searchStart);
+
+  // Slash separator wins only when it exists and precedes any `@` — the v5
+  // `/name/version` form. Its version may carry an underscore peer suffix
+  // (`16.13.1_react@16.13.1`), trimmed here (semver versions never contain `_`,
+  // so this is safe for the slash form).
+  if (slashSep !== -1 && (atSep === -1 || slashSep < atSep)) {
+    let version = bare.slice(slashSep + 1);
+    const underscore = version.indexOf('_');
+    if (underscore !== -1) version = version.slice(0, underscore);
+    return { name: bare.slice(0, slashSep), version: version || null };
+  }
+  // Otherwise `@` separates name from version (v6/v9). `file:`/`link:` versions —
+  // which contain slashes after the `@` — land here and are preserved verbatim.
+  if (atSep > 0) {
+    return { name: bare.slice(0, atSep), version: bare.slice(atSep + 1) || null };
+  }
+  return { name: bare, version: null }; // name with no version / no separator
 }
 
 /**
@@ -82,9 +118,12 @@ function classifyPnpmPackage(version, entry) {
     flags.isGitDep = true;
     return { kind: 'git', flags };
   }
-  if (resolution.tarball && !resolution.integrity) {
-    // Remote tarball with no integrity to verify against a registry — treat like a
-    // file/url dep so the checkers skip it (no registry advisory/manifest applies).
+  if (resolution.tarball) {
+    // Remote URL-tarball dep — may or may not carry its own `integrity`. pnpm records
+    // BOTH `tarball` and `integrity` for these (a plain registry entry has integrity
+    // and NO tarball). The `version` parsed from the key is the tarball URL, not a
+    // registry version, so no registry advisory/manifest applies — treat like a
+    // file/url dep so the checkers skip it, regardless of integrity.
     flags.isFileDep = true;
     return { kind: 'tarball', flags };
   }
