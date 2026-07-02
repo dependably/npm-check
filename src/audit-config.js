@@ -35,7 +35,7 @@ export const DEFAULT_CONFIG = {
     }],
     'install-scripts': ['warn', { allow: [] }],
     'no-git-deps': 'warn',
-    'no-remote-deps': 'warn',
+    'no-remote-deps': ['warn', { allowedHosts: ['registry.npmjs.org', 'npm.pkg.github.com'] }],
     'pinned-versions': ['warn', {
       sections: ['dependencies', 'devDependencies', 'optionalDependencies'],
       ignore: []
@@ -72,7 +72,7 @@ export function normalizeRuleEntry(entry) {
           'INVALID_RULE_OPTIONS'
         );
       }
-      options = entry[1];
+      options = structuredClone(entry[1]);
     }
   } else {
     throw new AuditConfigError(

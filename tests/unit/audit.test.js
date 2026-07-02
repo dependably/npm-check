@@ -722,4 +722,56 @@ describe('no-git-deps and no-remote-deps rules (npm v12 opt-ins)', () => {
     expect(report.findings.filter((f) => f.ruleId === 'no-remote-deps')).toEqual([]);
     expect(report.findings.filter((f) => f.ruleId === 'no-git-deps')).toEqual([]);
   });
+
+  // Regression test for #27: GitHub Packages URLs have no `/-/` path marker but
+  // are legitimate registry tarballs — the old heuristic flagged them as remote deps.
+  it('does not flag GitHub Packages registry URLs (no /-/ in path) as remote deps', () => {
+    const lockfile = cleanLockfile();
+    lockfile.packages['node_modules/@scope/pkg'] = {
+      name: '@scope/pkg',
+      version: '1.0.0',
+      resolved: 'https://npm.pkg.github.com/download/@scope/pkg/1.0.0/abc123def456',
+      integrity: GOOD_HASH
+    };
+    const report = runAudit({ lockfile, packageJson: cleanPackageJson() });
+    expect(report.findings.filter((f) => f.ruleId === 'no-remote-deps')).toEqual([]);
+  });
+
+  // Regression test for #27: a URL whose path contains `/-/` but whose host is
+  // not a known registry must still be flagged as a remote dep.
+  it('flags a non-registry URL that happens to contain /-/ in its path', () => {
+    const lockfile = cleanLockfile();
+    lockfile.packages['node_modules/evil'] = {
+      name: 'evil',
+      version: '1.0.0',
+      resolved: 'https://evil.example.com/-/payload.tgz',
+      integrity: GOOD_HASH
+    };
+    const report = runAudit({ lockfile, packageJson: cleanPackageJson() });
+    const remote = report.findings.filter((f) => f.ruleId === 'no-remote-deps');
+    expect(remote).toHaveLength(1);
+    expect(remote[0].packagePath).toBe('node_modules/evil');
+    expect(remote[0].message).toMatch(/--allow-remote/);
+  });
+
+  // Regression test for #27: a private registry can be added via rule options.
+  it('respects custom allowedHosts option for private registries', () => {
+    const lockfile = cleanLockfile();
+    lockfile.packages['node_modules/private-pkg'] = {
+      name: 'private-pkg',
+      version: '1.0.0',
+      resolved: 'https://registry.corp.example.com/private-pkg/-/private-pkg-1.0.0.tgz',
+      integrity: GOOD_HASH
+    };
+    // Without custom allowedHosts → flagged as remote
+    const reportDefault = runAudit({ lockfile, packageJson: cleanPackageJson() });
+    expect(reportDefault.findings.filter((f) => f.ruleId === 'no-remote-deps')).toHaveLength(1);
+
+    // With the private host in allowedHosts → not flagged
+    const reportCustom = runAudit(
+      { lockfile, packageJson: cleanPackageJson() },
+      { rules: { 'no-remote-deps': ['warn', { allowedHosts: ['registry.npmjs.org', 'registry.corp.example.com'] }] } }
+    );
+    expect(reportCustom.findings.filter((f) => f.ruleId === 'no-remote-deps')).toEqual([]);
+  });
 });

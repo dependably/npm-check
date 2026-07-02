@@ -77,6 +77,42 @@ describe('mergeConfig', () => {
     expect(() => mergeConfig({ maxWarnings: 1.5 })).toThrow(AuditConfigError);
     expect(mergeConfig({ maxWarnings: 0 }).maxWarnings).toBe(0);
   });
+
+  // Regression test for #29: mergeConfig must deep-clone rule option objects so
+  // that mutating a merged config's options does not poison DEFAULT_CONFIG or
+  // other independently-produced configs (aliasing hazard in long-running /
+  // programmatic use and in Jest suites sharing the module registry).
+  it('does not alias DEFAULT_CONFIG option objects into merged configs', () => {
+    const configA = mergeConfig({});
+    const configB = mergeConfig({});
+
+    // Mutate configA's secure-resolved allowedHosts array in place.
+    configA.rules['secure-resolved'].options.allowedHosts.push('injected.example.com');
+
+    // DEFAULT_CONFIG must be unmodified.
+    expect(DEFAULT_CONFIG.rules['secure-resolved'][1].allowedHosts).not.toContain('injected.example.com');
+
+    // An independently-merged config must also be unmodified.
+    expect(configB.rules['secure-resolved'].options.allowedHosts).not.toContain('injected.example.com');
+  });
+
+  // Regression test for #29 (spread path): when a user override is merged, keys
+  // not provided by the user (e.g. `sections`) are spread from defaults. Without
+  // the fix those spread values are still aliases of DEFAULT_CONFIG arrays.
+  it('does not alias DEFAULT_CONFIG option arrays via defaults spread in user-override path', () => {
+    // User overrides severity + ignore only; `sections` still flows in from defaults.
+    const config = mergeConfig({
+      rules: { 'pinned-versions': ['error', { ignore: ['react'] }] }
+    });
+
+    // Mutate the sections array that arrived via the defaults spread.
+    config.rules['pinned-versions'].options.sections.push('peerDependencies');
+
+    // DEFAULT_CONFIG.sections must be unchanged.
+    expect(DEFAULT_CONFIG.rules['pinned-versions'][1].sections).toEqual(
+      ['dependencies', 'devDependencies', 'optionalDependencies']
+    );
+  });
 });
 
 describe('loadAuditConfig', () => {
