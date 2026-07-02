@@ -361,6 +361,11 @@ const pinnedVersionsRule = {
   id: 'pinned-versions',
   description: 'package.json dependency ranges must be exact versions',
   defaultSeverity: 'warn',
+  // package.json pinning is manifest-level and flavor-agnostic — pnpm projects
+  // should pin too, and this is what makes the pnpm.overrides flagging below
+  // actually reachable on a pnpm-lock.yaml (the `lockfile.packages` lookups are
+  // guarded and degrade to an empty resolved-note for pnpm).
+  flavors: ['npm', 'pnpm'],
   check({ lockfile, packageJson, options }) {
     if (!packageJson) {
       return [{

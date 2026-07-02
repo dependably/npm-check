@@ -109,10 +109,46 @@ function pinDependency(ctx, deps, section, name, range) {
 }
 
 /**
+ * Collect every DISTINCT version a package name resolves to anywhere in the
+ * lockfile. An override forces all instances and a nested selector targets a
+ * shadowed install path (e.g. node_modules/a/node_modules/b), so the top-level
+ * `node_modules/<name>` entry alone can be the wrong instance to pin to.
+ * @param {object} lockfile - The source lockfile
+ * @param {string} name - Package name (selector already stripped)
+ * @param {boolean} hasPackages - v2/v3 (packages map) vs v1 (dependencies tree)
+ * @returns {Set<string>} Distinct resolved versions
+ */
+function collectResolvedVersions(lockfile, name, hasPackages) {
+  const versions = new Set();
+  if (hasPackages) {
+    const suffix = `node_modules/${name}`;
+    for (const [key, entry] of Object.entries(lockfile.packages || {})) {
+      if ((key === suffix || key.endsWith(`/${suffix}`)) && entry && entry.version) {
+        versions.add(entry.version);
+      }
+    }
+  } else {
+    const walk = (tree) => {
+      if (!tree || typeof tree !== 'object') return;
+      for (const [depName, node] of Object.entries(tree)) {
+        if (!node || typeof node !== 'object') continue;
+        if (depName === name && node.version) versions.add(node.version);
+        if (node.dependencies) walk(node.dependencies);
+      }
+    };
+    walk(lockfile.dependencies);
+  }
+  return versions;
+}
+
+/**
  * Pin caret/tilde ranges inside the npm `overrides` field to their lockfile-
  * resolved versions. `overrides` is nested and never mirrored into packages[''],
  * so there is no lockfile-root sync — the caller runs `npm install` to reconcile.
  * `$`-references and non-caret/tilde forms are left alone (reported in skipped).
+ * Pins only when the name resolves to a SINGLE version tree-wide; a name present
+ * at multiple versions is skipped `ambiguous-resolution` rather than pinned to a
+ * possibly-wrong instance.
  * @param {object} ctx - Shared context (see pinDependency)
  * @param {object} overrides - The (cloned) package.json `overrides` object
  */
@@ -125,11 +161,16 @@ function pinOverrides(ctx, overrides) {
       ctx.skipped.push({ section: 'overrides', name: path, range, reason: `${kind}-range` });
       continue;
     }
-    const resolvedVersion = resolvedVersionFor(ctx.sourceLockfile, name, ctx.hasPackages);
-    if (!resolvedVersion) {
+    const versions = collectResolvedVersions(ctx.sourceLockfile, name, ctx.hasPackages);
+    if (versions.size === 0) {
       ctx.skipped.push({ section: 'overrides', name: path, range, reason: 'not-in-lockfile' });
       continue;
     }
+    if (versions.size > 1) {
+      ctx.skipped.push({ section: 'overrides', name: path, range, reason: 'ambiguous-resolution' });
+      continue;
+    }
+    const resolvedVersion = [...versions][0];
     container[key] = resolvedVersion;
     ctx.changes.push({ section: 'overrides', name: path, from: range, to: resolvedVersion });
   }
