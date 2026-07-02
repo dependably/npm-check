@@ -126,6 +126,59 @@ describe('Streaming Parser', () => {
         parser.finish();
       });
     });
+
+    it('fails loudly (does not emit an empty complete) on an empty buffer', () => {
+      // Regression (#13): an empty stream must NOT resolve an empty lockfile —
+      // that would make every downstream check pass vacuously.
+      const parser = new StreamingParser();
+      return new Promise((resolve, reject) => {
+        parser.on('complete', () => reject(new Error('empty buffer should not complete')));
+        parser.on('error', (error) => {
+          expect(error).toBeDefined();
+          resolve();
+        });
+        parser.buffer = '';
+        parser.finish();
+      });
+    });
+  });
+
+  describe('StreamingParser.parseLockfileStream (static)', () => {
+    it('returns the ACTUAL parsed packages, not an empty skeleton', async () => {
+      // Regression (#13): the static streaming entry point used to always resolve
+      // { packages: {} } regardless of input, so every integrity/vuln/license
+      // check downstream reported clean on zero packages (vacuous pass).
+      const result = await StreamingParser.parseLockfileStream(testFilePath);
+
+      expect(result.lockfileVersion).toBe(3);
+      expect(result.name).toBe('test-app');
+      expect(result.packages).toBeDefined();
+      expect(Object.keys(result.packages)).toEqual(
+        expect.arrayContaining(['', 'node_modules/lodash', 'node_modules/react'])
+      );
+      expect(result.packages['node_modules/lodash'].version).toBe('4.17.21');
+      expect(result.packages['node_modules/react'].version).toBe('18.2.0');
+    });
+
+    it('rejects (does not resolve empty) for an empty file', async () => {
+      const emptyPath = path.join(__dirname, 'test-empty-lockfile.json');
+      fs.writeFileSync(emptyPath, '');
+      try {
+        await expect(StreamingParser.parseLockfileStream(emptyPath)).rejects.toThrow();
+      } finally {
+        if (fs.existsSync(emptyPath)) fs.unlinkSync(emptyPath);
+      }
+    });
+
+    it('rejects for a malformed lockfile stream', async () => {
+      const badPath = path.join(__dirname, 'test-bad-lockfile.json');
+      fs.writeFileSync(badPath, '{ not valid json ');
+      try {
+        await expect(StreamingParser.parseLockfileStream(badPath)).rejects.toThrow();
+      } finally {
+        if (fs.existsSync(badPath)) fs.unlinkSync(badPath);
+      }
+    });
   });
 
   describe('Integration with parser.js', () => {
