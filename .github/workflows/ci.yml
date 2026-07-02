@@ -161,16 +161,23 @@ jobs:
       - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
         with:
           subject-path: "*.tgz"
-      # Public-npm provenance bonus; publishes the same packed tarball. Skipped
-      # (not failed) until NPM_TOKEN is set, so the GitHub Release + provenance
-      # still produce on the first tagged run.
+      # Publish @dependably/npm-check to the public npm registry with provenance —
+      # the same packed, already-attested tarball (one set of signed bytes).
+      # NODE_AUTH_TOKEN is the NPM_TOKEN org secret; --access public is required
+      # for the scoped name. Fails the release if the token is missing on the
+      # canonical repo (so a broken secret can't silently ship a release without
+      # publishing); forks without the secret skip gracefully.
       - name: Publish to npmjs.org
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           set -eu
           if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
-            echo "NPM_TOKEN not set — skipping npm publish (GitHub Release + provenance still produced)."
+            if [ "${{ github.repository }}" = "dependably/npm-check" ]; then
+              echo "::error::NPM_TOKEN is not available — cannot publish this release to npm."
+              exit 1
+            fi
+            echo "NPM_TOKEN not set (fork) — skipping npm publish."
             exit 0
           fi
           npm publish *.tgz --provenance --access public
