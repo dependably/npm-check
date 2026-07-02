@@ -232,6 +232,78 @@ describe('validatePackageJson', () => {
     });
   });
 
+  describe('range-carrying pnpm sub-fields', () => {
+    const base = { name: 'pkg', version: '1.0.0', license: 'MIT' };
+
+    it('validates ranges inside pnpm.packageExtensions dependencies/peerDependencies', () => {
+      const ok = validatePackageJson({
+        ...base,
+        pnpm: { packageExtensions: { 'react@16': { dependencies: { foo: '^1.0.0' }, peerDependencies: { bar: '>=2' } } } }
+      });
+      expect(codes(ok)).not.toContain('PJ_INVALID_RANGE');
+
+      const bad = validatePackageJson({
+        ...base,
+        pnpm: { packageExtensions: { 'react@16': { dependencies: { foo: 'not a version !!' } } } }
+      });
+      expect(codes(bad)).toContain('PJ_INVALID_RANGE');
+    });
+
+    it('flags a non-object packageExtensions entry', () => {
+      const result = validatePackageJson({ ...base, pnpm: { packageExtensions: { 'react@16': 'nope' } } });
+      expect(codes(result)).toContain('PJ_INVALID_PKG_EXTENSION');
+    });
+
+    it('validates packageExtensions.optionalDependencies ranges too (all 4 dep maps)', () => {
+      const result = validatePackageJson({
+        ...base,
+        pnpm: { packageExtensions: { 'react@16': { optionalDependencies: { foo: 'not a version !!' } } } }
+      });
+      expect(codes(result)).toContain('PJ_INVALID_RANGE');
+    });
+
+    it('flags a wrong-typed peerDependencyRules.allowedVersions', () => {
+      const result = validatePackageJson({
+        ...base,
+        pnpm: { peerDependencyRules: { allowedVersions: 'oops' } }
+      });
+      expect(codes(result)).toContain('PJ_INVALID_PNPM_FIELD');
+    });
+
+    it('validates peerDependencyRules.allowedVersions and allowedDeprecatedVersions ranges', () => {
+      const result = validatePackageJson({
+        ...base,
+        pnpm: {
+          peerDependencyRules: { allowedVersions: { foo: 'not a version !!' } },
+          allowedDeprecatedVersions: { bar: '<2.0.0', baz: 'also bad !!' }
+        }
+      });
+      const rangeErrors = result.errors.filter((e) => e.code === 'PJ_INVALID_RANGE');
+      expect(rangeErrors.length).toBe(2); // foo + baz (bar is valid)
+    });
+  });
+
+  describe('bundleDependencies', () => {
+    const base = { name: 'pkg', version: '1.0.0', license: 'MIT', dependencies: { foo: '1.0.0' } };
+
+    it('accepts an array of names declared in dependencies (and the boolean form)', () => {
+      expect(codes(validatePackageJson({ ...base, bundleDependencies: ['foo'] }))).not.toContain('PJ_INVALID_BUNDLE_DEPS');
+      expect(codes(validatePackageJson({ ...base, bundledDependencies: true }))).not.toContain('PJ_INVALID_BUNDLE_DEPS');
+    });
+
+    it('errors on a non-array (non-boolean) value', () => {
+      expect(codes(validatePackageJson({ ...base, bundleDependencies: { foo: true } }))).toContain('PJ_INVALID_BUNDLE_DEPS');
+    });
+
+    it('errors on an invalid bundled name and warns on a name not in dependencies', () => {
+      const badName = validatePackageJson({ ...base, bundleDependencies: ['Not A Name'] });
+      expect(codes(badName)).toContain('PJ_INVALID_BUNDLE_DEP_NAME');
+
+      const notDeclared = validatePackageJson({ ...base, bundleDependencies: ['bar'] });
+      expect(codes(notDeclared)).toContain('PJ_BUNDLE_DEP_NOT_IN_DEPS');
+    });
+  });
+
   it('strictMode turns warnings into invalid', () => {
     const result = validatePackageJson({ name: 'pkg', version: '1.0.0' }, { strictMode: true });
     expect(result.errors).toEqual([]);

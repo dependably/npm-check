@@ -202,6 +202,96 @@ function validateOverrides(packageJson, errors) {
   }
 }
 
+// --- range-carrying pnpm sub-fields (validation only; these ranges are loose
+// BY DESIGN — packageExtensions patches upstream metadata, allowedVersions /
+// allowedDeprecatedVersions are allowances — so we validate syntax but never
+// flag/pin them as "unpinned" the way overrides/deps are) ---
+
+// Validate a flat { name: range } map's range values.
+function validateRangeMap(map, label, errors) {
+  if (!isPlainObject(map)) return; // shape handled by the caller / type check; absent → nothing
+  for (const [name, range] of Object.entries(map)) {
+    if (!isValidRange(range)) {
+      const shown = typeof range === 'string' ? range : JSON.stringify(range);
+      errors.push(new PackageJsonValidationError(
+        `invalid version range "${shown}" for "${name}" in ${label}`, 'PJ_INVALID_RANGE'));
+    }
+  }
+}
+
+// pnpm.packageExtensions: { "selector@range": { dependencies|peerDependencies:
+// {name: range}, peerDependenciesMeta: {...} } } — the inner dep maps carry real
+// ranges that pnpm injects into the graph, so validate them.
+function validatePackageExtensions(packageExtensions, errors) {
+  if (!isPlainObject(packageExtensions)) return;
+  for (const [selector, ext] of Object.entries(packageExtensions)) {
+    if (!isPlainObject(ext)) {
+      errors.push(new PackageJsonValidationError(
+        `"pnpm.packageExtensions.${selector}" must be an object`, 'PJ_INVALID_PKG_EXTENSION'));
+      continue;
+    }
+    // pnpm packageExtensions extend all four dependency-map fields.
+    for (const depKey of ['dependencies', 'optionalDependencies', 'peerDependencies']) {
+      if (ext[depKey] === undefined) continue;
+      if (!isPlainObject(ext[depKey])) {
+        errors.push(new PackageJsonValidationError(
+          `"pnpm.packageExtensions.${selector}.${depKey}" must be an object`, 'PJ_INVALID_PKG_EXTENSION'));
+      } else {
+        validateRangeMap(ext[depKey], `pnpm.packageExtensions.${selector}.${depKey}`, errors);
+      }
+    }
+  }
+}
+
+function validatePnpmRanges(packageJson, errors) {
+  const pnpm = packageJson.pnpm;
+  if (!isPlainObject(pnpm)) return;
+  validatePackageExtensions(pnpm.packageExtensions, errors);
+  if (isPlainObject(pnpm.peerDependencyRules)) {
+    // `peerDependencyRules` itself is type-checked in validatePnpmField, but its
+    // nested `allowedVersions` sub-map is not — flag a wrong-typed one here.
+    const allowedVersions = pnpm.peerDependencyRules.allowedVersions;
+    if (allowedVersions !== undefined && !isPlainObject(allowedVersions)) {
+      errors.push(new PackageJsonValidationError(
+        '"pnpm.peerDependencyRules.allowedVersions" must be an object', 'PJ_INVALID_PNPM_FIELD'));
+    } else {
+      validateRangeMap(allowedVersions, 'pnpm.peerDependencyRules.allowedVersions', errors);
+    }
+  }
+  validateRangeMap(pnpm.allowedDeprecatedVersions, 'pnpm.allowedDeprecatedVersions', errors);
+}
+
+// --- bundleDependencies / bundledDependencies (array of package names that ship
+// INSIDE the tarball). npm accepts either spelling, and a boolean (bundle all /
+// none). Validate array-of-valid-names and warn when a name isn't declared in
+// dependencies/optionalDependencies (npm requires it). ---
+function validateBundleDependencies(packageJson, errors, warnings) {
+  const declared = new Set();
+  for (const section of ['dependencies', 'optionalDependencies']) {
+    if (isPlainObject(packageJson[section])) {
+      for (const name of Object.keys(packageJson[section])) declared.add(name);
+    }
+  }
+  for (const field of ['bundleDependencies', 'bundledDependencies']) {
+    const value = packageJson[field];
+    if (value === undefined || typeof value === 'boolean') continue; // boolean = bundle all/none
+    if (!Array.isArray(value)) {
+      errors.push(new PackageJsonValidationError(
+        `"${field}" must be an array of package names (or a boolean)`, 'PJ_INVALID_BUNDLE_DEPS'));
+      continue;
+    }
+    for (const name of value) {
+      if (typeof name !== 'string' || !LEGACY_NAME_RE.test(name)) {
+        errors.push(new PackageJsonValidationError(
+          `invalid bundled dependency name ${JSON.stringify(name)} in ${field}`, 'PJ_INVALID_BUNDLE_DEP_NAME'));
+      } else if (!declared.has(name)) {
+        warnings.push({ code: 'PJ_BUNDLE_DEP_NOT_IN_DEPS',
+          message: `bundled dependency "${name}" is not listed in dependencies/optionalDependencies` });
+      }
+    }
+  }
+}
+
 // --- pnpm field (overrides / packageExtensions / build-script allowlists / …) ---
 function validatePnpmField(packageJson, errors, warnings) {
   const pnpm = packageJson.pnpm;
@@ -251,6 +341,8 @@ export function validatePackageJson(packageJson, options = {}) {
   validateWorkspaces(packageJson, errors);
   validatePnpmField(packageJson, errors, warnings);
   validateOverrides(packageJson, errors);
+  validatePnpmRanges(packageJson, errors);
+  validateBundleDependencies(packageJson, errors, warnings);
 
   const valid = errors.length === 0 && !(options.strictMode && warnings.length > 0);
   return { valid, errors, warnings, info };
