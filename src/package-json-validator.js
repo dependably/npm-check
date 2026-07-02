@@ -3,6 +3,8 @@
 // contract: validatePackageJson(packageJson, options) => { valid, errors, warnings, info }.
 // Errors/warnings are { message, code } (errors are PackageJsonValidationError instances).
 
+import { walkOverrides } from './overrides.js';
+
 export class PackageJsonValidationError extends Error {
   constructor(message, code) {
     super(message);
@@ -172,6 +174,34 @@ const PNPM_FIELD_TYPES = {
   supportedArchitectures: isPlainObject
 };
 
+// --- overrides ranges (npm `overrides` + pnpm.overrides) ---
+// walkOverrides descends the nested npm form and the flat pnpm form and skips
+// `$`-references; each remaining leaf must be a valid range specifier.
+function validateOverrideRanges(overrides, label, errors) {
+  for (const { path, range } of walkOverrides(overrides)) {
+    if (!isValidRange(range)) {
+      errors.push(new PackageJsonValidationError(
+        `invalid override range "${range}" at ${label}/${path}`, 'PJ_INVALID_OVERRIDE_RANGE'));
+    }
+  }
+}
+
+function validateOverrides(packageJson, errors) {
+  if (packageJson.overrides !== undefined) {
+    if (!isPlainObject(packageJson.overrides)) {
+      errors.push(new PackageJsonValidationError('"overrides" must be an object', 'PJ_INVALID_OVERRIDES'));
+    } else {
+      validateOverrideRanges(packageJson.overrides, 'overrides', errors);
+    }
+  }
+  // pnpm.overrides is type-checked in validatePnpmField; validate its ranges here
+  // (only when it's actually an object, to avoid double-reporting a type error).
+  const pnpmOverrides = packageJson.pnpm && packageJson.pnpm.overrides;
+  if (isPlainObject(pnpmOverrides)) {
+    validateOverrideRanges(pnpmOverrides, 'pnpm.overrides', errors);
+  }
+}
+
 // --- pnpm field (overrides / packageExtensions / build-script allowlists / …) ---
 function validatePnpmField(packageJson, errors, warnings) {
   const pnpm = packageJson.pnpm;
@@ -220,6 +250,7 @@ export function validatePackageJson(packageJson, options = {}) {
   validateEntryPoints(packageJson, errors);
   validateWorkspaces(packageJson, errors);
   validatePnpmField(packageJson, errors, warnings);
+  validateOverrides(packageJson, errors);
 
   const valid = errors.length === 0 && !(options.strictMode && warnings.length > 0);
   return { valid, errors, warnings, info };

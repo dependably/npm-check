@@ -8,6 +8,7 @@ import { validateNpmrc, NPMRC_SECURITY_CODES } from './npmrc-validator.js';
 import { validatePnpmWorkspace } from './pnpm-workspace-validator.js';
 import { isPlaceholder } from './integrity.js';
 import { classifyRange } from './pinner.js';
+import { walkOverrides } from './overrides.js';
 import { findOrphanedPackages } from './pruner.js';
 import { findUnusedDependencies } from './usage-scanner.js';
 import { mergeConfig } from './audit-config.js';
@@ -335,6 +336,27 @@ function collectUnpinnedRanges(lockfile, deps, section, ignore) {
   return findings;
 }
 
+// Flag caret/tilde ranges inside an overrides object (npm `overrides` or the
+// pnpm `pnpm.overrides` field). Walks the nested/flat structure via walkOverrides
+// (which skips `$`-references) and reports each unpinned range by its full path.
+function collectUnpinnedOverrides(overrides, lockfile, section, ignore, pinHint) {
+  if (!overrides || typeof overrides !== 'object') return [];
+  const findings = [];
+  for (const { path, name, range } of walkOverrides(overrides)) {
+    if (ignore.includes(name) || ignore.includes(path)) continue;
+    const kind = classifyRange(range);
+    if (kind !== 'caret' && kind !== 'tilde') continue;
+
+    const entry = lockfile.packages && lockfile.packages[`node_modules/${name}`];
+    const resolvedNote = entry && entry.version ? ` (resolved: ${entry.version})` : '';
+    findings.push({
+      packagePath: `package.json#${section}/${path}`,
+      message: `override range "${range}" is not pinned${resolvedNote}${pinHint}`
+    });
+  }
+  return findings;
+}
+
 const pinnedVersionsRule = {
   id: 'pinned-versions',
   description: 'package.json dependency ranges must be exact versions',
@@ -357,6 +379,15 @@ const pinnedVersionsRule = {
     for (const section of sections) {
       findings.push(...collectUnpinnedRanges(lockfile, packageJson[section], section, ignore));
     }
+
+    // Overrides force transitive versions and can carry floating ranges too — a
+    // caret here silently defeats an otherwise fully-pinned manifest. npm
+    // `overrides` are pinnable (`npm-check pin`); pnpm.overrides are flagged for
+    // manual attention (pin refuses pnpm lockfiles).
+    findings.push(...collectUnpinnedOverrides(packageJson.overrides, lockfile, 'overrides', ignore, ' (run `npm-check pin`)'));
+    const pnpmOverrides = packageJson.pnpm && packageJson.pnpm.overrides;
+    findings.push(...collectUnpinnedOverrides(pnpmOverrides, lockfile, 'pnpm.overrides', ignore, ' (pin manually or regenerate with pnpm)'));
+
     return findings;
   }
 };

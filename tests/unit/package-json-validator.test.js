@@ -186,6 +186,45 @@ describe('validatePackageJson', () => {
     });
   });
 
+  describe('overrides ranges', () => {
+    const base = { name: 'pkg', version: '1.0.0', license: 'MIT' };
+
+    it('accepts valid npm overrides (nested, $-refs, aliases)', () => {
+      const result = validatePackageJson({
+        ...base,
+        overrides: {
+          foo: '1.2.3',
+          bar: { '.': '^2.0.0', baz: '~3.0.0' },
+          reffed: '$foo',
+          aliased: 'npm:other@^1.0.0'
+        }
+      });
+      expect(codes(result)).not.toContain('PJ_INVALID_OVERRIDE_RANGE');
+      expect(codes(result)).not.toContain('PJ_INVALID_OVERRIDES');
+    });
+
+    it('flags an invalid range inside a nested override', () => {
+      const result = validatePackageJson({
+        ...base,
+        overrides: { bar: { baz: 'not a version !!' } }
+      });
+      expect(codes(result)).toContain('PJ_INVALID_OVERRIDE_RANGE');
+    });
+
+    it('flags a non-object overrides field', () => {
+      const result = validatePackageJson({ ...base, overrides: 'nope' });
+      expect(codes(result)).toContain('PJ_INVALID_OVERRIDES');
+    });
+
+    it('validates ranges inside pnpm.overrides too', () => {
+      const result = validatePackageJson({
+        ...base,
+        pnpm: { overrides: { 'foo@1': '^1.0.0', bar: 'not a version !!' } }
+      });
+      expect(codes(result)).toContain('PJ_INVALID_OVERRIDE_RANGE');
+    });
+  });
+
   it('strictMode turns warnings into invalid', () => {
     const result = validatePackageJson({ name: 'pkg', version: '1.0.0' }, { strictMode: true });
     expect(result.errors).toEqual([]);
