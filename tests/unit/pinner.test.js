@@ -219,6 +219,31 @@ describe('pinVersions', () => {
     expect(result.changes.some((c) => c.name === 'reffed')).toBe(false);
     expect(result.skipped.some((s) => s.name === 'reffed')).toBe(false);
   });
+
+  it('does NOT pin a nested override whose name resolves to multiple versions', () => {
+    // A nested override targets a shadowed install path; the top-level entry can
+    // be a different instance. Here `b` exists at 1.0.0 (top-level) and 2.3.4
+    // (under a) — pinning to 1.0.0 would invert the `^2.0.0` override. Skip it.
+    const packageJson = {
+      name: 'p', version: '1.0.0',
+      overrides: { a: { b: '^2.0.0' } }
+    };
+    const lockfile = {
+      name: 'p', version: '1.0.0', lockfileVersion: 3,
+      packages: {
+        '': { name: 'p', version: '1.0.0' },
+        'node_modules/b': { version: '1.0.0' },
+        'node_modules/a': { version: '1.5.0' },
+        'node_modules/a/node_modules/b': { version: '2.3.4' }
+      }
+    };
+
+    const result = pinVersions(packageJson, lockfile);
+    expect(result.packageJson.overrides.a.b).toBe('^2.0.0'); // untouched
+    expect(result.skipped).toContainEqual({ section: 'overrides', name: 'a > b', range: '^2.0.0', reason: 'ambiguous-resolution' });
+    // ambiguous-resolution must NOT trigger the "run npm install" (not-in-lockfile) warning
+    expect(result.warnings.some((w) => w.includes('npm install'))).toBe(false);
+  });
 });
 
 describe('detectIndent', () => {

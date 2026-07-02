@@ -223,6 +223,13 @@ describe('validatePackageJson', () => {
       });
       expect(codes(result)).toContain('PJ_INVALID_OVERRIDE_RANGE');
     });
+
+    it('flags non-string override values (number/null/array)', () => {
+      for (const bad of [42, null, ['^1.0.0']]) {
+        const result = validatePackageJson({ ...base, overrides: { foo: bad } });
+        expect(codes(result)).toContain('PJ_INVALID_OVERRIDE_RANGE');
+      }
+    });
   });
 
   it('strictMode turns warnings into invalid', () => {

@@ -341,6 +341,25 @@ describe('runAudit', () => {
       expect(paths).toContain('package.json#pnpm.overrides/foo@1');
       expect(paths.some((p) => p.includes('/bar'))).toBe(false); // exact, not flagged
     });
+
+    it('runs on a pnpm-flavored lockfile so pnpm.overrides is actually reachable', () => {
+      // pinned-versions is npm+pnpm flavored; a string lockfileVersion => pnpm.
+      const pnpmLock = { lockfileVersion: '9.0', importers: { '.': {} } };
+      const packageJson = { name: 'p', version: '1.0.0', license: 'MIT', pnpm: { overrides: { 'foo@1': '^1.2.0' } } };
+      const report = runAudit({ lockfile: pnpmLock, packageJson });
+      const pinned = report.findings.filter((f) => f.ruleId === 'pinned-versions');
+      expect(pinned.some((f) => f.packagePath === 'package.json#pnpm.overrides/foo@1')).toBe(true);
+    });
+
+    it('strips an @version selector so the ignore list matches by base name', () => {
+      const packageJson = cleanPackageJson();
+      packageJson.overrides = { 'foo@2': '^2.0.0' };
+      const report = runAudit(
+        { lockfile: cleanLockfile(), packageJson },
+        { rules: { 'pinned-versions': ['warn', { ignore: ['foo'] }] } }
+      );
+      expect(report.findings.filter((f) => f.ruleId === 'pinned-versions')).toEqual([]);
+    });
   });
 
   describe('lockfile-sync rule', () => {
