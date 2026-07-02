@@ -30,8 +30,9 @@ npm run test:coverage # coverage report
 - All checks must pass; `prepublishOnly` also runs `test` + `lint`.
 - New behavior needs tests. For a bug fix, add a regression test that **fails
   before** your change and passes after.
-- See `TESTING.md` for the test layout (unit per-module in `tests/unit/`,
-  integration incl. a real `npm ci` compare in `tests/integration/`).
+- See [`docs/TESTING.md`](./docs/TESTING.md) for the test layout (unit
+  per-module in `tests/unit/`, integration incl. a real `npm ci` compare in
+  `tests/integration/`).
 
 ## Style & design
 

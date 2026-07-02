@@ -1,8 +1,9 @@
 // tests/unit/readme-install.test.js
-// Locks the README's install section to an HONEST shape: a public user must have
-// a route that works today (from source), and the registry install must be
-// presented as aspirational ("once published"), never asserted as available —
-// @dependably/npm-check is not on a public registry.
+// Locks the README's install section to the published-package shape: the
+// canonical path is the public-registry install (`npm install -g
+// @dependably/npm-check`, or npx), building from source is delegated to
+// CONTRIBUTING.md, and no private-registry/private-GitLab instructions leak
+// into the public README.
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -10,31 +11,34 @@ import { fileURLToPath } from 'url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const README = fs.readFileSync(path.join(__dirname, '../../README.md'), 'utf8');
 
-// Pull out the "## Installation" section (up to the next top-level heading).
+// Pull out the "## Install" section (up to the next top-level heading).
 function installSection() {
-  const start = README.indexOf('## Installation');
+  const start = README.indexOf('## Install');
   expect(start).toBeGreaterThan(-1);
-  const rest = README.slice(start + '## Installation'.length);
+  const rest = README.slice(start + '## Install'.length);
   const next = rest.indexOf('\n## ');
   return next === -1 ? rest : rest.slice(0, next);
 }
 
-describe('README install section is honest', () => {
+describe('README install section is canonical (published package)', () => {
   const section = installSection();
 
-  test('documents a from-source route that works today (npm link or node bin/cli.js)', () => {
-    expect(section).toMatch(/npm link|node bin\/cli\.js|npm install -g \./);
-    // the clone step grounds the from-source route in the real repo
-    expect(section).toMatch(/git clone/);
-  });
-
-  test('still documents the registry install command', () => {
+  test('leads with the global registry install', () => {
     expect(section).toMatch(/npm install -g @dependably\/npm-check/);
   });
 
-  test('presents the registry install as aspirational ("once published"), not asserted as available', () => {
-    expect(section).toMatch(/once published|not yet|when it is/i);
-    // The old copy asserted it as fact ("Published to the private registry").
-    expect(section).not.toMatch(/^Published to the private registry/im);
+  test('documents the no-install npx route', () => {
+    expect(section).toMatch(/npx @dependably\/npm-check/);
+  });
+
+  test('delegates building from source to CONTRIBUTING.md instead of inline clone steps', () => {
+    expect(section).toMatch(/CONTRIBUTING\.md/);
+    expect(section).not.toMatch(/git clone/);
+  });
+
+  test('does not present the install as aspirational or point at private hosts', () => {
+    expect(section).not.toMatch(/once published|not yet on a public registry/i);
+    expect(section).not.toMatch(/northwardlabs\.ca/);
+    expect(section).not.toMatch(/npm config set @dependably:registry/);
   });
 });

@@ -23,7 +23,7 @@ describe('Integration: npm ci Migration Validation', () => {
       await runNpmCi(workspace.dir);
       const durationV2 = Date.now() - startV2;
       const v2State = await captureNodeModulesState(workspace.dir);
-      console.log(`  ✓ Installed ${v2State.packageCount} packages in ${durationV2}ms`);
+      console.log(`  Installed ${v2State.packageCount} packages in ${durationV2}ms`);
 
       // Step 2: Migrate lockfile to v3
       console.log('→ Migrating lockfile to v3...');
@@ -36,7 +36,7 @@ describe('Integration: npm ci Migration Validation', () => {
 
       // Verify migration changed version
       expect(v3Lockfile.lockfileVersion).toBe(LOCKFILE_VERSIONS.V3);
-      console.log('  ✓ Migration completed (v2 → v3)');
+      console.log('  Migration completed (v2 → v3)');
 
       // Step 3: Clean and reinstall with v3 lockfile
       console.log('→ Cleaning node_modules...');
@@ -48,7 +48,7 @@ describe('Integration: npm ci Migration Validation', () => {
       await runNpmCi(workspace.dir);
       const durationV3 = Date.now() - startV3;
       const v3State = await captureNodeModulesState(workspace.dir);
-      console.log(`  ✓ Installed ${v3State.packageCount} packages in ${durationV3}ms`);
+      console.log(`  Installed ${v3State.packageCount} packages in ${durationV3}ms`);
 
       // Step 4: Compare installations
       console.log('→ Comparing installations...');
@@ -60,7 +60,7 @@ describe('Integration: npm ci Migration Validation', () => {
       expect(comparison.missingInV3).toEqual([]);
       expect(comparison.extraInV3).toEqual([]);
 
-      console.log('  ✓ Installations are identical!');
+      console.log('  Installations are identical!');
 
     } finally {
       await workspace.cleanup();

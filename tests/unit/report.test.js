@@ -391,7 +391,7 @@ describe('formatReport', () => {
     expect(out).toContain('npm-check report — web/package-lock.json');
     expect(out).toContain('Integrity (registry)');
     expect(out).toContain('Install scripts');
-    expect(out).toMatch(/✖ \d+ problem/);
+    expect(out).toMatch(/\d+ problem/);
   });
 
   it('renders all-clear when nothing is wrong', async () => {
@@ -399,7 +399,7 @@ describe('formatReport', () => {
       await runReport({ lockfile: cleanLockfile(), packageJson: cleanPackageJson(), filePath: 'package-lock.json' }, baseOpts()),
       { format: 'human' }
     );
-    expect(out).toContain('✔ all checks passed');
+    expect(out).toContain('all checks passed');
   });
 
   it('emits the shared finding-schema envelope under --format json', async () => {

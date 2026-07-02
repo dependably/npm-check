@@ -2,9 +2,9 @@
 
 ## Overview
 
-This project has two types of tests:
-- **Unit Tests**: Fast, isolated tests with mocks (< 1 second)
-- **Integration Tests**: End-to-end tests with real npm operations in Docker (requires Docker)
+This project has 700+ tests of two types:
+- **Unit Tests** (~675, `tests/unit/`): fast, isolated tests with mocks
+- **Integration Tests** (~60, `tests/integration/`): end-to-end tests with real npm operations, optionally in Docker
 
 ## Running Tests
 
@@ -22,18 +22,16 @@ Runs all tests in `tests/unit/` directory. These are fast and don't require Dock
 # Build Docker images first (one-time setup)
 npm run docker:build
 
-# Run integration tests with Node 18 and npm 10
-npm run docker:test:node18-npm10
+# Run integration tests on the minimum supported Node (22)
+npm run docker:test:node22
 
-# Or run all Node/npm combinations
+# Or run all supported Node/npm combinations
 npm run docker:test:all
 ```
 
-**Available Docker test targets:**
-- `npm run docker:test:node18-npm9` - Node 18 with npm 9
-- `npm run docker:test:node18-npm10` - Node 18 with npm 10
-- `npm run docker:test:node20` - Node 20 with npm 10
-- `npm run docker:test:node22` - Node 22 with npm 10
+**Available Docker test targets** (the package supports Node >= 22):
+- `npm run docker:test:node22` - Node 22 with npm 10 (minimum supported)
+- `npm run docker:test:node24` - Node 24 with npm 11 (current)
 
 ### All Tests (Unit + Integration)
 
@@ -173,7 +171,7 @@ npm run test:integration
 
 # In Docker
 npm run docker:build
-npm run docker:test:node20
+npm run docker:test:node22
 ```
 
 ## Debugging
@@ -195,7 +193,7 @@ cat /tmp/plf-test-*/*/package-lock.json
 Debug inside a Docker container:
 
 ```bash
-docker-compose -f tests/integration/docker/docker-compose.yml run --rm test-node18-npm10 sh
+docker-compose -f tests/integration/docker/docker-compose.yml run --rm test-node22-npm10 sh
 ```
 
 Then inside the container:
@@ -256,79 +254,16 @@ npm run test:integration -- --env.NPM_LOGLEVEL=debug
 
 ## CI/CD Integration
 
-### GitHub Actions Example
-
-```yaml
-name: Tests
-
-on: [push, pull_request]
-
-jobs:
-  unit:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v3
-      - uses: actions/setup-node@v3
-        with:
-          node-version: 18
-      - run: npm ci
-      - run: npm run test:unit
-
-  integration:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v3
-      - run: npm run docker:build
-      - run: npm run docker:test:node18-npm10
-```
+The real pipeline lives in [`.github/workflows/ci.yml`](../.github/workflows/ci.yml): lint + the unit suite on a Node version matrix (22, 24), plus a secret scan and a pack/build check. Integration tests are Docker/registry-based and stay on-demand (run them locally with the commands above).
 
 ## Troubleshooting
 
-### Docker not found
+The two common failures:
 
-```bash
-# Install Docker Desktop or Engine
-# Then verify:
-docker --version
-```
+- **Docker not found** — install Docker Desktop/Engine and verify with `docker --version`.
+- **Tests timeout** — integration tests run real `npm ci`; raise the timeout via `JEST_TIMEOUT=600000 npm run test:integration` or per test (`test('name', async () => { ... }, 600000)`).
 
-### npm ci fails in container
-
-```bash
-# Check npm/Node compatibility
-docker-compose -f tests/integration/docker/docker-compose.yml \
-  run --rm test-node18-npm10 \
-  sh -c "node --version && npm --version"
-
-# Check network connectivity
-docker-compose -f tests/integration/docker/docker-compose.yml \
-  run --rm test-node18-npm10 \
-  npm config get registry
-```
-
-### Tests timeout
-
-Increase Jest timeout in tests or via environment:
-
-```bash
-# Via npm script
-JEST_TIMEOUT=600000 npm run test:integration
-
-# Or in test file
-test('name', async () => { ... }, 600000);
-```
-
-### Port already in use
-
-If tests fail with port conflicts:
-
-```bash
-# Stop all running containers
-docker-compose -f tests/integration/docker/docker-compose.yml down
-
-# Or remove all containers
-docker container prune
-```
+For anything container-side (npm/Node mismatch, registry access, stale containers), debug inside the container with the [interactive Docker session](#interactive-docker-session) above, and `docker-compose -f tests/integration/docker/docker-compose.yml down` to clear stale state.
 
 ## Performance Profiling
 
@@ -352,7 +287,7 @@ test('profile npm ci', async () => {
 docker stats
 
 # In another terminal
-npm run docker:test:node20
+npm run docker:test:node22
 ```
 
 ## Best Practices
@@ -372,4 +307,3 @@ npm run docker:test:node20
 - [ ] Test workspace/monorepo configurations
 - [ ] Add git dependency tests
 - [ ] Performance benchmarking suite
-- [ ] GitHub Actions CI workflow
