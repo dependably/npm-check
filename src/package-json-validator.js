@@ -14,6 +14,11 @@ export class PackageJsonValidationError extends Error {
 // npm package-name rules (subset of validate-npm-package-name; no new deps):
 // optional @scope/, lowercase, url-safe, can't start with . or _.
 const NAME_RE = /^(?:@[a-z0-9-~][a-z0-9-._~]*\/)?[a-z0-9-~][a-z0-9-._~]*$/;
+// Legacy variant for dependency keys: npm's registry still hosts mixed-case names
+// published before the lowercase-only rule (e.g. JSONStream). Case-insensitive so
+// those names are not flagged PJ_INVALID_DEP_NAME. The own-package `name` field
+// still uses the strict NAME_RE (new uploads must be lowercase).
+const LEGACY_NAME_RE = /^(?:@[a-z0-9-~][a-z0-9-._~]*\/)?[a-z0-9-~][a-z0-9-._~]*$/i;
 const SEMVER_RE = /^\d+\.\d+\.\d+(?:[-+].*)?$/;
 const DEP_SECTIONS = ['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies'];
 
@@ -26,7 +31,7 @@ function isValidRange(range) {
   if (typeof range !== 'string') return false;
   const r = range.trim();
   if (r === '' || r === '*' || r === 'latest' || r === 'x') return true;
-  if (/^(npm|file|git|git\+ssh|git\+https|git\+http|github|http|https|workspace):/i.test(r)) return true;
+  if (/^(npm|file|git|git\+ssh|git\+https|git\+http|github|http|https|workspace|catalog|jsr):/i.test(r)) return true;
   if (/^[\w.-]+\/[\w.#/-]+$/.test(r)) return true; // owner/repo[#ref] shorthand
   if (/^[a-z][a-z0-9._-]*$/i.test(r)) return true; // dist-tag (latest, next, beta, canary, ...)
   // caret/tilde/comparator/exact/x-ranges/||/hyphen/v-prefixed ranges
@@ -75,7 +80,7 @@ function validateDependencySections(packageJson, errors) {
       continue;
     }
     for (const [name, range] of Object.entries(deps)) {
-      if (!NAME_RE.test(name)) {
+      if (!LEGACY_NAME_RE.test(name)) {
         errors.push(new PackageJsonValidationError(`invalid dependency name "${name}" in ${section}`, 'PJ_INVALID_DEP_NAME'));
       }
       if (!isValidRange(range)) {
