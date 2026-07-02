@@ -44,7 +44,7 @@ function validateVersionStructure(lockfile, version, errors, warnings, options) 
     if (!lockfile.dependencies || typeof lockfile.dependencies !== 'object') {
       errors.push(new ValidationError('Missing dependencies object', 'MISSING_DEPENDENCIES'));
     } else {
-      validateDependenciesTree(lockfile.dependencies, errors);
+      validateDependenciesTree(lockfile.dependencies, errors, warnings);
     }
   }
 
@@ -87,10 +87,22 @@ export function validatePackageLock(lockfile, packageJson = null, options = {}) 
   return { valid, errors, warnings, info };
 }
 
-// Shared sha256/sha512 integrity-hash shape check.
+// Recognise one SRI token: sha1/sha256/sha384/sha512.
+const SRI_TOKEN_REGEX = /^sha(?:1|256|384|512)-[A-Za-z0-9+/=]+$/;
+
+// Accept sha1/sha256/sha384/sha512 single hashes and space-separated multi-hash
+// SRI strings (e.g. 'sha512-... sha1-...'). Every whitespace-separated token
+// must match a recognised algorithm.
 function isValidIntegrityHash(value) {
-  const integrityRegex = /^sha(?:256|512)-[A-Za-z0-9+/=.\-]+$/;
-  return typeof value === 'string' && integrityRegex.test(value);
+  if (typeof value !== 'string' || value.trim() === '') return false;
+  return value.trim().split(/\s+/).every(token => SRI_TOKEN_REGEX.test(token));
+}
+
+// Returns true when any token in a (valid) integrity value uses the legacy sha1
+// algorithm. Callers should emit a warning (not an error) suggesting an upgrade.
+function hasLegacySha1(value) {
+  if (typeof value !== 'string') return false;
+  return value.trim().split(/\s+/).some(token => token.startsWith('sha1-'));
 }
 
 // Classify a dependency entry by shape. Returns 'leaf' for string/boolean leaves,
@@ -106,7 +118,8 @@ function classifyDependencyEntry(dep) {
 }
 
 // Validate a single dependency entry; recurses into nested dependencies.
-function validateDependencyEntry(name, dep, errors, depth) {
+// warnings is threaded through so sha1 hashes can be flagged without an error.
+function validateDependencyEntry(name, dep, errors, warnings, depth) {
   if (dep == null) {
     errors.push(new ValidationError(`Dependency ${name} is not an object`, 'INVALID_DEPENDENCY'));
     return;
@@ -131,26 +144,36 @@ function validateDependencyEntry(name, dep, errors, depth) {
     errors.push(new ValidationError(`Missing or invalid version for ${name}`, 'MISSING_DEP_VERSION'));
   }
 
-  // Validate integrity on dependency objects if present
-  if (dep.integrity && !isValidIntegrityHash(dep.integrity)) {
-    errors.push(new ValidationError(`Invalid integrity hash for dependency ${name}`, 'INVALID_INTEGRITY'));
+  // Validate integrity on dependency objects if present.
+  // sha1 is accepted as structurally valid but emits a LEGACY_INTEGRITY warning.
+  if (dep.integrity) {
+    if (!isValidIntegrityHash(dep.integrity)) {
+      errors.push(new ValidationError(`Invalid integrity hash for dependency ${name}`, 'INVALID_INTEGRITY'));
+    } else if (hasLegacySha1(dep.integrity)) {
+      warnings.push({ code: 'LEGACY_INTEGRITY', message: `Dependency ${name} uses sha1 integrity; run upgrade-hashes to convert to sha512` });
+    }
   }
 
   if (dep.dependencies) {
-    validateDependenciesTree(dep.dependencies, errors, depth + 1);
+    validateDependenciesTree(dep.dependencies, errors, warnings, depth + 1);
   }
 }
 
-function validateDependenciesTree(dependencies, errors, depth = 0) {
+function validateDependenciesTree(dependencies, errors, warnings, depth = 0) {
   for (const [name, dep] of Object.entries(dependencies)) {
-    validateDependencyEntry(name, dep, errors, depth);
+    validateDependencyEntry(name, dep, errors, warnings, depth);
   }
 }
 
 // Validate the integrity field (and the allowMissingIntegrity policy) for a package entry.
+// sha1 integrity is accepted as structurally valid but emits a LEGACY_INTEGRITY warning.
 function validatePackageIntegrity(path, pkg, errors, warnings, options) {
-  if (pkg.integrity && !isValidIntegrityHash(pkg.integrity)) {
-    errors.push(new ValidationError(`Invalid integrity hash for package at ${path}`, 'INVALID_INTEGRITY'));
+  if (pkg.integrity) {
+    if (!isValidIntegrityHash(pkg.integrity)) {
+      errors.push(new ValidationError(`Invalid integrity hash for package at ${path}`, 'INVALID_INTEGRITY'));
+    } else if (hasLegacySha1(pkg.integrity)) {
+      warnings.push({ code: 'LEGACY_INTEGRITY', message: `Package at ${path} uses sha1 integrity; run upgrade-hashes to convert to sha512` });
+    }
   }
   if (options.allowMissingIntegrity === false && !pkg.integrity) {
     // Treat missing integrity as an error when not allowed, and also record a warning
@@ -160,13 +183,19 @@ function validatePackageIntegrity(path, pkg, errors, warnings, options) {
 }
 
 // Validate the resolved-URL scheme for a package entry.
+// Guards typeof before calling startsWith to avoid a crash on corrupted
+// non-string resolved values (e.g. "resolved": 42 from a bad merge).
 function validatePackageResolved(path, pkg, warnings) {
   if (!pkg.resolved) {
     return;
   }
+  if (typeof pkg.resolved !== 'string') {
+    warnings.push({ code: 'INVALID_RESOLVED', message: `Invalid resolved URL for package at ${path}: ${pkg.resolved}` });
+    return;
+  }
   const validSchemes = ['https://', 'http://', 'git+', 'git://', 'file:'];
   const hasValidScheme = validSchemes.some(scheme => pkg.resolved.startsWith(scheme));
-  if (typeof pkg.resolved !== 'string' || !hasValidScheme) {
+  if (!hasValidScheme) {
     warnings.push({ code: 'INVALID_RESOLVED', message: `Invalid resolved URL for package at ${path}: ${pkg.resolved}` });
   }
 }
@@ -174,10 +203,10 @@ function validatePackageResolved(path, pkg, warnings) {
 // Recurse into each dependency section of a package entry. packages-map
 // dependency values are version-range strings (depth 1 allows string/boolean
 // leaves), unlike the v1 top-level tree.
-function validatePackageDependencySections(pkg, errors) {
+function validatePackageDependencySections(pkg, errors, warnings) {
   for (const section of ['dependencies', 'devDependencies', 'peerDependencies', 'optionalDependencies']) {
     if (pkg[section]) {
-      validateDependenciesTree(pkg[section], errors, 1);
+      validateDependenciesTree(pkg[section], errors, warnings, 1);
     }
   }
 }
@@ -199,7 +228,7 @@ function validatePackageEntry(path, pkg, errors, warnings, options) {
   }
   validatePackageIntegrity(path, pkg, errors, warnings, options);
   validatePackageResolved(path, pkg, warnings);
-  validatePackageDependencySections(pkg, errors);
+  validatePackageDependencySections(pkg, errors, warnings);
 }
 
 function validatePackagesMap(packages, errors, warnings, options) {
@@ -209,7 +238,7 @@ function validatePackagesMap(packages, errors, warnings, options) {
 }
 
 // Check that every package.json dependency in a section is present in the
-// lockfile root entry's matching section.
+// lockfile root entry's matching section (v2/v3 packages map path).
 function checkDependencySectionInLockfile(rootEntry, packageJson, section, label, code, errors) {
   const lockDeps = rootEntry && rootEntry[section];
   const pkgDeps = packageJson[section] || {};
@@ -220,10 +249,34 @@ function checkDependencySectionInLockfile(rootEntry, packageJson, section, label
   }
 }
 
+// v1 lockfile cross-check: each package.json dep section is checked against
+// the top-level dependencies tree (v1 hoists all deps to the top level).
+function checkDependencySectionInV1Tree(v1Deps, packageJson, section, label, code, errors) {
+  const pkgDeps = packageJson[section] || {};
+  for (const [name] of Object.entries(pkgDeps)) {
+    if (!v1Deps[name]) {
+      errors.push(new ValidationError(`Missing ${label} ${name} in lockfile`, code));
+    }
+  }
+}
+
 function validateAgainstPackageJson(lockfile, packageJson, errors) {
   const rootEntry = lockfile.packages && lockfile.packages[''];
+
+  if (!rootEntry) {
+    // v1 lockfile (or a degenerate v2/v3 missing the root packages[''] entry):
+    // fall back to the top-level dependencies tree for the cross-check.
+    if (lockfile.dependencies) {
+      checkDependencySectionInV1Tree(lockfile.dependencies, packageJson, 'dependencies', 'dependency', 'MISSING_IN_LOCKFILE', errors);
+      checkDependencySectionInV1Tree(lockfile.dependencies, packageJson, 'devDependencies', 'devDependency', 'MISSING_DEV_IN_LOCKFILE', errors);
+      checkDependencySectionInV1Tree(lockfile.dependencies, packageJson, 'optionalDependencies', 'optionalDependency', 'MISSING_OPT_IN_LOCKFILE', errors);
+      checkDependencySectionInV1Tree(lockfile.dependencies, packageJson, 'peerDependencies', 'peerDependency', 'MISSING_PEER_IN_LOCKFILE', errors);
+    }
+    return;
+  }
 
   checkDependencySectionInLockfile(rootEntry, packageJson, 'dependencies', 'dependency', 'MISSING_IN_LOCKFILE', errors);
   checkDependencySectionInLockfile(rootEntry, packageJson, 'devDependencies', 'devDependency', 'MISSING_DEV_IN_LOCKFILE', errors);
   checkDependencySectionInLockfile(rootEntry, packageJson, 'optionalDependencies', 'optionalDependency', 'MISSING_OPT_IN_LOCKFILE', errors);
+  checkDependencySectionInLockfile(rootEntry, packageJson, 'peerDependencies', 'peerDependency', 'MISSING_PEER_IN_LOCKFILE', errors);
 }

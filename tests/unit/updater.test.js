@@ -204,4 +204,58 @@ describe('Updater Functions', () => {
       expect(duplicates.has('(root)')).toBe(false);
     });
   });
+
+  describe('Regression: #32 – deduplicatePackages v1 tree is preserve-only', () => {
+    // The old implementation ran a dead Set-filter over the top-level
+    // dependencies object. JS object keys are unique by construction, so the
+    // Set check (seenDeps.has(name)) was always false and every entry was
+    // copied verbatim — a no-op masquerading as deduplication.
+    //
+    // The fix removes the dead code and documents the preserve-only contract.
+    // Behavioral output is identical before and after (the no-op produced the
+    // same entries), but the code is now honest about what it does.
+    // These tests pin the preserve-only contract.
+
+    const v1Lockfile = {
+      lockfileVersion: 1,
+      name: 'test-app',
+      version: '1.0.0',
+      dependencies: {
+        lodash: {
+          version: '4.17.21',
+          integrity: 'sha1-FjMGeBqBuCoVBMYKNKDxwIvI5KA=',
+          dependencies: {
+            // nested transitive
+            'sub-dep': { version: '1.0.0' }
+          }
+        },
+        react: { version: '18.2.0' },
+        axios: { version: '1.6.0' }
+      }
+    };
+
+    it('preserves all top-level dependency keys in a v1 lockfile', () => {
+      const result = deduplicatePackages(v1Lockfile);
+      expect(Object.keys(result.dependencies)).toEqual(['lodash', 'react', 'axios']);
+    });
+
+    it('preserves nested sub-dependency objects in a v1 lockfile', () => {
+      const result = deduplicatePackages(v1Lockfile);
+      expect(result.dependencies.lodash.dependencies['sub-dep']).toBeDefined();
+      expect(result.dependencies.lodash.dependencies['sub-dep'].version).toBe('1.0.0');
+    });
+
+    it('does not mutate the original v1 lockfile', () => {
+      const original = JSON.parse(JSON.stringify(v1Lockfile));
+      deduplicatePackages(v1Lockfile);
+      expect(v1Lockfile).toEqual(original);
+    });
+
+    it('preserves v1 lockfile top-level metadata fields', () => {
+      const result = deduplicatePackages(v1Lockfile);
+      expect(result.name).toBe('test-app');
+      expect(result.version).toBe('1.0.0');
+      expect(result.lockfileVersion).toBe(1);
+    });
+  });
 });
