@@ -12,11 +12,13 @@ import { checkDeprecations } from './deprecation.js';
 import { detectLockfileFlavor } from './format-library.js';
 import { buildEnvelope } from './schema.js';
 
-// Sections that apply to a pnpm lockfile: the registry-backed scans plus the
-// config validators (package.json, .npmrc, pnpm-workspace.yaml + pnpm field).
-// The npm-lockfile-shape sections (and license, pending a `.pnpm` store walk) are
+// Sections that apply to a pnpm lockfile: the registry-backed scans, the config
+// validators (package.json, .npmrc, pnpm-workspace.yaml + pnpm field), and
+// pinned-versions (a manifest-level check — pnpm dep ranges and pnpm.overrides
+// pin just like npm's, and the pinned-versions rule is npm+pnpm flavored). The
+// npm-lockfile-shape sections (and license, pending a `.pnpm` store walk) are
 // marked N/A rather than rendered as a misleading pass.
-const PNPM_LIVE_SECTIONS = new Set(['integrity', 'vuln', 'deprecated', 'package-json', 'npmrc', 'pnpm-config']);
+const PNPM_LIVE_SECTIONS = new Set(['integrity', 'vuln', 'deprecated', 'package-json', 'npmrc', 'pnpm-config', 'pinned']);
 // The pnpm-config section has no meaning for an npm lockfile.
 const NPM_NA_SECTIONS = new Set(['pnpm-config']);
 
