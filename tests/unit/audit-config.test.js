@@ -184,6 +184,22 @@ describe('shared .dependably-check config', () => {
     expect(config.sharedConfigPath).toBe(path.join(tmpDir, SHARED_CONFIG_FILENAME));
   });
 
+  it('adds shared hosts to no-remote-deps too, not just secure-resolved (regression #27)', () => {
+    // A private-registry tarball is a REGISTRY dep, not a remote/git one. The
+    // shared allowlist must reach both host-based rules, or the no-remote-deps
+    // rule keeps flagging private-registry packages and the --fail-on gate fails.
+    fs.writeFileSync(path.join(tmpDir, '.git'), '');
+    fs.writeFileSync(
+      path.join(tmpDir, SHARED_CONFIG_FILENAME),
+      JSON.stringify({ common: { allowedRegistryHosts: ['npm.corp.example.com'] } })
+    );
+
+    const config = loadAuditConfig(tmpDir);
+    const noRemote = config.rules['no-remote-deps'].options.allowedHosts;
+    expect(noRemote).toContain('npm.corp.example.com');
+    expect(noRemote).toContain('registry.npmjs.org'); // built-in default preserved
+  });
+
   it('walks up from a nested cwd to find .dependably-check at the repo root', () => {
     fs.writeFileSync(path.join(tmpDir, '.git'), '');
     fs.writeFileSync(

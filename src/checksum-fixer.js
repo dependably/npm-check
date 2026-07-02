@@ -9,7 +9,7 @@ import {
   deriveRegistryBase,
   DEFAULT_REGISTRY
 } from './integrity.js';
-import { hashPackageDirectory } from './checker.js';
+import { hashPackageDirectory, collectPackageFiles } from './checker.js';
 
 // Re-exported for back-compat; the canonical definition now lives in integrity.js
 export { deriveRegistryBase } from './integrity.js';
@@ -153,7 +153,8 @@ async function tryLocalFallback(candidate, baseDir, buckets) {
   const resolvedBase = path.resolve(baseDir);
   const pkgDir = path.resolve(path.join(baseDir, key));
 
-  // Containment check: reject any key that resolves outside the project root.
+  // Containment check (textual): reject any key that resolves outside the
+  // project root (e.g. node_modules/../../secret).
   if (!pkgDir.startsWith(resolvedBase + path.sep)) {
     return false;
   }
@@ -165,8 +166,41 @@ async function tryLocalFallback(candidate, baseDir, buckets) {
     return false;
   }
 
+  // Symlink-aware containment: the textual resolve above can't see through a
+  // symlink at the package path (node_modules/x -> ../../outside). Resolve the
+  // real on-disk location and re-check it stays inside the (real) project root.
+  let realDir;
   try {
-    const localHash = await hashPackageDirectory(pkgDir);
+    realDir = fs.realpathSync(pkgDir);
+  } catch {
+    return false;
+  }
+  let realBase = resolvedBase;
+  try {
+    realBase = fs.realpathSync(resolvedBase);
+  } catch { /* base unreadable — fall back to the textual base */ }
+  if (realDir !== realBase && !realDir.startsWith(realBase + path.sep)) {
+    return false;
+  }
+
+  // A non-directory at the path can't be a package dir.
+  try {
+    if (!fs.statSync(realDir).isDirectory()) return false;
+  } catch {
+    return false;
+  }
+
+  // An empty or interrupted-install directory yields zero hashable files, which
+  // hashPackageDirectory digests to the constant sha512-of-nothing — recording
+  // that as a "fix" is worse than leaving the entry unresolved. Use the same
+  // file-collection the hasher uses, so the emptiness check matches exactly.
+  const hashableFiles = await collectPackageFiles(realDir);
+  if (hashableFiles.length === 0) {
+    return false;
+  }
+
+  try {
+    const localHash = await hashPackageDirectory(realDir);
     buckets.changes.push(makeChange(key, entry, name, localHash, 'local-directory'));
     return true;
   } catch {

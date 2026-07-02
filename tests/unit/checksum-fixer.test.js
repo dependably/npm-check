@@ -203,6 +203,70 @@ describe('fixChecksums', () => {
     }
   });
 
+  it('#17: an existing-but-empty package dir is unresolved, not a garbage hash', async () => {
+    // An interrupted install can leave an empty package directory. hashPackageDirectory
+    // digests zero files to the constant sha512-of-nothing; recording that as a
+    // "fix" is worse than leaving the entry unresolved.
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'npm-check-empty-'));
+    try {
+      fs.mkdirSync(path.join(tmpDir, 'node_modules', 'empty-pkg'), { recursive: true }); // no files
+
+      const lockfile = makeLockfile({
+        'node_modules/empty-pkg': {
+          version: '1.0.0',
+          resolved: 'https://registry.npmjs.org/empty-pkg/-/empty-pkg-1.0.0.tgz'
+        }
+      });
+
+      const result = await fixChecksums(lockfile, {
+        fetchIntegrity: async () => null,
+        localFallback: true,
+        baseDir: tmpDir
+      });
+
+      expect(result.changes).toEqual([]);
+      expect(result.unresolved).toHaveLength(1);
+      expect(result.changes.some(c => c.to === SHA512_OF_NOTHING)).toBe(false);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('#17: a symlink at the package path escaping the project root is rejected', async () => {
+    // The textual containment check can't see through a symlink; realpath must.
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'npm-check-symlink-'));
+    try {
+      const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'npm-check-outside-'));
+      fs.writeFileSync(path.join(outside, 'secret.txt'), 'top secret');
+      const nm = path.join(tmpDir, 'node_modules');
+      fs.mkdirSync(nm, { recursive: true });
+      try {
+        fs.symlinkSync(outside, path.join(nm, 'escapee'), 'dir');
+      } catch {
+        return; // platform without symlink permission — skip
+      }
+
+      const lockfile = makeLockfile({
+        'node_modules/escapee': {
+          version: '1.0.0',
+          resolved: 'https://registry.npmjs.org/escapee/-/escapee-1.0.0.tgz'
+        }
+      });
+
+      const result = await fixChecksums(lockfile, {
+        fetchIntegrity: async () => null,
+        localFallback: true,
+        baseDir: tmpDir
+      });
+
+      expect(result.changes).toEqual([]);
+      expect(result.unresolved).toHaveLength(1);
+      fs.rmSync(outside, { recursive: true, force: true });
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   it('hashes file: tarball deps relative to baseDir', async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'npm-check-tarball-'));
     try {

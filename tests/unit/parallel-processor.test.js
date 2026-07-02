@@ -56,11 +56,13 @@ describe('Parallel Processor', () => {
     // to drive (no fixture files committed to src/workers).
     let echoWorkerPath;
     let crashWorkerPath;
+    let exit0WorkerPath;
 
     beforeAll(() => {
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'npm-check-wp-'));
       echoWorkerPath = path.join(dir, 'echo-worker.mjs');
       crashWorkerPath = path.join(dir, 'crash-worker.mjs');
+      exit0WorkerPath = path.join(dir, 'exit0-worker.mjs');
 
       fs.writeFileSync(
         echoWorkerPath,
@@ -83,10 +85,20 @@ describe('Parallel Processor', () => {
           'parentPort.on("message", () => { throw new Error("worker crashed"); });'
         ].join('\n')
       );
+
+      // Exits cleanly (code 0) mid-task without ever posting a result — the
+      // orphaned-task-on-clean-exit case the 'exit' handler must still catch.
+      fs.writeFileSync(
+        exit0WorkerPath,
+        [
+          "import { parentPort } from 'worker_threads';",
+          'parentPort.on("message", () => { process.exit(0); });'
+        ].join('\n')
+      );
     });
 
     afterAll(() => {
-      for (const p of [echoWorkerPath, crashWorkerPath]) {
+      for (const p of [echoWorkerPath, crashWorkerPath, exit0WorkerPath]) {
         try { if (p && fs.existsSync(p)) fs.unlinkSync(p); } catch { /* ignore */ }
       }
     });
@@ -147,11 +159,31 @@ describe('Parallel Processor', () => {
         await expect(
           withTimeout(pool.execute({ chunkIndex: 0 }), 8000, 'crash 1')
         ).rejects.toThrow();
-        // Second task must also settle (reject), proving we did not post to the
-        // dead thread and hang.
-        await expect(
-          withTimeout(pool.execute({ chunkIndex: 1 }), 8000, 'crash 2')
-        ).rejects.toThrow();
+        // Second task must also settle (reject) via a respawned worker, proving we
+        // did not post to the dead thread and hang. Assert it's a REAL rejection,
+        // not the withTimeout fallback — otherwise a hanging pool would pass here.
+        const err = await withTimeout(pool.execute({ chunkIndex: 1 }), 8000, 'crash 2')
+          .then(() => { throw new Error('expected rejection'); }, (e) => e);
+        expect(err.message).not.toMatch(/^timeout:/);
+      } finally {
+        await pool.terminate();
+      }
+    });
+
+    it('rejects an in-flight task when a worker exits cleanly (code 0) mid-task (regression #11)', async () => {
+      // Old bug: the 'exit' handler only treated code !== 0 as failure, so a
+      // worker that process.exit(0)'d mid-task left its promise forever unsettled
+      // and (at pool size 1) wedged the pool. Must reject, not hang.
+      const pool = new WorkerPool(1, exit0WorkerPath);
+      pool.init();
+      try {
+        const err = await withTimeout(pool.execute({ chunkIndex: 0 }), 8000, 'exit0')
+          .then(() => { throw new Error('expected rejection'); }, (e) => e);
+        expect(err.message).not.toMatch(/^timeout:/);
+        // The pool respawns, so a follow-up task on a fresh worker still settles.
+        const err2 = await withTimeout(pool.execute({ chunkIndex: 1 }), 8000, 'exit0 followup')
+          .then(() => { throw new Error('expected rejection'); }, (e) => e);
+        expect(err2.message).not.toMatch(/^timeout:/);
       } finally {
         await pool.terminate();
       }

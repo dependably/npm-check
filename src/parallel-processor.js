@@ -63,7 +63,11 @@ export class WorkerPool {
     // exited and must not be reused. Reject its in-flight task and replace it.
     worker.on('error', (error) => this._handleWorkerFailure(info, error));
     worker.on('exit', (code) => {
-      if (!this.terminated && code !== 0) {
+      if (this.terminated) return;
+      // Any exit that orphans an in-flight task must reject it and respawn —
+      // even a clean (code 0) exit mid-task, which would otherwise leave the
+      // task's promise forever unsettled and (at pool size 1) wedge the pool.
+      if (info.current || code !== 0) {
         this._handleWorkerFailure(info, new Error(`Worker ${index} exited with code ${code}`));
       }
     });
@@ -226,8 +230,10 @@ export async function processInParallel(lockfile, operation, options = {}) {
   // Chunk the lockfile
   const chunks = chunkLockfile(lockfile, chunkSize);
 
-  if (chunks.length === 1) {
-    // Single chunk, no need for parallel processing
+  if (chunks.length === 1 && operation !== 'validation') {
+    // Single chunk, no need for parallel processing. Validation is excluded: it
+    // must still run through the worker so it returns the merged
+    // `{ valid, errors, warnings, info }` shape rather than a raw lockfile chunk.
     return chunks[0];
   }
 

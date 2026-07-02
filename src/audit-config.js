@@ -262,17 +262,26 @@ export function loadAuditConfig(cwd = process.cwd(), explicitPath = null) {
 }
 
 /**
- * Add the given hosts to the secure-resolved rule's `allowedHosts`, deduplicated,
- * without replacing the existing entries. No-op when the rule is absent.
+ * Add the given hosts to every host-based rule's `allowedHosts`, deduplicated,
+ * without replacing the existing entries. No-op for rules that are absent.
+ *
+ * BOTH `secure-resolved` (which registries are trusted for HTTPS resolution) and
+ * `no-remote-deps` (which registry hosts count as a registry rather than a
+ * remote/git dep) consult `allowedHosts`. The shared `.dependably-check`
+ * allowlist must reach both — otherwise a private-registry project silences one
+ * rule but still trips the other, breaking the documented `--fail-on` CI gate.
  *
  * @param {object} config - A merged audit config (from mergeConfig)
  * @param {string[]} hosts - Bare hostnames to add to the allowlist
  */
 export function extendAllowedHosts(config, hosts) {
-  const rule = config.rules && config.rules['secure-resolved'];
-  if (!rule) return;
-  const existing = Array.isArray(rule.options.allowedHosts) ? rule.options.allowedHosts : [];
-  rule.options = { ...rule.options, allowedHosts: [...new Set([...existing, ...hosts])] };
+  for (const ruleId of ['secure-resolved', 'no-remote-deps']) {
+    const rule = config.rules && config.rules[ruleId];
+    if (!rule) continue;
+    const opts = rule.options || {};
+    const existing = Array.isArray(opts.allowedHosts) ? opts.allowedHosts : [];
+    rule.options = { ...opts, allowedHosts: [...new Set([...existing, ...hosts])] };
+  }
 }
 
 /**

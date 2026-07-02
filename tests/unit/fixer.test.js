@@ -132,6 +132,31 @@ describe('Automated Fixer', () => {
       expect(gitPkg.integrity).toBeUndefined();
     });
 
+    it('does not stamp placeholder integrity on git/bundled deps from a v1 tree (regression #22)', () => {
+      // A v1 git dep carries its git URL in `version` (no `resolved`), and a v1
+      // bundled dep is flagged `bundled: true`. When fixPackageLock auto-migrates
+      // v1 -> v2 and then fills integrity, those must be classified git/bundled
+      // (no registry tarball) and left untouched — a fake sha512-PLACEHOLDER would
+      // make every npm ci fail EINTEGRITY.
+      const v1WithGitAndBundled = {
+        name: 'p',
+        version: '1.0.0',
+        lockfileVersion: 1,
+        dependencies: {
+          'git-dep': { version: 'git+https://github.com/u/r.git#abc123' },
+          'bundled-dep': { version: '2.0.0', bundled: true }
+        }
+      };
+
+      const { fixedLockfile } = fixPackageLock(v1WithGitAndBundled, { fillMissingIntegrity: true, dedupe: false });
+      const git = fixedLockfile.packages['node_modules/git-dep'];
+      const bundled = fixedLockfile.packages['node_modules/bundled-dep'];
+      expect(git.resolved).toBe('git+https://github.com/u/r.git#abc123');
+      expect(git.integrity).toBeUndefined();
+      expect(bundled.inBundle).toBe(true);
+      expect(bundled.integrity).toBeUndefined();
+    });
+
     it('handles optional and peer dependencies correctly', () => {
       const withOptional = {
         name: 'p',

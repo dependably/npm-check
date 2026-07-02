@@ -118,6 +118,18 @@ function v1NodeToPackageEntry(node) {
   if (node.integrity) entry.integrity = node.integrity;
   if (node.dev) entry.dev = true;
   if (node.optional) entry.optional = true;
+  // A v1 bundled dep is flagged `bundled: true`; v2/v3 spell it `inBundle`.
+  // Preserve it so forEachPackageEntry keeps classifying the entry as bundled
+  // (no registry tarball → the fixer must not stamp placeholder integrity).
+  if (node.bundled) entry.inBundle = true;
+  // A v1 git dep carries its git URL in `version`, often with no `resolved`.
+  // v2/v3 classify git deps by a `git+`/`git://` `resolved`, so surface it there;
+  // otherwise the entry looks like a plain registry package and gets a bogus
+  // placeholder integrity stamped on it.
+  if (!entry.resolved && typeof node.version === 'string' &&
+      (node.version.startsWith('git+') || node.version.startsWith('git://'))) {
+    entry.resolved = node.version;
+  }
   if (node.requires && typeof node.requires === 'object') {
     entry.dependencies = { ...node.requires };
   }
@@ -170,9 +182,18 @@ function migrateV1toV2(lockfile) {
 // the legacy dependencies tree and top-level `requires` that v3 must not carry.
 function migrateV2toV3(lockfile) {
   const { dependencies, requires, ...rest } = lockfile;
-  void dependencies;
   void requires;
-  return { ...rest, packages: { ...(lockfile.packages || {}) } };
+  let packages = lockfile.packages;
+  if (!packages || typeof packages !== 'object' || Object.keys(packages).length === 0) {
+    // A merge-damaged v2 may carry only the legacy dependencies tree. Rebuild
+    // the packages map from it rather than silently emitting an empty v3 that
+    // destroys every locked resolution (mirrors migrateV2toV1's fallback).
+    packages = buildPackagesFromV1Tree(lockfile);
+  } else {
+    packages = { ...packages };
+  }
+  void dependencies;
+  return { ...rest, packages };
 }
 
 // V3 -> V2: keep the packages map verbatim; reconstruct the legacy dependencies

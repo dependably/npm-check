@@ -391,6 +391,28 @@ describe('checkIntegrity', () => {
     expect(result.valid).toBe(false);
     expect(result.failed).toBe(1);
   });
+
+  // Two sha512 tokens where only the FIRST matches the registry. npm/ssri accepts
+  // a tarball matching EITHER sha512, so 'sha512-GOOD sha512-EVIL' would let npm
+  // install a tarball hashing to EVIL. A checker that only compared the first
+  // token reported this lockfile clean (a tamper-detection bypass). Every sha512
+  // token must equal the registry's.
+  it('fails a lockfile carrying a second, non-registry sha512 token (multi-sha512 tamper)', async () => {
+    const EVIL = 'sha512-' + 'E'.repeat(86) + '==';
+    const lockfile = {
+      lockfileVersion: 3,
+      packages: {
+        'node_modules/twosha': {
+          name: 'twosha', version: '1.0.0', integrity: HASH_A + ' ' + EVIL,
+          resolved: 'https://registry.npmjs.org/twosha/-/twosha-1.0.0.tgz'
+        }
+      }
+    };
+    const result = await checkIntegrity(lockfile, { fetchIntegrity: fakeRegistry({ twosha: HASH_A }) });
+    expect(result.valid).toBe(false);
+    expect(result.failed).toBe(1);
+    expect(result.passed).toBe(0);
+  });
 });
 
 describe('checkLicenses', () => {
@@ -489,6 +511,28 @@ describe('checkLicenses', () => {
     expect(result.valid).toBe(false);
     expect(result.rejected).toBe(1);
     expect(result.errors.length).toBe(1);
+  });
+
+  // A malformed SPDX expression that leaves unconsumed trailing input (here a
+  // stray ')') must NOT be approved just because a prefix parsed to an approved
+  // id — the unevaluated remainder ('AND GPL-3.0-only') could hide a rejected
+  // license. The parser must fail closed unless the whole expression is consumed.
+  it('rejects a malformed SPDX expression with trailing unconsumed input (#18)', async () => {
+    fs.mkdirSync(NODE_MODULES_PATH, { recursive: true });
+    createTestPackage(TEST_DIR, 'pkg', 'MIT ) AND GPL-3.0-only');
+    createLicensesCsv(CSV_PATH, ['MIT', 'Apache-2.0']);
+
+    const lockfile = {
+      packages: { 'node_modules/pkg': { name: 'pkg', version: '1.0.0' } }
+    };
+
+    const result = await checkLicenses(lockfile, {
+      nodeModulesPath: NODE_MODULES_PATH,
+      csvPath: CSV_PATH
+    });
+
+    expect(result.valid).toBe(false);
+    expect(result.approved).toBe(0);
   });
 
   it('should warn on unknown license in non-strict mode', async () => {

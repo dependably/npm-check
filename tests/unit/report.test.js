@@ -193,6 +193,21 @@ describe('runReport', () => {
     expect(vuln.findings.some((f) => /Prototype pollution/.test(f.message))).toBe(true);
   });
 
+  it('surfaces an id-LESS critical advisory instead of silently passing (fail-open regression)', async () => {
+    // The vuln envelope was fixed to discriminate on `reason`, but report.js still
+    // dropped advisories with no `id` (the check gated on advisoryId), so an
+    // id-less critical advisory produced status:pass and exit 0 in the flagship
+    // report command. It must fail the run and render the finding.
+    const report = await runReport(
+      { lockfile: cleanLockfile(), packageJson: cleanPackageJson(), filePath: 'package-lock.json' },
+      baseOpts({ fetchAdvisories: fakeAdvisories({ 'good-pkg': [advisory('critical', { id: undefined })] }) })
+    );
+    const vuln = report.sections.find((s) => s.id === 'vuln');
+    expect(vuln.status).toBe('error');
+    expect(vuln.findings.some((f) => /Prototype pollution/.test(f.message))).toBe(true);
+    expect(report.summary.pass).toBe(false);
+  });
+
   it('vuln findings carry the full advisory data (no collapse to error/warn + message)', async () => {
     const report = await runReport(
       { lockfile: cleanLockfile(), packageJson: cleanPackageJson(), filePath: 'package-lock.json' },

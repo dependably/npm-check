@@ -122,6 +122,33 @@ describe('Package Lockfile Migrator', () => {
       expect(result.dependencies.chalk.dependencies['ansi-styles'].version).toBe('3.2.1');
       expect(result.dependencies['ansi-styles'].version).toBe('4.3.0');
     });
+
+    it('rebuilds the packages map from the legacy tree for a v2 that lacks one (regression #8)', () => {
+      // A merge-damaged v2 can carry ONLY the legacy dependencies tree (no
+      // packages map). Migrating to v3 must reconstruct the packages map from it
+      // rather than silently emit an empty v3 that destroys every resolution.
+      const legacyTreeOnlyV2 = {
+        name: 'p',
+        version: '1.0.0',
+        lockfileVersion: 2,
+        requires: true,
+        dependencies: {
+          lodash: {
+            version: '4.17.21',
+            resolved: 'https://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz',
+            integrity: 'sha512-v2kDEe57lecTlla7BZWAYsPpsLvIqjIDxzSfAC2K+sRfoNy4donAyZLdOdFoMk6MvA5sUJu7S+3HYCBPAcfUbyw=='
+          }
+        }
+      };
+
+      const result = migrateToVersion(legacyTreeOnlyV2, LOCKFILE_VERSIONS.V3);
+      expect(result.lockfileVersion).toBe(LOCKFILE_VERSIONS.V3);
+      expect(result.dependencies).toBeUndefined();
+      // The resolution must survive as a path-keyed packages entry, not vanish.
+      expect(result.packages['node_modules/lodash'].integrity).toBe(legacyTreeOnlyV2.dependencies.lodash.integrity);
+      expect(result.packages['node_modules/lodash'].resolved).toBe(legacyTreeOnlyV2.dependencies.lodash.resolved);
+      expect(result.packages['']).toBeDefined();
+    });
   });
 
   describe('Round-trip invariants', () => {

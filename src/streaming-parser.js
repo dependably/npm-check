@@ -98,12 +98,18 @@ export class StreamingParser extends EventEmitter {
         // collected via the (currently no-op) incremental events are layered on so
         // this never regresses to an empty result.
         const parsed = (result && typeof result === 'object') ? result : {};
-        resolve({
-          ...lockfile,
-          ...rootMetadata,
-          ...parsed,
-          packages: { ...(parsed.packages || {}), ...lockfile.packages }
-        });
+        // The parsed result is authoritative. Layer in anything the (currently
+        // no-op) incremental events collected WITHOUT injecting empty skeleton
+        // keys — a v3 file must not gain a spurious `dependencies: {}`, nor a v1
+        // file a spurious `packages: {}`, which a write-back would then persist.
+        const merged = { ...parsed };
+        for (const [k, v] of Object.entries(rootMetadata)) {
+          if (!(k in merged)) merged[k] = v;
+        }
+        if (Object.keys(lockfile.packages).length > 0) {
+          merged.packages = { ...(parsed.packages || {}), ...lockfile.packages };
+        }
+        resolve(merged);
       });
 
       const stream = fs.createReadStream(filePath, {

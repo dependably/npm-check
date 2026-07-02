@@ -69,7 +69,7 @@ export async function hashPackageDirectory(pkgDir) {
  * @param {string} pkgDir - Package directory path
  * @returns {Promise<string[]>} Array of relative file paths
  */
-async function collectPackageFiles(pkgDir) {
+export async function collectPackageFiles(pkgDir) {
   const files = [];
   const excludeDirs = new Set(['node_modules', '.git', 'test', 'tests', '__tests__', '.github', '.nyc_output', 'coverage', 'dist', 'build']);
   const excludeFiles = new Set(['.DS_Store', '.gitignore', '.npmignore', 'thumbs.db']);
@@ -126,10 +126,8 @@ async function mapWithConcurrency(items, limit, fn) {
  *   andExpr := atom (' AND ' atom)*
  *   atom    := '(' expr ')' | licenseId
  *
- * Fails closed (returns false) on empty identifiers or parse errors.
- *
- * NOTE: this is a local copy of the SSRI-aware compare logic; a shared helper
- * in integrity.js owns the authoritative version for other callers (#15 / #21).
+ * Fails closed (returns false) on empty identifiers, parse errors, or any
+ * trailing unconsumed input.
  *
  * @param {string} licenseExpr - SPDX license expression
  * @param {Set<string>} approvedSet - Set of approved license identifiers
@@ -183,7 +181,12 @@ function isLicenseApproved(licenseExpr, approvedSet) {
   }
 
   try {
-    return parseExpr();
+    const result = parseExpr();
+    // Fail closed unless the ENTIRE expression was consumed. Trailing tokens
+    // (e.g. 'MIT ) AND GPL-3.0-only') mean a malformed expression whose
+    // unevaluated remainder might contain a rejected license — a compliance
+    // gate must not approve it.
+    return pos === src.length ? result : false;
   } catch {
     return false; // fail closed on any parse error
   }
@@ -359,6 +362,20 @@ function extractSha512Component(integrity) {
 }
 
 /**
+ * Extract ALL sha512 tokens from an SSRI integrity string. npm/ssri accepts a
+ * tarball matching ANY digest of the strongest algorithm present, so a lockfile
+ * carrying more than one sha512 token ('sha512-GOOD sha512-EVIL') would let npm
+ * accept a tarball hashing to EITHER. Tamper detection must therefore verify
+ * every sha512 token against the single hash the registry publishes.
+ * @param {*} integrity - Integrity field value (may be non-string)
+ * @returns {string[]} All sha512-prefixed tokens (possibly empty)
+ */
+function extractAllSha512Components(integrity) {
+  if (typeof integrity !== 'string') return [];
+  return integrity.split(/\s+/).filter(token => token.startsWith('sha512-'));
+}
+
+/**
  * Decide whether a package entry can be verified against the registry.
  * Returns true for verifiable entries; non-verifiable entries are counted as
  * skipped (root/workspace/link/git/file/bundled, missing integrity/version, or
@@ -463,15 +480,18 @@ function recordIntegrityResult(results, candidate, registryHash, networkError, f
   } else {
     // SSRI-aware compare: the lockfile may carry a multi-hash string
     // ('sha512-A sha256-B') but the registry always publishes a single sha512
-    // token. Extract and compare the sha512 component from both sides so a
-    // multi-hash lockfile entry is not falsely flagged as tampered.
-    const lockedSha512 = extractSha512Component(entry.integrity);
+    // token, so a sha256/sha1 sibling must not trigger a false 'tampered'.
+    // Crucially, EVERY sha512 token must equal the registry's: npm accepts a
+    // tarball matching any sha512 present, so a second, non-registry sha512
+    // ('sha512-GOOD sha512-EVIL') is a tamper vector and must fail.
+    const lockedSha512s = extractAllSha512Components(entry.integrity);
     const registrySha512 = extractSha512Component(registryHash) ?? registryHash;
-    if (lockedSha512 && lockedSha512 === registrySha512) {
+    const allMatch = lockedSha512s.length > 0 && lockedSha512s.every(t => t === registrySha512);
+    if (allMatch) {
       results.passed++;
-      results.details.push({ valid: true, package: name, packagePath: key, expected: registrySha512, actual: lockedSha512 });
+      results.details.push({ valid: true, package: name, packagePath: key, expected: registrySha512, actual: lockedSha512s.join(' ') });
     } else {
-      recordIntegrityFailure(results, { valid: false, package: name, packagePath: key, expected: registrySha512, actual: lockedSha512 ?? entry.integrity });
+      recordIntegrityFailure(results, { valid: false, package: name, packagePath: key, expected: registrySha512, actual: lockedSha512s.join(' ') || entry.integrity });
     }
   }
 }

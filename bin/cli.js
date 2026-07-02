@@ -440,7 +440,9 @@ function assertFailOnSupported(supportedKeys, commandName) {
   const failOn = parseFailOn();
   if (failOn.severity !== null && !supportedKeys.severity) {
     console.error(`❌ --fail-on severity= is not supported by the "${commandName}" command`);
-    if (supportedKeys.count) {
+    if (supportedKeys.count === 'zero-only') {
+      console.error('   Use --fail-on count=0 to fail when any deprecated package is found');
+    } else if (supportedKeys.count) {
       console.error('   Use --fail-on count=<N> to set a finding count budget');
     }
     process.exit(2);
@@ -1271,7 +1273,9 @@ function printVulnResult(result, minSeverity, failOnUnresolved) {
   if (result.errors.length > 0) {
     console.log(`\n   Vulnerabilities at/above ${minSeverity} (fail the run):`);
     result.errors.forEach(e => {
-      if (!e.advisoryId) return;
+      // Skip only reason-bearing (unresolved) errors — rendered separately below.
+      // A genuine advisory, even one lacking an `id`, must still be printed.
+      if (e.reason) return;
       console.log(`     • ${e.package}@${e.version}: ${e.title} (${e.severity})`);
       if (e.url) console.log(`       ${e.url}`);
     });

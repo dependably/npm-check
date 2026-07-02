@@ -235,6 +235,23 @@ describe('registry URL name encoding (issue #30)', () => {
   });
 });
 
+// Regression: the 16MB response cap made fetchPackument unusable for large
+// packuments (renovate's full packument is ~80MB). fetchPackument must request
+// the ABBREVIATED packument and plumb the size/deadline overrides.
+describe('fetchPackument abbreviated packument', () => {
+  it('requests the abbreviated media type and plumbs maxBytes/deadlineMs', async () => {
+    const calls = [];
+    const fetchJson = async (url, timeoutMs, redirectsLeft, options) => {
+      calls.push({ url, timeoutMs, redirectsLeft, options });
+      return { 'dist-tags': { latest: '1.0.0' } };
+    };
+    await fetchPackument('renovate', { fetchJson, maxBytes: 999, deadlineMs: 888 });
+    expect(calls[0].options.accept).toBe('application/vnd.npm.install-v1+json');
+    expect(calls[0].options.maxBytes).toBe(999);
+    expect(calls[0].options.deadlineMs).toBe(888);
+  });
+});
+
 // Regression: issue #12 — deriveRegistryBase() derives the fetch host from the
 // untrusted lockfile `resolved` URL (SSRF / self-attesting host). An optional
 // allowlist lets a caller pin the trusted registry set.
@@ -264,6 +281,21 @@ describe('deriveRegistryBase host allowlist (issue #12)', () => {
       deriveRegistryBase(evilResolved, '@scope/pkg', { allowedHosts: [] })
     ).toBe('https://evil.internal.example');
   });
+
+  it('a port-less allowlist entry does NOT match a non-default port (SSRF hardening)', () => {
+    // A hostile lockfile could steer the request to a different service on an
+    // otherwise-allowed host (e.g. :9200). A bare-hostname entry matches only the
+    // default port.
+    expect(
+      deriveRegistryBase('https://registry.internal:9200/@s/p/-/p-1.0.0.tgz', '@s/p', { allowedHosts: ['registry.internal'] })
+    ).toBeNull();
+  });
+
+  it('an explicit host:port allowlist entry matches that port', () => {
+    expect(
+      deriveRegistryBase('https://registry.internal:9200/@s/p/-/p-1.0.0.tgz', '@s/p', { allowedHosts: ['registry.internal:9200'] })
+    ).toBe('https://registry.internal:9200');
+  });
 });
 
 // Regression: issues #16 & #12 — the shared HTTP transport (getJson/postJson).
@@ -290,6 +322,17 @@ describe('HTTP transport hardening (issues #16, #12)', () => {
   // http:// URL, so plaintext (LAN) registries were never fetchable.
   it('getJson fetches over http://', async () => {
     await expect(getJson(baseUrl + '/pkg', 5000)).resolves.toEqual({ ok: true });
+  });
+
+  it('getJson puts a provided Accept header on the wire', async () => {
+    let seenAccept;
+    handler = (req, res) => {
+      seenAccept = req.headers.accept;
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true }));
+    };
+    await getJson(baseUrl + '/pkg', 5000, 1, { accept: 'application/vnd.npm.install-v1+json' });
+    expect(seenAccept).toBe('application/vnd.npm.install-v1+json');
   });
 
   it('postJson fetches over http://', async () => {

@@ -322,7 +322,7 @@ Scans locked packages for known vulnerabilities (complements the integrity check
 - `minSeverity` threshold (info/low/moderate/high/critical; default high): advisories at/above fail the run as errors, below as warnings
 - Skips entries that can't be checked this way (root/workspace/link/git/file/bundled, missing version)
 - Registry-unreachable / endpoint-unsupported entries are reported `unresolved` and do not fail by default (`failOnUnresolved` to fail closed); `offline` skips entirely
-- Trusts the endpoint's server-side per-version filtering (no `semver` dependency); may slightly over-report when one name is locked at multiple versions
+- Attributes each advisory only to the locked versions it actually affects: a single-version name group trusts the endpoint's server-side filtering verbatim (zero regression), while a multi-version group matches each locked version against the advisory's `vulnerable_versions` via a small dependency-free comparator matcher (no `semver` dependency). Ranges the matcher can't parse in a multi-version group are demoted to warnings rather than failing the run
 - Surfaced as both the report's "Known vulnerabilities" section and the standalone `vuln` CLI command
 
 **Key Functions:**

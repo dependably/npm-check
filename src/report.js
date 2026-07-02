@@ -133,7 +133,11 @@ function advisoryFinding(level, f) {
 // default), else warnings; rendered once here (not from `errors`, where they have no advisoryId).
 function collectVulnFindings(buckets, vulnResult, failOnUnresolved) {
   for (const err of vulnResult.errors) {
-    if (!err.advisoryId) continue;
+    // Discriminate on `reason` (like vulnEnvelope), NOT on `advisoryId`: an
+    // unresolved entry carries a `reason` and is rendered from unresolvedItems
+    // below, while a genuine advisory has none — including one that merely lacks
+    // an `id`, which must still fail the run rather than silently vanish.
+    if (err.reason) continue;
     pushFinding(buckets, 'vuln', advisoryFinding('error', err));
   }
   for (const warn of vulnResult.warnings) {

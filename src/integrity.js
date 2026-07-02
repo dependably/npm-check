@@ -48,12 +48,19 @@ function isAllowedRegistryHost(url, allowedHosts) {
   if (!allowedHosts) return true;
   const list = Array.isArray(allowedHosts) ? allowedHosts : Array.from(allowedHosts);
   if (list.length === 0) return true;
-  const host = url.host.toLowerCase();
+  const host = url.host.toLowerCase();       // hostname[:port]
   const hostname = url.hostname.toLowerCase();
   return list.some((h) => {
     if (typeof h !== 'string') return false;
     const allowed = h.toLowerCase();
-    return allowed === host || allowed === hostname;
+    if (allowed.includes(':')) {
+      // Entry pins an explicit port — require an exact host:port match.
+      return allowed === host;
+    }
+    // A port-less entry matches the hostname ONLY on the default port, so a
+    // hostile lockfile cannot redirect the request to a different service
+    // (e.g. :9200) on an otherwise-allowed host.
+    return allowed === hostname && url.port === '';
   });
 }
 
@@ -100,6 +107,13 @@ export function deriveRegistryBase(resolvedUrl, packageName, options = {}) {
 // attacker-controlled, so a hostile/broken registry could otherwise stream an
 // unbounded body and exhaust memory (issue #12). Overridable per call for tests.
 const MAX_RESPONSE_BYTES = 16 * 1024 * 1024;
+
+// The wall-clock deadline defaults to a MULTIPLE of the idle timeout. Making it
+// equal to timeoutMs (as before) rendered the idle timeout dead code and starved
+// legitimately large responses (e.g. a multi-MB packument on a slow link) that
+// stream steadily but take longer than a single idle window. The idle timeout
+// still catches true inactivity; the size cap still bounds memory.
+const DEADLINE_MULTIPLIER = 6;
 
 /**
  * Pick the transport module for a URL by scheme. npm itself supports plaintext
@@ -160,16 +174,19 @@ function collectJsonBody(res, url, maxBytes, settle) {
  * can keep resetting the idle timer forever — issue #12), plus a response-stream
  * error handler.
  */
-function requestJson({ url, method, payload, timeoutMs, redirectsLeft, maxBytes, deadlineMs, followRedirect }) {
+function requestJson({ url, method, payload, timeoutMs, redirectsLeft, maxBytes, deadlineMs, accept, followRedirect }) {
   return new Promise((resolve, reject) => {
     const settle = onceSettlers(resolve, reject);
     const requestOptions = { method };
     if (payload !== null) {
       requestOptions.headers = {
         'Content-Type': 'application/json',
-        'Accept': 'application/json',
+        'Accept': accept || 'application/json',
         'Content-Length': Buffer.byteLength(payload)
       };
+    } else if (accept) {
+      // GET with an explicit Accept (e.g. the abbreviated-packument media type).
+      requestOptions.headers = { 'Accept': accept };
     }
     const handleResponse = (res) => {
       if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location && redirectsLeft > 0) {
@@ -240,7 +257,7 @@ function requestJson({ url, method, payload, timeoutMs, redirectsLeft, maxBytes,
  */
 export function getJson(url, timeoutMs, redirectsLeft = 1, options = {}) {
   const maxBytes = options.maxBytes ?? MAX_RESPONSE_BYTES;
-  const deadlineMs = options.deadlineMs ?? timeoutMs;
+  const deadlineMs = options.deadlineMs ?? timeoutMs * DEADLINE_MULTIPLIER;
   return requestJson({
     url,
     method: 'GET',
@@ -249,6 +266,7 @@ export function getJson(url, timeoutMs, redirectsLeft = 1, options = {}) {
     redirectsLeft,
     maxBytes,
     deadlineMs,
+    accept: options.accept,
     followRedirect: (target, left) => getJson(target, timeoutMs, left, options)
   });
 }
@@ -269,7 +287,7 @@ export function getJson(url, timeoutMs, redirectsLeft = 1, options = {}) {
 export function postJson(url, bodyObject, timeoutMs, redirectsLeft = 1, options = {}) {
   const payload = JSON.stringify(bodyObject);
   const maxBytes = options.maxBytes ?? MAX_RESPONSE_BYTES;
-  const deadlineMs = options.deadlineMs ?? timeoutMs;
+  const deadlineMs = options.deadlineMs ?? timeoutMs * DEADLINE_MULTIPLIER;
   return requestJson({
     url,
     method: 'POST',
@@ -278,6 +296,7 @@ export function postJson(url, bodyObject, timeoutMs, redirectsLeft = 1, options 
     redirectsLeft,
     maxBytes,
     deadlineMs,
+    accept: options.accept,
     followRedirect: (target, left) => postJson(target, bodyObject, timeoutMs, left, options)
   });
 }
@@ -334,10 +353,18 @@ function packumentVersionUrl(registryBase, packageName, version) {
  * @returns {Promise<object|null>} Packument or null
  */
 export async function fetchPackument(packageName, options = {}) {
-  const { registryBase = DEFAULT_REGISTRY, timeoutMs = 10000, fetchJson = getJson } = options;
+  const { registryBase = DEFAULT_REGISTRY, timeoutMs = 10000, fetchJson = getJson, maxBytes, deadlineMs } = options;
   let base = registryBase;
   while (base.endsWith('/')) base = base.slice(0, -1);
-  return fetchJson(`${base}/${encodePackageNamePath(packageName)}`, timeoutMs);
+  // Request the ABBREVIATED packument. The full document can be enormous
+  // (renovate's is ~80MB — 5× the response size cap, so a full fetch always
+  // fails), while the abbreviated form carries dist-tags + per-version
+  // dist.integrity, which is everything fetchLatestVersion/remediate need.
+  return fetchJson(`${base}/${encodePackageNamePath(packageName)}`, timeoutMs, 1, {
+    accept: 'application/vnd.npm.install-v1+json',
+    maxBytes,
+    deadlineMs
+  });
 }
 
 /**
