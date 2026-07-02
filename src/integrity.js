@@ -346,11 +346,15 @@ function packumentVersionUrl(registryBase, packageName, version) {
 }
 
 /**
- * Fetch a package's full packument (all versions + dist-tags) from a registry.
+ * Fetch a package's ABBREVIATED packument (dist-tags + per-version `dist`
+ * metadata, the "corgi" format) from a registry. NOTE: this intentionally does
+ * NOT return the full document (readme, `time`, full metadata) — the full
+ * packument can be enormous and blow the response size cap; callers here only
+ * need dist-tags + dist.integrity.
  * Resolves the parsed packument, null on 404, rejects on network errors/timeouts.
  * @param {string} packageName - Name of the package
  * @param {object} options - { registryBase, timeoutMs, fetchJson (injectable transport for tests) }
- * @returns {Promise<object|null>} Packument or null
+ * @returns {Promise<object|null>} Abbreviated packument or null
  */
 export async function fetchPackument(packageName, options = {}) {
   const { registryBase = DEFAULT_REGISTRY, timeoutMs = 10000, fetchJson = getJson, maxBytes, deadlineMs } = options;
@@ -360,8 +364,11 @@ export async function fetchPackument(packageName, options = {}) {
   // (renovate's is ~80MB — 5× the response size cap, so a full fetch always
   // fails), while the abbreviated form carries dist-tags + per-version
   // dist.integrity, which is everything fetchLatestVersion/remediate need.
+  // Mirror npm's own content negotiation: prefer the abbreviated ("corgi") type
+  // but fall back to the full packument JSON on a registry that 406s the corgi
+  // type, rather than surfacing a spurious "unreachable".
   return fetchJson(`${base}/${encodePackageNamePath(packageName)}`, timeoutMs, 1, {
-    accept: 'application/vnd.npm.install-v1+json',
+    accept: 'application/vnd.npm.install-v1+json; q=1.0, application/json; q=0.8, */*',
     maxBytes,
     deadlineMs
   });

@@ -246,7 +246,8 @@ describe('fetchPackument abbreviated packument', () => {
       return { 'dist-tags': { latest: '1.0.0' } };
     };
     await fetchPackument('renovate', { fetchJson, maxBytes: 999, deadlineMs: 888 });
-    expect(calls[0].options.accept).toBe('application/vnd.npm.install-v1+json');
+    // Prefers the abbreviated ("corgi") type; may carry npm's fallback chain.
+    expect(calls[0].options.accept).toMatch(/^application\/vnd\.npm\.install-v1\+json/);
     expect(calls[0].options.maxBytes).toBe(999);
     expect(calls[0].options.deadlineMs).toBe(888);
   });

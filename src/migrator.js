@@ -108,6 +108,24 @@ function buildDependenciesTreeFromPackages(packages) {
   return root;
 }
 
+// npm hosted-git shorthands (github:/gitlab:/bitbucket:/gist:) as they appear in
+// a v1 lockfile's `version` field. Map them to a `git+`-form URL so v2/v3
+// classification (resolved startsWith git+/git://) recognizes them as git deps —
+// otherwise the entry looks like a plain registry package and gets a bogus
+// placeholder integrity stamped on it (EINTEGRITY on npm ci).
+const HOSTED_GIT_HOSTS = {
+  github: 'github.com',
+  gitlab: 'gitlab.com',
+  bitbucket: 'bitbucket.org',
+  gist: 'gist.github.com'
+};
+function normalizeHostedGitShorthand(version) {
+  if (typeof version !== 'string') return null;
+  const m = /^(github|gitlab|bitbucket|gist):(.+)$/.exec(version);
+  if (!m) return null;
+  return `git+https://${HOSTED_GIT_HOSTS[m[1]]}/${m[2]}`;
+}
+
 // Convert a v1 dependencies-tree node into a v2 packages-map entry (drops the
 // nested `dependencies` — those become their own path-keyed entries — and turns
 // `requires` back into a `dependencies` range map).
@@ -125,10 +143,15 @@ function v1NodeToPackageEntry(node) {
   // A v1 git dep carries its git URL in `version`, often with no `resolved`.
   // v2/v3 classify git deps by a `git+`/`git://` `resolved`, so surface it there;
   // otherwise the entry looks like a plain registry package and gets a bogus
-  // placeholder integrity stamped on it.
-  if (!entry.resolved && typeof node.version === 'string' &&
-      (node.version.startsWith('git+') || node.version.startsWith('git://'))) {
-    entry.resolved = node.version;
+  // placeholder integrity stamped on it. This covers both explicit git URLs and
+  // npm's hosted-git shorthands (github:/gitlab:/bitbucket:/gist:).
+  if (!entry.resolved && typeof node.version === 'string') {
+    if (node.version.startsWith('git+') || node.version.startsWith('git://')) {
+      entry.resolved = node.version;
+    } else {
+      const gitUrl = normalizeHostedGitShorthand(node.version);
+      if (gitUrl) entry.resolved = gitUrl;
+    }
   }
   if (node.requires && typeof node.requires === 'object') {
     entry.dependencies = { ...node.requires };

@@ -144,15 +144,21 @@ describe('Automated Fixer', () => {
         lockfileVersion: 1,
         dependencies: {
           'git-dep': { version: 'git+https://github.com/u/r.git#abc123' },
+          // npm 6 records hosted-git deps as a shorthand in `version` (no resolved).
+          'gh-dep': { version: 'github:u/r#abc123' },
           'bundled-dep': { version: '2.0.0', bundled: true }
         }
       };
 
       const { fixedLockfile } = fixPackageLock(v1WithGitAndBundled, { fillMissingIntegrity: true, dedupe: false });
       const git = fixedLockfile.packages['node_modules/git-dep'];
+      const gh = fixedLockfile.packages['node_modules/gh-dep'];
       const bundled = fixedLockfile.packages['node_modules/bundled-dep'];
       expect(git.resolved).toBe('git+https://github.com/u/r.git#abc123');
       expect(git.integrity).toBeUndefined();
+      // Hosted-git shorthand is normalized to a git+ URL and NOT stamped.
+      expect(gh.resolved).toBe('git+https://github.com/u/r#abc123');
+      expect(gh.integrity).toBeUndefined();
       expect(bundled.inBundle).toBe(true);
       expect(bundled.integrity).toBeUndefined();
     });

@@ -85,6 +85,30 @@ describe('Streaming Parser', () => {
       });
       expect(result.lockfileVersion).toBe(3);
     });
+
+    it('does not inject an empty dependencies/packages skeleton the file lacks', async () => {
+      // Regression: the parser used to spread a { packages:{}, dependencies:{} }
+      // skeleton under the result, so a v3 file came back with a spurious
+      // top-level `dependencies: {}` (and a v1 file with `packages: {}`), which a
+      // write-back would then persist.
+      const v3Result = await parseLockfileStream(testFilePath);
+      expect(v3Result.dependencies).toBeUndefined();
+
+      const v1Path = path.join(__dirname, 'test-lockfile-v1.json');
+      fs.writeFileSync(v1Path, JSON.stringify({
+        lockfileVersion: 1,
+        name: 'v1-app',
+        version: '1.0.0',
+        dependencies: { lodash: { version: '4.17.21', integrity: 'sha512-test' } }
+      }, null, 2));
+      try {
+        const v1Result = await parseLockfileStream(v1Path);
+        expect(v1Result.packages).toBeUndefined();
+        expect(v1Result.dependencies).toBeDefined();
+      } finally {
+        fs.unlinkSync(v1Path);
+      }
+    });
   });
 
   describe('StreamingParser class', () => {

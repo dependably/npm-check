@@ -179,7 +179,11 @@ async function tryLocalFallback(candidate, baseDir, buckets) {
   try {
     realBase = fs.realpathSync(resolvedBase);
   } catch { /* base unreadable — fall back to the textual base */ }
-  if (realDir !== realBase && !realDir.startsWith(realBase + path.sep)) {
+  // Require STRICT containment (a subpath), matching the textual check above. A
+  // package dir is always node_modules/... — never the project root itself — so
+  // a symlink resolving TO the root (which would hash the whole project) is
+  // correctly rejected rather than allowed by an equality carve-out.
+  if (!realDir.startsWith(realBase + path.sep)) {
     return false;
   }
 
