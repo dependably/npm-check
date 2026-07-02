@@ -254,6 +254,22 @@ describe('validatePackageJson', () => {
       expect(codes(result)).toContain('PJ_INVALID_PKG_EXTENSION');
     });
 
+    it('validates packageExtensions.optionalDependencies ranges too (all 4 dep maps)', () => {
+      const result = validatePackageJson({
+        ...base,
+        pnpm: { packageExtensions: { 'react@16': { optionalDependencies: { foo: 'not a version !!' } } } }
+      });
+      expect(codes(result)).toContain('PJ_INVALID_RANGE');
+    });
+
+    it('flags a wrong-typed peerDependencyRules.allowedVersions', () => {
+      const result = validatePackageJson({
+        ...base,
+        pnpm: { peerDependencyRules: { allowedVersions: 'oops' } }
+      });
+      expect(codes(result)).toContain('PJ_INVALID_PNPM_FIELD');
+    });
+
     it('validates peerDependencyRules.allowedVersions and allowedDeprecatedVersions ranges', () => {
       const result = validatePackageJson({
         ...base,

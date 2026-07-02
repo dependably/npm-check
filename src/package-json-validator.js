@@ -209,11 +209,12 @@ function validateOverrides(packageJson, errors) {
 
 // Validate a flat { name: range } map's range values.
 function validateRangeMap(map, label, errors) {
-  if (!isPlainObject(map)) return; // shape handled by the type check; absent → nothing
+  if (!isPlainObject(map)) return; // shape handled by the caller / type check; absent → nothing
   for (const [name, range] of Object.entries(map)) {
     if (!isValidRange(range)) {
+      const shown = typeof range === 'string' ? range : JSON.stringify(range);
       errors.push(new PackageJsonValidationError(
-        `invalid version range "${range}" for "${name}" in ${label}`, 'PJ_INVALID_RANGE'));
+        `invalid version range "${shown}" for "${name}" in ${label}`, 'PJ_INVALID_RANGE'));
     }
   }
 }
@@ -229,7 +230,8 @@ function validatePackageExtensions(packageExtensions, errors) {
         `"pnpm.packageExtensions.${selector}" must be an object`, 'PJ_INVALID_PKG_EXTENSION'));
       continue;
     }
-    for (const depKey of ['dependencies', 'peerDependencies']) {
+    // pnpm packageExtensions extend all four dependency-map fields.
+    for (const depKey of ['dependencies', 'optionalDependencies', 'peerDependencies']) {
       if (ext[depKey] === undefined) continue;
       if (!isPlainObject(ext[depKey])) {
         errors.push(new PackageJsonValidationError(
@@ -246,7 +248,15 @@ function validatePnpmRanges(packageJson, errors) {
   if (!isPlainObject(pnpm)) return;
   validatePackageExtensions(pnpm.packageExtensions, errors);
   if (isPlainObject(pnpm.peerDependencyRules)) {
-    validateRangeMap(pnpm.peerDependencyRules.allowedVersions, 'pnpm.peerDependencyRules.allowedVersions', errors);
+    // `peerDependencyRules` itself is type-checked in validatePnpmField, but its
+    // nested `allowedVersions` sub-map is not — flag a wrong-typed one here.
+    const allowedVersions = pnpm.peerDependencyRules.allowedVersions;
+    if (allowedVersions !== undefined && !isPlainObject(allowedVersions)) {
+      errors.push(new PackageJsonValidationError(
+        '"pnpm.peerDependencyRules.allowedVersions" must be an object', 'PJ_INVALID_PNPM_FIELD'));
+    } else {
+      validateRangeMap(allowedVersions, 'pnpm.peerDependencyRules.allowedVersions', errors);
+    }
   }
   validateRangeMap(pnpm.allowedDeprecatedVersions, 'pnpm.allowedDeprecatedVersions', errors);
 }
