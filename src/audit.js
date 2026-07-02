@@ -286,15 +286,27 @@ const noRemoteDepsRule = {
   id: 'no-remote-deps',
   description: 'Remote-URL (non-registry) dependencies require --allow-remote under npm v12',
   defaultSeverity: 'warn',
-  check({ lockfile }) {
+  check({ lockfile, options }) {
+    const { allowedHosts = ['registry.npmjs.org', 'npm.pkg.github.com'] } = options;
     const findings = [];
     if (!lockfile.packages) return findings;
     forEachPackageEntry(lockfile, ({ key, entry, name, isRoot, isWorkspaceSource, isLink, isGitDep, isFileDep }) => {
       if (isRoot || isWorkspaceSource || isLink || isGitDep || isFileDep) return;
       const resolved = entry && entry.resolved;
       if (!resolved || !/^https?:/i.test(resolved)) return;
-      // Registry tarballs carry the `/-/` path marker; a direct remote URL tarball does not.
-      if (resolved.includes('/-/')) return;
+      // Treat a URL as a registry tarball when its hostname is in the configured
+      // allowedHosts list. This correctly handles GitHub Packages
+      // (npm.pkg.github.com/download/...) and private registries without relying
+      // on the brittle `/-/` path marker, which is absent from several registry
+      // URL shapes and present in some genuine remote tarball URLs.
+      let hostname;
+      try {
+        hostname = new URL(resolved).hostname;
+      } catch {
+        // Unparseable URL — secure-resolved will flag it; skip here.
+        return;
+      }
+      if (allowedHosts.includes(hostname)) return;
       findings.push({
         packagePath: key,
         message: `${name || key} resolves from a remote URL (${resolved}) — npm v12 will not install it without \`--allow-remote\``

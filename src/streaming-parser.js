@@ -1,6 +1,13 @@
 /**
- * Streaming JSON parser for very large package-lock.json files.
- * Parses lockfiles incrementally without loading entire file into memory.
+ * Buffered parser for large package-lock.json files.
+ *
+ * NOTE: despite the "streaming" name, these helpers read the file in chunks (so
+ * progress can be reported) but parse the fully-buffered content with the shared
+ * `parseLockfile` from format-library — they do NOT parse incrementally. A true
+ * incremental JSON parser is future work. The buffered approach is honest about
+ * its result: it returns the actual parsed lockfile (or throws), never an empty
+ * skeleton that would make every downstream integrity/vuln/license check pass
+ * vacuously.
  */
 
 import fs from 'fs';
@@ -83,10 +90,26 @@ export class StreamingParser extends EventEmitter {
 
       parser.on('error', reject);
 
-      parser.on('complete', (_result) => {
-        // Merge root metadata into lockfile
-        Object.assign(lockfile, rootMetadata);
-        resolve(lockfile);
+      parser.on('complete', (result) => {
+        // `finish()` parses the fully-buffered content and emits it here. The
+        // parsed result is the authoritative lockfile — resolve IT, not the empty
+        // skeleton (the old code ignored `result` and resolved `{packages:{}}`,
+        // making every downstream check pass on nothing). Any packages/metadata
+        // collected via the (currently no-op) incremental events are layered on so
+        // this never regresses to an empty result.
+        const parsed = (result && typeof result === 'object') ? result : {};
+        // The parsed result is authoritative. Layer in anything the (currently
+        // no-op) incremental events collected WITHOUT injecting empty skeleton
+        // keys — a v3 file must not gain a spurious `dependencies: {}`, nor a v1
+        // file a spurious `packages: {}`, which a write-back would then persist.
+        const merged = { ...parsed };
+        for (const [k, v] of Object.entries(rootMetadata)) {
+          if (!(k in merged)) merged[k] = v;
+        }
+        if (Object.keys(lockfile.packages).length > 0) {
+          merged.packages = { ...(parsed.packages || {}), ...lockfile.packages };
+        }
+        resolve(merged);
       });
 
       const stream = fs.createReadStream(filePath, {
@@ -136,18 +159,19 @@ export class StreamingParser extends EventEmitter {
    * Finish parsing
    */
   finish() {
-    // If we have a buffer, try to parse it
     if (this.buffer.trim()) {
       try {
-        // For now, fall back to standard parsing for the buffer
-        // In a full implementation, we'd parse incrementally
-        const parsed = JSON.parse(this.buffer);
+        // Parse the fully-buffered content through the shared format-library
+        // parser (consistent error messages; not raw JSON.parse).
+        const parsed = parseLockfileFromFormat(this.buffer);
         this.emit('complete', parsed);
       } catch (error) {
         this.emit('error', error);
       }
     } else {
-      this.emit('complete', {});
+      // An empty stream is not a valid lockfile. Fail loudly rather than
+      // resolving an empty (vacuously "clean") lockfile.
+      this.emit('error', new Error('Cannot parse lockfile: stream produced no data'));
     }
   }
 }
@@ -173,17 +197,10 @@ export async function parseLockfileStream(filePath, options = {}) {
     return parseLockfileFromFormat(content);
   }
 
-  // For larger files, use incremental parsing
-  // Since full streaming JSON parsing is complex, we'll use a chunked approach:
-  // Read and parse the file in sections, building the lockfile incrementally
-
+  // For larger files, read the file in chunks (so we can report progress) and then
+  // parse the fully-buffered content. This is buffered, not truly incremental, but
+  // it returns the ACTUAL parsed lockfile (or rejects) — never an empty skeleton.
   return new Promise((resolve, reject) => {
-    // We'll parse the buffer and return the parsed object; no local lockfile needed here
-
-    // Read file in chunks and parse incrementally
-    // This is a simplified approach - for production, consider using stream-json library
-    // or implementing a full SAX-style parser
-
     const stream = fs.createReadStream(filePath, { encoding: 'utf8' });
     let buffer = '';
     let bytesRead = 0;
@@ -195,18 +212,11 @@ export async function parseLockfileStream(filePath, options = {}) {
       if (options.onProgress) {
         options.onProgress(bytesRead, fileSize);
       }
-
-      // Try to extract complete JSON objects from buffer
-      // This is a simplified implementation
-      // For a full implementation, we'd need a proper streaming JSON parser
     });
 
     stream.on('end', () => {
       try {
-        // Fall back to standard parsing for now
-        // Full streaming implementation would parse incrementally
-        const parsed = JSON.parse(buffer);
-        resolve(parsed);
+        resolve(parseLockfileFromFormat(buffer));
       } catch (error) {
         reject(error);
       }

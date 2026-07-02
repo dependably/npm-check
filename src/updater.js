@@ -3,7 +3,7 @@
  * Optimized implementations for handling large lockfiles efficiently.
  */
 
-import { detectLockfileVersion, hasPackagesMap, hasDependenciesTree, resolvePackageName } from './format-library.js';
+import { detectLockfileVersion, hasPackagesMap, resolvePackageName } from './format-library.js';
 import {
   shallowCopyLockfile,
   filterPackagesLazy,
@@ -168,20 +168,12 @@ export function deduplicatePackages(lockfileData, options = {}) {
     }
   }
 
-  // Deduplicate dependencies tree
-  if (hasDependenciesTree(version) && result.dependencies) {
-    const seenDeps = new Set();
-    const dedupedDeps = {};
-
-    for (const [name, dep] of Object.entries(result.dependencies)) {
-      if (!seenDeps.has(name)) {
-        seenDeps.add(name);
-        dedupedDeps[name] = dep;
-      }
-    }
-
-    result.dependencies = dedupedDeps;
-  }
+  // v1 dependencies tree: top-level keys are unique by JS object construction,
+  // so a Set-based filter at this level is a no-op. Real v1 "deduplication" is
+  // tree hoisting from nested sub-dependency objects — that requires full
+  // re-resolution and is out of scope here (use `npm install --prefer-dedupe`).
+  // We preserve the tree as-is, consistent with the packages-map preserve-only
+  // policy above. No entries are removed.
 
   return result;
 }

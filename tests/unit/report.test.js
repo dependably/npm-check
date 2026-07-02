@@ -140,8 +140,33 @@ describe('runReport', () => {
     );
     expect(called).toBe(0);
     const integrity = report.sections.find((s) => s.id === 'integrity');
+    // Genuinely empty (clean lockfile → no offline hygiene findings) → honest skip.
+    // Flag-neutral label: `integrity:false` can't tell --offline from --no-integrity.
     expect(integrity.status).toBe('skip');
-    expect(integrity.summary).toMatch(/offline/);
+    expect(integrity.summary).toMatch(/registry check skipped/);
+  });
+
+  it('surfaces offline integrity-hygiene findings even when the registry check is off (issue #26)', async () => {
+    const lockfile = cleanLockfile();
+    // Missing integrity → the offline `integrity-hygiene` rule flags it (error tier)
+    // and buckets it into the integrity section — with no network at all.
+    delete lockfile.packages['node_modules/good-pkg'].integrity;
+    let called = 0;
+    const report = await runReport(
+      { lockfile, packageJson: cleanPackageJson(), filePath: 'package-lock.json' },
+      { nodeModulesPath: NO_NM, integrity: false, vuln: false, deprecated: false,
+        fetchIntegrity: () => { called++; return Promise.resolve(HASH_A); } }
+    );
+    expect(called).toBe(0); // no network — the finding is purely offline
+    const integrity = report.sections.find((s) => s.id === 'integrity');
+    // A skipped section must NOT silently carry findings: the status reflects the
+    // finding severity, and the summary says the registry check was skipped but N remain.
+    expect(integrity.status).toBe('error');
+    expect(integrity.summary).toMatch(/registry check skipped/);
+    expect(integrity.summary).toMatch(/offline finding/);
+    expect(integrity.findings.length).toBeGreaterThan(0);
+    expect(report.summary.errors).toBeGreaterThanOrEqual(1);
+    expect(report.summary.pass).toBe(false);
   });
 
   it('skips the vuln section when vuln:false without network', async () => {
@@ -166,6 +191,21 @@ describe('runReport', () => {
     const vuln = report.sections.find((s) => s.id === 'vuln');
     expect(vuln.status).toBe('error');
     expect(vuln.findings.some((f) => /Prototype pollution/.test(f.message))).toBe(true);
+  });
+
+  it('surfaces an id-LESS critical advisory instead of silently passing (fail-open regression)', async () => {
+    // The vuln envelope was fixed to discriminate on `reason`, but report.js still
+    // dropped advisories with no `id` (the check gated on advisoryId), so an
+    // id-less critical advisory produced status:pass and exit 0 in the flagship
+    // report command. It must fail the run and render the finding.
+    const report = await runReport(
+      { lockfile: cleanLockfile(), packageJson: cleanPackageJson(), filePath: 'package-lock.json' },
+      baseOpts({ fetchAdvisories: fakeAdvisories({ 'good-pkg': [advisory('critical', { id: undefined })] }) })
+    );
+    const vuln = report.sections.find((s) => s.id === 'vuln');
+    expect(vuln.status).toBe('error');
+    expect(vuln.findings.some((f) => /Prototype pollution/.test(f.message))).toBe(true);
+    expect(report.summary.pass).toBe(false);
   });
 
   it('vuln findings carry the full advisory data (no collapse to error/warn + message)', async () => {
@@ -281,6 +321,47 @@ describe('runReport', () => {
     );
     expect(report.summary.warnings).toBeGreaterThan(0);
     expect(report.summary.pass).toBe(false);
+  });
+
+  it('surfaces an unexpected license-check failure as an error finding, not a silent skip (issue #26)', async () => {
+    // Both paths exist (so the benign existsSync skips don't fire), but pointing the
+    // approved-licenses CSV at a directory makes checkLicenses throw (EISDIR). The old
+    // catch-all swallowed this into a passing skip; it must now trip the gate.
+    const report = await runReport(
+      { lockfile: cleanLockfile(), packageJson: cleanPackageJson(), filePath: 'package-lock.json' },
+      baseOpts({ nodeModulesPath: process.cwd(), licensesCsv: process.cwd() })
+    );
+    const licenses = report.sections.find((s) => s.id === 'licenses');
+    expect(licenses.status).toBe('error'); // NOT 'skip'
+    expect(licenses.summary).toMatch(/check failed/);
+    expect(licenses.findings.some((f) => /license check failed/.test(f.message))).toBe(true);
+    expect(report.summary.errors).toBeGreaterThanOrEqual(1);
+    expect(report.summary.pass).toBe(false); // no longer a silent green
+  });
+
+  it('applies the --fail-on severity= gate across all sections, not just vuln (issue #9)', async () => {
+    // A warn-tier install-scripts finding (ladder severity `low`) with NO errors and an
+    // unlimited warning budget — the only thing that can fail the run is the severity gate.
+    const lockfile = cleanLockfile();
+    lockfile.packages['node_modules/good-pkg'].hasInstallScript = true;
+    const target = { lockfile, packageJson: cleanPackageJson(), filePath: 'package-lock.json' };
+
+    // severity=high: the warn-tier finding (low) is below the gate → still passes.
+    const high = await runReport(target, baseOpts({ minSeverity: 'high' }));
+    expect(high.summary.errors).toBe(0);
+    expect(high.summary.warnings).toBeGreaterThan(0);
+    expect(high.summary.pass).toBe(true);
+
+    // severity=moderate: low < moderate → still passes.
+    const moderate = await runReport(target, baseOpts({ minSeverity: 'moderate' }));
+    expect(moderate.summary.pass).toBe(true);
+
+    // severity=low: the same non-vuln warn-tier finding is now at/above the gate → FAILS.
+    // (On the old code this passed — the gate only shaped the vuln stage: fail-open.)
+    const low = await runReport(target, baseOpts({ minSeverity: 'low' }));
+    expect(low.summary.errors).toBe(0);
+    expect(low.summary.warnings).toBeGreaterThan(0);
+    expect(low.summary.pass).toBe(false);
   });
 });
 

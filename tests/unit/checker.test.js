@@ -329,6 +329,90 @@ describe('checkIntegrity', () => {
     expect(result.failed).toBe(1);
     expect(result.unresolvedItems[0].reason).toMatch(/unreachable/);
   });
+
+  // --- #15: SSRI-aware integrity compare ---
+
+  // sha256-only: the registry only publishes sha512; a sha256-only lockfile entry
+  // cannot be compared and must be skipped — not failed as tampered.
+  // OLD code: entry.integrity.startsWith('sha1-') → false for sha256; reaches
+  // comparison; sha256-X !== sha512-Y → FAIL (false tamper alarm).
+  it('#15 skips sha256-only integrity — not falsely flagged as tampered', async () => {
+    const SHA256_HASH = 'sha256-' + 'A'.repeat(43) + '=';
+    const lockfile = {
+      lockfileVersion: 3,
+      packages: {
+        'node_modules/modern': {
+          name: 'modern', version: '1.0.0', integrity: SHA256_HASH,
+          resolved: 'https://registry.npmjs.org/modern/-/modern-1.0.0.tgz'
+        }
+      }
+    };
+    const result = await checkIntegrity(lockfile, { fetchIntegrity: fakeRegistry({ modern: HASH_A }) });
+    // sha256-only → skipped (not enough to verify against registry sha512)
+    expect(result.skipped).toBe(1);
+    expect(result.failed).toBe(0);
+    expect(result.valid).toBe(true);
+  });
+
+  // Multi-hash (sha512+sha256): the lockfile carries 'sha512-A sha256-B'.
+  // OLD code: 'sha512-A sha256-B' !== 'sha512-A' (full string != sha512 alone) → FAIL.
+  // NEW code: extracts sha512-A from both sides, compares → PASS.
+  it('#15 passes when lockfile has a multi-hash string and the sha512 component matches the registry', async () => {
+    const MULTI_HASH = HASH_A + ' sha256-' + 'B'.repeat(43) + '=';
+    const lockfile = {
+      lockfileVersion: 3,
+      packages: {
+        'node_modules/multi': {
+          name: 'multi', version: '1.0.0', integrity: MULTI_HASH,
+          resolved: 'https://registry.npmjs.org/multi/-/multi-1.0.0.tgz'
+        }
+      }
+    };
+    // Registry returns just the sha512 token (normal registry behaviour)
+    const result = await checkIntegrity(lockfile, { fetchIntegrity: fakeRegistry({ multi: HASH_A }) });
+    expect(result.valid).toBe(true);
+    expect(result.passed).toBe(1);
+    expect(result.failed).toBe(0);
+  });
+
+  // Multi-hash where the sha512 component does NOT match — should still be a real tamper fail.
+  it('#15 still detects a real tamper when the sha512 component of a multi-hash differs', async () => {
+    const MULTI_HASH = HASH_B + ' sha256-' + 'C'.repeat(43) + '='; // sha512=B, but registry has A
+    const lockfile = {
+      lockfileVersion: 3,
+      packages: {
+        'node_modules/tampered': {
+          name: 'tampered', version: '1.0.0', integrity: MULTI_HASH,
+          resolved: 'https://registry.npmjs.org/tampered/-/tampered-1.0.0.tgz'
+        }
+      }
+    };
+    const result = await checkIntegrity(lockfile, { fetchIntegrity: fakeRegistry({ tampered: HASH_A }) });
+    expect(result.valid).toBe(false);
+    expect(result.failed).toBe(1);
+  });
+
+  // Two sha512 tokens where only the FIRST matches the registry. npm/ssri accepts
+  // a tarball matching EITHER sha512, so 'sha512-GOOD sha512-EVIL' would let npm
+  // install a tarball hashing to EVIL. A checker that only compared the first
+  // token reported this lockfile clean (a tamper-detection bypass). Every sha512
+  // token must equal the registry's.
+  it('fails a lockfile carrying a second, non-registry sha512 token (multi-sha512 tamper)', async () => {
+    const EVIL = 'sha512-' + 'E'.repeat(86) + '==';
+    const lockfile = {
+      lockfileVersion: 3,
+      packages: {
+        'node_modules/twosha': {
+          name: 'twosha', version: '1.0.0', integrity: HASH_A + ' ' + EVIL,
+          resolved: 'https://registry.npmjs.org/twosha/-/twosha-1.0.0.tgz'
+        }
+      }
+    };
+    const result = await checkIntegrity(lockfile, { fetchIntegrity: fakeRegistry({ twosha: HASH_A }) });
+    expect(result.valid).toBe(false);
+    expect(result.failed).toBe(1);
+    expect(result.passed).toBe(0);
+  });
 });
 
 describe('checkLicenses', () => {
@@ -427,6 +511,28 @@ describe('checkLicenses', () => {
     expect(result.valid).toBe(false);
     expect(result.rejected).toBe(1);
     expect(result.errors.length).toBe(1);
+  });
+
+  // A malformed SPDX expression that leaves unconsumed trailing input (here a
+  // stray ')') must NOT be approved just because a prefix parsed to an approved
+  // id — the unevaluated remainder ('AND GPL-3.0-only') could hide a rejected
+  // license. The parser must fail closed unless the whole expression is consumed.
+  it('rejects a malformed SPDX expression with trailing unconsumed input (#18)', async () => {
+    fs.mkdirSync(NODE_MODULES_PATH, { recursive: true });
+    createTestPackage(TEST_DIR, 'pkg', 'MIT ) AND GPL-3.0-only');
+    createLicensesCsv(CSV_PATH, ['MIT', 'Apache-2.0']);
+
+    const lockfile = {
+      packages: { 'node_modules/pkg': { name: 'pkg', version: '1.0.0' } }
+    };
+
+    const result = await checkLicenses(lockfile, {
+      nodeModulesPath: NODE_MODULES_PATH,
+      csvPath: CSV_PATH
+    });
+
+    expect(result.valid).toBe(false);
+    expect(result.approved).toBe(0);
   });
 
   it('should warn on unknown license in non-strict mode', async () => {
@@ -655,6 +761,109 @@ describe('checkLicenses', () => {
 
     expect(result.valid).toBe(true);
     expect(result.approved).toBe(1);
+  });
+
+  // --- #18 sub-issue 1: object-form license field ---
+
+  // OLD code: pkgJson.license = { type: "MIT" } (object, truthy) → passes !license guard
+  // → isLicenseApproved({ type: "MIT" }, ...) → licenseExpr.trim() → TypeError (CRASH).
+  // NEW code: normalizeLicenseField converts { type: "MIT" } → "MIT" → approved correctly.
+  it('#18 handles object-form license { type: "MIT" } without crashing and approves it', async () => {
+    fs.mkdirSync(NODE_MODULES_PATH, { recursive: true });
+    const pkgDir = path.join(NODE_MODULES_PATH, 'obj-license');
+    fs.mkdirSync(pkgDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(pkgDir, 'package.json'),
+      JSON.stringify({ name: 'obj-license', version: '1.0.0', license: { type: 'MIT' } })
+    );
+    createLicensesCsv(CSV_PATH, ['MIT']);
+
+    const lockfile = {
+      packages: { 'node_modules/obj-license': { name: 'obj-license', version: '1.0.0' } }
+    };
+    const result = await checkLicenses(lockfile, { nodeModulesPath: NODE_MODULES_PATH, csvPath: CSV_PATH });
+    expect(result.valid).toBe(true);
+    expect(result.approved).toBe(1);
+  });
+
+  // Legacy "licenses" array form: [{ type: "MIT" }, { type: "ISC" }]
+  // OLD code: pkgJson.license is undefined; pkgJson.licenses is an array (not read) → UNKNOWN.
+  // NEW code: normalizeLicenseField joins types as "MIT OR ISC" → approved when any is in list.
+  it('#18 handles legacy "licenses" array form and approves when any entry is in the list', async () => {
+    fs.mkdirSync(NODE_MODULES_PATH, { recursive: true });
+    const pkgDir = path.join(NODE_MODULES_PATH, 'arr-license');
+    fs.mkdirSync(pkgDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(pkgDir, 'package.json'),
+      JSON.stringify({ name: 'arr-license', version: '1.0.0', licenses: [{ type: 'MIT' }, { type: 'ISC' }] })
+    );
+    createLicensesCsv(CSV_PATH, ['MIT']);
+
+    const lockfile = {
+      packages: { 'node_modules/arr-license': { name: 'arr-license', version: '1.0.0' } }
+    };
+    const result = await checkLicenses(lockfile, { nodeModulesPath: NODE_MODULES_PATH, csvPath: CSV_PATH });
+    expect(result.valid).toBe(true);
+    expect(result.approved).toBe(1);
+  });
+
+  // --- #18 sub-issue 2: SPDX OR/AND fail-open fix ---
+
+  // Simple parenthesized (MIT OR GPL-3.0): regression — should still approve when MIT is in list.
+  // Both old and new code handle this correctly; test guards against regression.
+  it('#18 approves (MIT OR GPL-3.0) when MIT is in the approved list', async () => {
+    fs.mkdirSync(NODE_MODULES_PATH, { recursive: true });
+    createTestPackage(TEST_DIR, 'pkg', '(MIT OR GPL-3.0)');
+    createLicensesCsv(CSV_PATH, ['MIT']);
+
+    const lockfile = {
+      packages: { 'node_modules/pkg': { name: 'pkg', version: '1.0.0' } }
+    };
+    const result = await checkLicenses(lockfile, { nodeModulesPath: NODE_MODULES_PATH, csvPath: CSV_PATH });
+    expect(result.valid).toBe(true);
+    expect(result.approved).toBe(1);
+  });
+
+  // Complex mixed AND+OR: (MIT OR LGPL-2.1) AND (GPL-3.0-only OR ISC) with only MIT approved.
+  // OLD code: strips outer parens → 'MIT OR LGPL-2.1) AND (GPL-3.0-only OR ISC'
+  //           → OR fires first → MIT is approved → returns true (FAIL OPEN).
+  // NEW code: recursive descent evaluates (true OR false) AND (false OR false) → false (CORRECT).
+  it('#18 correctly rejects (A OR B) AND (C OR D) when the AND side is fully unapproved — no fail-open', async () => {
+    fs.mkdirSync(NODE_MODULES_PATH, { recursive: true });
+    createTestPackage(TEST_DIR, 'pkg', '(MIT OR LGPL-2.1) AND (GPL-3.0-only OR ISC)');
+    // Only MIT is approved; GPL-3.0-only and ISC are not
+    createLicensesCsv(CSV_PATH, ['MIT']);
+
+    const lockfile = {
+      packages: { 'node_modules/pkg': { name: 'pkg', version: '1.0.0' } }
+    };
+    const result = await checkLicenses(lockfile, { nodeModulesPath: NODE_MODULES_PATH, csvPath: CSV_PATH });
+    expect(result.valid).toBe(false);
+    expect(result.rejected).toBe(1);
+  });
+
+  // --- #18 sub-issue 3: v1 lockfile silent pass ---
+
+  // OLD code: lockfileData.packages || {} → {} (v1 has no packages map) → entries empty
+  //           → returns { valid: true, checked: 0 } (silently verified nothing).
+  // NEW code: throws UNSUPPORTED_VERSION, mirroring checkIntegrity.
+  it('#18 throws UNSUPPORTED_VERSION for v1 lockfiles instead of silently passing', async () => {
+    fs.mkdirSync(NODE_MODULES_PATH, { recursive: true });
+    createLicensesCsv(CSV_PATH);
+
+    const v1lockfile = {
+      lockfileVersion: 1,
+      dependencies: { lodash: { version: '4.17.21', resolved: 'https://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz' } }
+    };
+
+    let caught;
+    try {
+      await checkLicenses(v1lockfile, { nodeModulesPath: NODE_MODULES_PATH, csvPath: CSV_PATH });
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(CheckError);
+    expect(caught.code).toBe('UNSUPPORTED_VERSION');
   });
 });
 

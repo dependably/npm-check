@@ -1,4 +1,5 @@
 // src/checksum-fixer.js
+import fs from 'fs';
 import path from 'path';
 import { detectLockfileVersion, LOCKFILE_VERSIONS, forEachPackageEntry } from './format-library.js';
 import {
@@ -8,7 +9,7 @@ import {
   deriveRegistryBase,
   DEFAULT_REGISTRY
 } from './integrity.js';
-import { hashPackageDirectory } from './checker.js';
+import { hashPackageDirectory, collectPackageFiles } from './checker.js';
 
 // Re-exported for back-compat; the canonical definition now lives in integrity.js
 export { deriveRegistryBase } from './integrity.js';
@@ -130,12 +131,80 @@ function resolveFileTarball(candidate, buckets) {
  * Hash a registry candidate's local node_modules copy as a fallback. Records a
  * local-directory change on success and returns true; returns false (leaving
  * the entry unresolved) on any failure.
+ *
+ * Fix #17: derive the on-disk path from the lockfile key (the install path
+ * relative to the project root) rather than slicing at the last node_modules/
+ * segment. The old approach mapped nested packages (node_modules/a/node_modules/b)
+ * to the wrong hoisted location (node_modules/b). It also silently recorded a
+ * constant sha512-of-nothing when the directory was absent, because
+ * hashPackageDirectory swallows ENOENT rather than throwing. This function now
+ * enforces two invariants before delegating to the hasher:
+ *   1. Containment — the resolved path must stay inside baseDir (blocks traversal
+ *      keys like node_modules/../../secret).
+ *   2. Existence — the directory must be present on disk; absent → unresolved.
  */
-async function tryLocalFallback(candidate, nodeModulesPath, buckets) {
+async function tryLocalFallback(candidate, baseDir, buckets) {
   const { key, entry, name } = candidate;
-  const pkgDir = path.join(nodeModulesPath, key.slice(key.lastIndexOf('node_modules/') + 'node_modules/'.length));
+
+  // The lockfile key is the install path relative to the project root, so
+  // joining directly with baseDir gives the correct on-disk location for both
+  // top-level (node_modules/foo) and nested (node_modules/a/node_modules/b)
+  // packages without any segment-slicing.
+  const resolvedBase = path.resolve(baseDir);
+  const pkgDir = path.resolve(path.join(baseDir, key));
+
+  // Containment check (textual): reject any key that resolves outside the
+  // project root (e.g. node_modules/../../secret).
+  if (!pkgDir.startsWith(resolvedBase + path.sep)) {
+    return false;
+  }
+
+  // Existence check: hashPackageDirectory digests zero bytes and returns a
+  // constant sha512-of-nothing for a missing directory rather than throwing —
+  // without this guard that garbage constant would be silently recorded.
+  if (!fs.existsSync(pkgDir)) {
+    return false;
+  }
+
+  // Symlink-aware containment: the textual resolve above can't see through a
+  // symlink at the package path (node_modules/x -> ../../outside). Resolve the
+  // real on-disk location and re-check it stays inside the (real) project root.
+  let realDir;
   try {
-    const localHash = await hashPackageDirectory(pkgDir);
+    realDir = fs.realpathSync(pkgDir);
+  } catch {
+    return false;
+  }
+  let realBase = resolvedBase;
+  try {
+    realBase = fs.realpathSync(resolvedBase);
+  } catch { /* base unreadable — fall back to the textual base */ }
+  // Require STRICT containment (a subpath), matching the textual check above. A
+  // package dir is always node_modules/... — never the project root itself — so
+  // a symlink resolving TO the root (which would hash the whole project) is
+  // correctly rejected rather than allowed by an equality carve-out.
+  if (!realDir.startsWith(realBase + path.sep)) {
+    return false;
+  }
+
+  // A non-directory at the path can't be a package dir.
+  try {
+    if (!fs.statSync(realDir).isDirectory()) return false;
+  } catch {
+    return false;
+  }
+
+  // An empty or interrupted-install directory yields zero hashable files, which
+  // hashPackageDirectory digests to the constant sha512-of-nothing — recording
+  // that as a "fix" is worse than leaving the entry unresolved. Use the same
+  // file-collection the hasher uses, so the emptiness check matches exactly.
+  const hashableFiles = await collectPackageFiles(realDir);
+  if (hashableFiles.length === 0) {
+    return false;
+  }
+
+  try {
+    const localHash = await hashPackageDirectory(realDir);
     buckets.changes.push(makeChange(key, entry, name, localHash, 'local-directory'));
     return true;
   } catch {
@@ -164,7 +233,7 @@ function recordUnresolved(candidate, networkError, localFallback, buckets) {
  */
 async function resolveRegistryCandidate(candidate, settings, buckets) {
   const { key, entry, name } = candidate;
-  const { fetcher, defaultRegistry, localFallback, nodeModulesPath } = settings;
+  const { fetcher, defaultRegistry, localFallback, baseDir } = settings;
 
   const registryBase = deriveRegistryBase(entry.resolved, name) || defaultRegistry;
   let hash = null;
@@ -180,7 +249,7 @@ async function resolveRegistryCandidate(candidate, settings, buckets) {
     return;
   }
 
-  if (localFallback && await tryLocalFallback(candidate, nodeModulesPath, buckets)) {
+  if (localFallback && await tryLocalFallback(candidate, baseDir, buckets)) {
     return;
   }
 
@@ -188,19 +257,70 @@ async function resolveRegistryCandidate(candidate, settings, buckets) {
 }
 
 /**
+ * Navigate to the node in the legacy v2 dependencies tree that corresponds to
+ * a packages-map key, returning the leaf object or null when the path is
+ * absent.
+ *
+ * "node_modules/foo"                  → dependencies["foo"]
+ * "node_modules/a/node_modules/b"     → dependencies["a"]["dependencies"]["b"]
+ * "node_modules/@scope/pkg"           → dependencies["@scope/pkg"]
+ */
+function getDepsNode(dependencies, pkgKey) {
+  // Only handle keys rooted at "node_modules/…"; workspace-level keys are skipped.
+  if (!pkgKey.startsWith('node_modules/')) return null;
+  // Slice off the leading "node_modules/" then split the remainder by the
+  // nested-package delimiter to obtain the name chain.
+  // "node_modules/foo"            → rest="foo"            → names=["foo"]
+  // "node_modules/a/node_modules/b" → rest="a/node_modules/b" → names=["a","b"]
+  const names = pkgKey.slice('node_modules/'.length).split('/node_modules/');
+  let current = dependencies;
+  for (let i = 0; i < names.length - 1; i++) {
+    current = current[names[i]]?.dependencies;
+    if (!current) return null;
+  }
+  return current[names[names.length - 1]] ?? null;
+}
+
+/**
  * Apply the collected integrity changes to a shallow copy of the lockfile.
+ *
+ * Fix #19: v2 lockfiles carry both a packages map and a legacy dependencies
+ * tree. The old code only updated packages, leaving the dependencies tree with
+ * stale hashes — the exact inconsistency the validator flags as an error.
+ * When lockfile.dependencies is present, each change is now mirrored into the
+ * corresponding node of the legacy tree so both sections stay consistent.
  */
 function applyChanges(lockfile, changes) {
   const updated = {
     ...lockfile,
     packages: { ...lockfile.packages }
   };
+
+  // Deep-copy the legacy dependencies tree once so we can mutate the copy
+  // without touching the input lockfile.
+  const updatedDeps = lockfile.dependencies
+    ? JSON.parse(JSON.stringify(lockfile.dependencies))
+    : null;
+
   for (const change of changes) {
     updated.packages[change.packagePath] = {
       ...updated.packages[change.packagePath],
       integrity: change.to
     };
+
+    // Mirror into the v2 legacy dependencies tree when present.
+    if (updatedDeps) {
+      const node = getDepsNode(updatedDeps, change.packagePath);
+      if (node) {
+        node.integrity = change.to;
+      }
+    }
   }
+
+  if (updatedDeps) {
+    updated.dependencies = updatedDeps;
+  }
+
   return updated;
 }
 
@@ -221,7 +341,7 @@ export async function fixChecksums(lockfile, options = {}) {
     concurrency = 8,
     timeoutMs = 10000,
     localFallback = false,
-    nodeModulesPath = './node_modules',
+    nodeModulesPath = './node_modules', // accepted for API compat; path is now derived from baseDir + key
     defaultRegistry = DEFAULT_REGISTRY,
     fetchIntegrity = null,
     baseDir = '.'
@@ -255,7 +375,7 @@ export async function fixChecksums(lockfile, options = {}) {
 
   reportProgress('Fetching integrity hashes');
 
-  const settings = { fetcher, defaultRegistry, localFallback, nodeModulesPath };
+  const settings = { fetcher, defaultRegistry, localFallback, baseDir };
   await mapWithConcurrency(candidates, concurrency, async (candidate) => {
     try {
       if (candidate.source === 'file-tarball') {
@@ -279,6 +399,10 @@ export async function fixChecksums(lockfile, options = {}) {
       'Use only for air-gapped/internal verification.'
     );
   }
+
+  // Suppress the unused variable warning — nodeModulesPath is kept in the destructuring
+  // for backward-compatible API surface but is no longer used internally (see fix #17).
+  void nodeModulesPath;
 
   return {
     lockfile: applyChanges(lockfile, changes),

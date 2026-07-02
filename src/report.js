@@ -133,7 +133,11 @@ function advisoryFinding(level, f) {
 // default), else warnings; rendered once here (not from `errors`, where they have no advisoryId).
 function collectVulnFindings(buckets, vulnResult, failOnUnresolved) {
   for (const err of vulnResult.errors) {
-    if (!err.advisoryId) continue;
+    // Discriminate on `reason` (like vulnEnvelope), NOT on `advisoryId`: an
+    // unresolved entry carries a `reason` and is rendered from unresolvedItems
+    // below, while a genuine advisory has none — including one that merely lacks
+    // an `id`, which must still fail the run rather than silently vanish.
+    if (err.reason) continue;
     pushFinding(buckets, 'vuln', advisoryFinding('error', err));
   }
   for (const warn of vulnResult.warnings) {
@@ -225,7 +229,17 @@ function liveSection(findings, summary) {
 // short-circuiting to a 'skip' when the underlying check didn't run.
 const SECTION_DESCRIBERS = {
   integrity(findings, state) {
-    if (!state.integrity) return { status: 'skip', summary: 'skipped (--offline)' };
+    // The registry check may be off (--offline / --no-integrity) while the offline
+    // `integrity-hygiene` audit rule still bucketed findings here. A skipped section
+    // must not silently carry (and count) findings, so only report `skip` when the
+    // bucket is genuinely empty; otherwise surface the offline findings and let their
+    // severity drive the status and the rollup. (The `integrity: false` boolean can't
+    // distinguish --offline from --no-integrity, so the label stays flag-neutral.)
+    if (!state.integrity) {
+      if (findings.length === 0) return { status: 'skip', summary: 'registry check skipped' };
+      const n = findings.length;
+      return liveSection(findings, `registry check skipped · ${n} offline finding${n === 1 ? '' : 's'}`);
+    }
     return liveSection(findings, integritySummary(state.integrityResult));
   },
   vuln(findings, state) {
@@ -237,6 +251,10 @@ const SECTION_DESCRIBERS = {
     return liveSection(findings, scanSummary(state.deprecationResult, 'deprecated', 'deprecated'));
   },
   licenses(findings, state) {
+    // An unexpected checkLicenses failure (malformed CSV, fs permission error,
+    // internal bug) is recorded as an error-severity finding upstream — NOT swallowed
+    // into a passing skip — so the license policy gate trips when the check breaks.
+    if (state.licenseError) return liveSection(findings, `check failed (${state.licenseError})`);
     if (state.licenseSkip) return { status: 'skip', summary: `skipped (${state.licenseSkip})` };
     return liveSection(findings, licenseSummary(state.licenseResult));
   },
@@ -363,7 +381,11 @@ async function runDeprecationStage(buckets, lockfile, opts) {
 }
 
 // License validation (filesystem; needs node_modules + an approved list).
-// Returns { licenseResult, licenseSkip } — a non-null skip reason means it was skipped.
+// Returns { licenseResult, licenseSkip, licenseError }. The two benign degrade cases
+// (no node_modules, no CSV) are explicit `existsSync` skips above. An UNEXPECTED
+// checkLicenses failure (malformed CSV, fs permission error, internal bug) must NOT be
+// swallowed into a passing skip — it's recorded as an error-severity finding so the
+// gate trips (fail-closed), and surfaced via `licenseError`.
 async function runLicenseStage(buckets, lockfile, opts) {
   if (!opts.license) return { licenseResult: null, licenseSkip: 'disabled' };
   if (!fs.existsSync(opts.nodeModulesPath)) return { licenseResult: null, licenseSkip: 'no node_modules' };
@@ -375,12 +397,27 @@ async function runLicenseStage(buckets, lockfile, opts) {
     collectLicenseFindings(buckets, licenseResult);
     return { licenseResult, licenseSkip: null };
   } catch (e) {
-    return { licenseResult: null, licenseSkip: e.message };
+    pushFinding(buckets, 'licenses', { severity: 'error', location: opts.licensesCsv, message: `license check failed: ${e.message}` });
+    return { licenseResult: null, licenseSkip: null, licenseError: e.message };
   }
 }
 
+// The 5-level ladder used by the suite-wide `--fail-on severity=` gate.
+const SEVERITY_RANK = { info: 0, low: 1, moderate: 2, high: 3, critical: 4 };
+
+// Does any finding meet or exceed the severity gate? This is the suite-wide CI gate:
+// each finding's ladder severity comes from `ladderSeverity()` (advisory severity, else
+// error→high / warn→low), so the gate applies across EVERY section that carries
+// severities — not just the vuln stage, whose `minSeverity` only shaped its own
+// error/warn split. An unknown/absent gate never trips.
+function severityGateTripped(findings, gate) {
+  const threshold = SEVERITY_RANK[gate];
+  if (threshold === undefined) return false;
+  return findings.some((f) => (SEVERITY_RANK[ladderSeverity(f)] ?? 0) >= threshold);
+}
+
 // Assemble the ordered sections (status + one-line summary) and roll up totals.
-function assembleSections(buckets, sectionState, maxWarnings) {
+function assembleSections(buckets, sectionState, maxWarnings, severityGate) {
   const sections = SECTIONS.map(({ id, title }) => {
     const findings = buckets[id] || [];
     const { status, summary } = describeSection(id, findings, sectionState);
@@ -390,7 +427,12 @@ function assembleSections(buckets, sectionState, maxWarnings) {
   const allFindings = sections.flatMap((s) => s.findings);
   const errors = allFindings.filter((f) => f.severity === 'error').length;
   const warnings = allFindings.filter((f) => f.severity === 'warn').length;
-  const pass = errors === 0 && (maxWarnings < 0 || warnings <= maxWarnings);
+  // Fail-closed rollup: any error, over the warning budget, OR any finding at/above the
+  // severity gate (default `high`, so errors→high already trip and the default behavior
+  // is unchanged; lowering the gate to e.g. `low` now correctly fails on warn-tier
+  // findings from deprecation / install-scripts / pinned-versions / etc.).
+  const gateTripped = severityGateTripped(allFindings, severityGate);
+  const pass = errors === 0 && (maxWarnings < 0 || warnings <= maxWarnings) && !gateTripped;
   return { sections, summary: { errors, warnings, total: errors + warnings, pass } };
 }
 
@@ -423,7 +465,7 @@ export async function runReport(target, options = {}) {
   const integrityResult = await runIntegrityStage(buckets, lockfile, opts);
   const vulnResult = await runVulnStage(buckets, lockfile, opts);
   const deprecationResult = await runDeprecationStage(buckets, lockfile, opts);
-  const { licenseResult, licenseSkip } = isPnpm
+  const { licenseResult, licenseSkip, licenseError = null } = isPnpm
     ? { licenseResult: null, licenseSkip: 'N/A (pnpm)' }
     : await runLicenseStage(buckets, lockfile, opts);
 
@@ -431,9 +473,9 @@ export async function runReport(target, options = {}) {
   const sectionState = {
     flavor,
     integrity: opts.integrity, integrityResult, vuln: opts.vuln, vulnResult,
-    deprecated: opts.deprecated, deprecationResult, licenseSkip, licenseResult, scriptTally
+    deprecated: opts.deprecated, deprecationResult, licenseSkip, licenseError, licenseResult, scriptTally
   };
-  const { sections, summary } = assembleSections(buckets, sectionState, opts.maxWarnings);
+  const { sections, summary } = assembleSections(buckets, sectionState, opts.maxWarnings, opts.minSeverity);
 
   return { filePath, scanned: countExaminedPackages(lockfile), sections, summary };
 }

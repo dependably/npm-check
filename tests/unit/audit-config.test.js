@@ -77,6 +77,42 @@ describe('mergeConfig', () => {
     expect(() => mergeConfig({ maxWarnings: 1.5 })).toThrow(AuditConfigError);
     expect(mergeConfig({ maxWarnings: 0 }).maxWarnings).toBe(0);
   });
+
+  // Regression test for #29: mergeConfig must deep-clone rule option objects so
+  // that mutating a merged config's options does not poison DEFAULT_CONFIG or
+  // other independently-produced configs (aliasing hazard in long-running /
+  // programmatic use and in Jest suites sharing the module registry).
+  it('does not alias DEFAULT_CONFIG option objects into merged configs', () => {
+    const configA = mergeConfig({});
+    const configB = mergeConfig({});
+
+    // Mutate configA's secure-resolved allowedHosts array in place.
+    configA.rules['secure-resolved'].options.allowedHosts.push('injected.example.com');
+
+    // DEFAULT_CONFIG must be unmodified.
+    expect(DEFAULT_CONFIG.rules['secure-resolved'][1].allowedHosts).not.toContain('injected.example.com');
+
+    // An independently-merged config must also be unmodified.
+    expect(configB.rules['secure-resolved'].options.allowedHosts).not.toContain('injected.example.com');
+  });
+
+  // Regression test for #29 (spread path): when a user override is merged, keys
+  // not provided by the user (e.g. `sections`) are spread from defaults. Without
+  // the fix those spread values are still aliases of DEFAULT_CONFIG arrays.
+  it('does not alias DEFAULT_CONFIG option arrays via defaults spread in user-override path', () => {
+    // User overrides severity + ignore only; `sections` still flows in from defaults.
+    const config = mergeConfig({
+      rules: { 'pinned-versions': ['error', { ignore: ['react'] }] }
+    });
+
+    // Mutate the sections array that arrived via the defaults spread.
+    config.rules['pinned-versions'].options.sections.push('peerDependencies');
+
+    // DEFAULT_CONFIG.sections must be unchanged.
+    expect(DEFAULT_CONFIG.rules['pinned-versions'][1].sections).toEqual(
+      ['dependencies', 'devDependencies', 'optionalDependencies']
+    );
+  });
 });
 
 describe('loadAuditConfig', () => {
@@ -146,6 +182,22 @@ describe('shared .dependably-check config', () => {
     expect(hosts).toContain('registry.npmjs.org'); // public npm stays trusted
     expect(hosts).toContain('dependably.northwardlabs.ca');
     expect(config.sharedConfigPath).toBe(path.join(tmpDir, SHARED_CONFIG_FILENAME));
+  });
+
+  it('adds shared hosts to no-remote-deps too, not just secure-resolved (regression #27)', () => {
+    // A private-registry tarball is a REGISTRY dep, not a remote/git one. The
+    // shared allowlist must reach both host-based rules, or the no-remote-deps
+    // rule keeps flagging private-registry packages and the --fail-on gate fails.
+    fs.writeFileSync(path.join(tmpDir, '.git'), '');
+    fs.writeFileSync(
+      path.join(tmpDir, SHARED_CONFIG_FILENAME),
+      JSON.stringify({ common: { allowedRegistryHosts: ['npm.corp.example.com'] } })
+    );
+
+    const config = loadAuditConfig(tmpDir);
+    const noRemote = config.rules['no-remote-deps'].options.allowedHosts;
+    expect(noRemote).toContain('npm.corp.example.com');
+    expect(noRemote).toContain('registry.npmjs.org'); // built-in default preserved
   });
 
   it('walks up from a nested cwd to find .dependably-check at the repo root', () => {

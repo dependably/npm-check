@@ -3,10 +3,15 @@ import {
   generateIntegrityFromData,
   generateIntegrityFromFile,
   fetchPackumentIntegrity,
+  fetchPackument,
+  deriveRegistryBase,
+  getJson,
+  postJson,
   isValidIntegrity,
   isPlaceholder
 } from '../../src/integrity.js';
 import fs from 'fs';
+import http from 'http';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
@@ -175,5 +180,217 @@ describe('fetchPackumentIntegrity', () => {
   it('propagates transport errors (network failure)', async () => {
     const { fetchJson } = fakeTransport(new Error('ECONNREFUSED'));
     await expect(fetchPackumentIntegrity('pkg', '1.0.0', { fetchJson })).rejects.toThrow('ECONNREFUSED');
+  });
+});
+
+// Regression: issue #30 — packumentVersionUrl / fetchPackument under-encoded
+// scoped names (only the first '/' → %2f, nothing else), letting a lockfile-
+// controlled name inject extra path segments or a query string onto the registry.
+describe('registry URL name encoding (issue #30)', () => {
+  function captureTransport(reply = { dist: { integrity: 'sha512-OK==' } }) {
+    const calls = [];
+    const fetchJson = async (url, timeoutMs) => {
+      calls.push({ url, timeoutMs });
+      return reply;
+    };
+    return { fetchJson, calls };
+  }
+
+  it('rejects a scoped name that smuggles extra path segments / a query string', async () => {
+    const { fetchJson } = captureTransport();
+    // OLD code: replace('/', '%2f') only touches the first slash → the rest of
+    // "@a/b/../../-/npm/v1/x?y=1" passes through raw and the transport is called.
+    await expect(
+      fetchPackumentIntegrity('@a/b/../../-/npm/v1/x?y=1', '1.0.0', { fetchJson })
+    ).rejects.toThrow(/Invalid package name/);
+  });
+
+  it('rejects a scoped name with an injected query on fetchPackument too', async () => {
+    const { fetchJson } = captureTransport({ 'dist-tags': { latest: '1.0.0' } });
+    await expect(
+      fetchPackument('@evil/pkg?spider=1', { fetchJson })
+    ).rejects.toThrow(/Invalid package name/);
+  });
+
+  it('rejects an unscoped name containing a slash', async () => {
+    const { fetchJson } = captureTransport();
+    await expect(
+      fetchPackumentIntegrity('a/../secret', '1.0.0', { fetchJson })
+    ).rejects.toThrow(/Invalid package name/);
+  });
+
+  it('still builds the correct URL for a legitimate scoped name', async () => {
+    const { fetchJson, calls } = captureTransport();
+    await fetchPackumentIntegrity('@babel/core', '7.0.0', {
+      registryBase: 'https://npm.example.com/registry/',
+      fetchJson
+    });
+    expect(calls[0].url).toBe('https://npm.example.com/registry/@babel%2fcore/7.0.0');
+  });
+
+  it('tolerates legacy mixed-case names', async () => {
+    const { fetchJson, calls } = captureTransport();
+    await fetchPackumentIntegrity('JSONStream', '1.3.5', { fetchJson });
+    expect(calls[0].url).toBe('https://registry.npmjs.org/JSONStream/1.3.5');
+  });
+});
+
+// Regression: the 16MB response cap made fetchPackument unusable for large
+// packuments (renovate's full packument is ~80MB). fetchPackument must request
+// the ABBREVIATED packument and plumb the size/deadline overrides.
+describe('fetchPackument abbreviated packument', () => {
+  it('requests the abbreviated media type and plumbs maxBytes/deadlineMs', async () => {
+    const calls = [];
+    const fetchJson = async (url, timeoutMs, redirectsLeft, options) => {
+      calls.push({ url, timeoutMs, redirectsLeft, options });
+      return { 'dist-tags': { latest: '1.0.0' } };
+    };
+    await fetchPackument('renovate', { fetchJson, maxBytes: 999, deadlineMs: 888 });
+    // Prefers the abbreviated ("corgi") type; may carry npm's fallback chain.
+    expect(calls[0].options.accept).toMatch(/^application\/vnd\.npm\.install-v1\+json/);
+    expect(calls[0].options.maxBytes).toBe(999);
+    expect(calls[0].options.deadlineMs).toBe(888);
+  });
+});
+
+// Regression: issue #12 — deriveRegistryBase() derives the fetch host from the
+// untrusted lockfile `resolved` URL (SSRF / self-attesting host). An optional
+// allowlist lets a caller pin the trusted registry set.
+describe('deriveRegistryBase host allowlist (issue #12)', () => {
+  const evilResolved = 'https://evil.internal.example/@scope/pkg/-/pkg-1.0.0.tgz';
+
+  it('derives the base with no allowlist (back-compat)', () => {
+    expect(deriveRegistryBase(evilResolved, '@scope/pkg')).toBe('https://evil.internal.example');
+  });
+
+  it('returns null when the resolved host is outside the allowlist', () => {
+    // OLD code ignores the 3rd arg and returns the attacker host regardless.
+    expect(
+      deriveRegistryBase(evilResolved, '@scope/pkg', { allowedHosts: ['registry.npmjs.org'] })
+    ).toBeNull();
+  });
+
+  it('derives the base when the host is on the allowlist', () => {
+    const ok = 'https://registry.npmjs.org/@scope/pkg/-/pkg-1.0.0.tgz';
+    expect(
+      deriveRegistryBase(ok, '@scope/pkg', { allowedHosts: ['registry.npmjs.org'] })
+    ).toBe('https://registry.npmjs.org');
+  });
+
+  it('treats an empty allowlist as "no restriction"', () => {
+    expect(
+      deriveRegistryBase(evilResolved, '@scope/pkg', { allowedHosts: [] })
+    ).toBe('https://evil.internal.example');
+  });
+
+  it('a port-less allowlist entry does NOT match a non-default port (SSRF hardening)', () => {
+    // A hostile lockfile could steer the request to a different service on an
+    // otherwise-allowed host (e.g. :9200). A bare-hostname entry matches only the
+    // default port.
+    expect(
+      deriveRegistryBase('https://registry.internal:9200/@s/p/-/p-1.0.0.tgz', '@s/p', { allowedHosts: ['registry.internal'] })
+    ).toBeNull();
+  });
+
+  it('an explicit host:port allowlist entry matches that port', () => {
+    expect(
+      deriveRegistryBase('https://registry.internal:9200/@s/p/-/p-1.0.0.tgz', '@s/p', { allowedHosts: ['registry.internal:9200'] })
+    ).toBe('https://registry.internal:9200');
+  });
+});
+
+// Regression: issues #16 & #12 — the shared HTTP transport (getJson/postJson).
+describe('HTTP transport hardening (issues #16, #12)', () => {
+  let server;
+  let baseUrl;
+  let handler;
+
+  beforeEach(async () => {
+    handler = (req, res) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true }));
+    };
+    server = http.createServer((req, res) => handler(req, res));
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+    baseUrl = `http://127.0.0.1:${server.address().port}`;
+  });
+
+  afterEach(async () => {
+    await new Promise((resolve) => server.close(resolve));
+  });
+
+  // Issue #16 (1): the old https-only transport threw ERR_INVALID_PROTOCOL on an
+  // http:// URL, so plaintext (LAN) registries were never fetchable.
+  it('getJson fetches over http://', async () => {
+    await expect(getJson(baseUrl + '/pkg', 5000)).resolves.toEqual({ ok: true });
+  });
+
+  it('getJson puts a provided Accept header on the wire', async () => {
+    let seenAccept;
+    handler = (req, res) => {
+      seenAccept = req.headers.accept;
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true }));
+    };
+    await getJson(baseUrl + '/pkg', 5000, 1, { accept: 'application/vnd.npm.install-v1+json' });
+    expect(seenAccept).toBe('application/vnd.npm.install-v1+json');
+  });
+
+  it('postJson fetches over http://', async () => {
+    handler = (req, res) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ posted: true }));
+    };
+    await expect(postJson(baseUrl + '/bulk', { names: [] }, 5000)).resolves.toEqual({ posted: true });
+  });
+
+  // Issue #16 (2): a mid-body socket error is emitted on the response stream, not
+  // the request. Without a res 'error' handler this was an uncaught exception that
+  // crashed the process; now it rejects the single request.
+  it('getJson rejects (does not crash) on a truncated/reset response body', async () => {
+    handler = (req, res) => {
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Content-Length': '1000' });
+      res.write('{"partial":');
+      // Abruptly kill the socket before Content-Length bytes are delivered.
+      res.socket.destroy();
+    };
+    await expect(getJson(baseUrl + '/pkg', 5000)).rejects.toThrow();
+  });
+
+  // Issue #12 (1): response size cap.
+  it('getJson rejects when the body exceeds maxBytes', async () => {
+    handler = (req, res) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ blob: 'x'.repeat(500) }));
+    };
+    await expect(
+      getJson(baseUrl + '/pkg', 5000, 1, { maxBytes: 50 })
+    ).rejects.toThrow(/exceeded 50 bytes/);
+  });
+
+  it('postJson rejects when the body exceeds maxBytes', async () => {
+    handler = (req, res) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ blob: 'y'.repeat(500) }));
+    };
+    await expect(
+      postJson(baseUrl + '/bulk', {}, 5000, 1, { maxBytes: 50 })
+    ).rejects.toThrow(/exceeded 50 bytes/);
+  });
+
+  // Issue #12 (2): wall-clock deadline defeats a byte-trickle that keeps resetting
+  // the idle timeout. The idle timeout here (5000ms) would NOT fire; only the
+  // wall-clock deadline (50ms) does.
+  it('getJson rejects when the wall-clock deadline elapses', async () => {
+    handler = (req, res) => {
+      // Respond only after 400ms — old code (no deadline) would eventually resolve.
+      setTimeout(() => {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ slow: true }));
+      }, 400);
+    };
+    await expect(
+      getJson(baseUrl + '/pkg', 5000, 1, { deadlineMs: 50 })
+    ).rejects.toThrow(/deadline/);
   });
 });

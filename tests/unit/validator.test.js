@@ -508,4 +508,179 @@ describe('Package Lockfile Validator', () => {
       expect(result.errors.some(e => e.code === 'MISSING_OPT_IN_LOCKFILE')).toBe(true);
     });
   });
+
+  describe('Regression: #21 – sha1/multi-hash integrity, non-string resolved, v1 package.json cross-check', () => {
+    // Bug 1a: sha1 integrity was rejected as INVALID_INTEGRITY; now it is
+    // accepted as structurally valid and emits a LEGACY_INTEGRITY warning instead.
+    it('accepts sha1 integrity without an error and warns LEGACY_INTEGRITY', () => {
+      const lockfile = {
+        name: 'test', version: '1.0.0', lockfileVersion: 2,
+        packages: {
+          '': { name: 'test', version: '1.0.0' },
+          'node_modules/pkg': {
+            name: 'pkg', version: '1.0.0',
+            integrity: 'sha1-abc123def456abc123def456abc123def456abc1'
+          }
+        }
+      };
+      const result = validatePackageLock(lockfile);
+      expect(result.errors.some(e => e.code === 'INVALID_INTEGRITY')).toBe(false);
+      expect(result.warnings.some(w => w.code === 'LEGACY_INTEGRITY')).toBe(true);
+    });
+
+    // Bug 1b: sha1 integrity in the v1 dependencies tree was also rejected.
+    it('accepts sha1 integrity in v1 dependencies tree without an error', () => {
+      const lockfile = {
+        name: 'test', version: '1.0.0', lockfileVersion: 1,
+        dependencies: {
+          lodash: {
+            version: '4.17.21',
+            integrity: 'sha1-FjMGeBqBuCoVBMYKNKDxwIvI5KA='
+          }
+        }
+      };
+      const result = validatePackageLock(lockfile);
+      expect(result.errors.some(e => e.code === 'INVALID_INTEGRITY')).toBe(false);
+      expect(result.warnings.some(w => w.code === 'LEGACY_INTEGRITY')).toBe(true);
+    });
+
+    // Bug 1c: multi-hash SRI strings ('sha512-... sha1-...') were rejected
+    // because the old regex had no whitespace support.
+    it('accepts multi-hash SRI integrity (sha512 + sha1) without an error', () => {
+      const lockfile = {
+        name: 'test', version: '1.0.0', lockfileVersion: 2,
+        packages: {
+          '': { name: 'test', version: '1.0.0' },
+          'node_modules/pkg': {
+            name: 'pkg', version: '1.0.0',
+            integrity: 'sha512-abc123XYZ= sha1-def456GHI='
+          }
+        }
+      };
+      const result = validatePackageLock(lockfile);
+      // Multi-hash with sha1 token → no error; sha1 token triggers legacy warning
+      expect(result.errors.some(e => e.code === 'INVALID_INTEGRITY')).toBe(false);
+      expect(result.warnings.some(w => w.code === 'LEGACY_INTEGRITY')).toBe(true);
+    });
+
+    // Bug 1c (pure sha512 multi-hash): should produce no error and no legacy warning.
+    it('accepts multi-hash SRI with only sha512 tokens and no legacy warning', () => {
+      const lockfile = {
+        name: 'test', version: '1.0.0', lockfileVersion: 2,
+        packages: {
+          '': { name: 'test', version: '1.0.0' },
+          'node_modules/pkg': {
+            name: 'pkg', version: '1.0.0',
+            integrity: 'sha512-aaaa= sha512-bbbb='
+          }
+        }
+      };
+      const result = validatePackageLock(lockfile);
+      expect(result.errors.some(e => e.code === 'INVALID_INTEGRITY')).toBe(false);
+      expect(result.warnings.some(w => w.code === 'LEGACY_INTEGRITY')).toBe(false);
+    });
+
+    // Bug 2: a non-string resolved value crashed with TypeError; now it emits
+    // INVALID_RESOLVED without throwing.
+    it('does not crash on numeric resolved and emits INVALID_RESOLVED warning', () => {
+      const lockfile = {
+        name: 'test', version: '1.0.0', lockfileVersion: 2,
+        packages: {
+          '': { name: 'test', version: '1.0.0' },
+          'node_modules/pkg': {
+            name: 'pkg', version: '1.0.0',
+            resolved: 42
+          }
+        }
+      };
+      expect(() => validatePackageLock(lockfile)).not.toThrow();
+      const result = validatePackageLock(lockfile);
+      expect(result.warnings.some(w => w.code === 'INVALID_RESOLVED')).toBe(true);
+    });
+
+    it('does not crash on object resolved value and emits INVALID_RESOLVED warning', () => {
+      const lockfile = {
+        name: 'test', version: '1.0.0', lockfileVersion: 2,
+        packages: {
+          '': { name: 'test', version: '1.0.0' },
+          'node_modules/pkg': {
+            name: 'pkg', version: '1.0.0',
+            resolved: { url: 'https://example.com' }
+          }
+        }
+      };
+      expect(() => validatePackageLock(lockfile)).not.toThrow();
+      const result = validatePackageLock(lockfile);
+      expect(result.warnings.some(w => w.code === 'INVALID_RESOLVED')).toBe(true);
+    });
+
+    // Bug 3: validateAgainstPackageJson always returned false-missing for v1
+    // lockfiles because packages[''] is absent, so every dep was flagged even
+    // when it existed in the dependencies tree.
+    it('v1 cross-check: does not false-report present deps as missing', () => {
+      const lockfile = {
+        name: 'test', version: '1.0.0', lockfileVersion: 1,
+        dependencies: {
+          lodash: { version: '4.17.21' },
+          react: { version: '18.2.0' }
+        }
+      };
+      const packageJson = {
+        name: 'test', version: '1.0.0',
+        dependencies: { lodash: '^4.0.0', react: '^18.0.0' }
+      };
+      const result = validatePackageLock(lockfile, packageJson, { validateAgainstPackageJson: true });
+      expect(result.errors.some(e => e.code === 'MISSING_IN_LOCKFILE')).toBe(false);
+    });
+
+    it('v1 cross-check: correctly detects a dep missing from the tree', () => {
+      const lockfile = {
+        name: 'test', version: '1.0.0', lockfileVersion: 1,
+        dependencies: {
+          lodash: { version: '4.17.21' }
+          // axios is absent
+        }
+      };
+      const packageJson = {
+        name: 'test', version: '1.0.0',
+        dependencies: { lodash: '^4.0.0', axios: '^1.0.0' }
+      };
+      const result = validatePackageLock(lockfile, packageJson, { validateAgainstPackageJson: true });
+      expect(result.errors.some(e => e.code === 'MISSING_IN_LOCKFILE' && e.message.includes('axios'))).toBe(true);
+      expect(result.errors.some(e => e.code === 'MISSING_IN_LOCKFILE' && e.message.includes('lodash'))).toBe(false);
+    });
+
+    it('v1 cross-check: devDependencies are checked against the tree', () => {
+      const lockfile = {
+        name: 'test', version: '1.0.0', lockfileVersion: 1,
+        dependencies: {
+          jest: { version: '27.0.0' }
+        }
+      };
+      const packageJson = {
+        name: 'test', version: '1.0.0',
+        devDependencies: { jest: '^27.0.0', missing: '^1.0.0' }
+      };
+      const result = validatePackageLock(lockfile, packageJson, { validateAgainstPackageJson: true });
+      expect(result.errors.some(e => e.code === 'MISSING_DEV_IN_LOCKFILE' && e.message.includes('missing'))).toBe(true);
+      expect(result.errors.some(e => e.code === 'MISSING_DEV_IN_LOCKFILE' && e.message.includes('jest'))).toBe(false);
+    });
+
+    // peerDependencies is now also cross-checked (both v1 and v2/v3 paths).
+    it('v2 cross-check: peerDependencies are detected as missing', () => {
+      const lockfile = {
+        name: 'test', version: '1.0.0', lockfileVersion: 2,
+        packages: {
+          '': { name: 'test', version: '1.0.0' }
+          // No peerDependencies on root entry
+        }
+      };
+      const packageJson = {
+        name: 'test', version: '1.0.0',
+        peerDependencies: { react: '>=18' }
+      };
+      const result = validatePackageLock(lockfile, packageJson, { validateAgainstPackageJson: true });
+      expect(result.errors.some(e => e.code === 'MISSING_PEER_IN_LOCKFILE')).toBe(true);
+    });
+  });
 });

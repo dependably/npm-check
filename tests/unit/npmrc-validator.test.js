@@ -19,9 +19,11 @@ describe('parseNpmrc', () => {
     expect(entries).toEqual([{ key: 'registry', value: 'https://r.test/', line: 2 }]);
   });
 
-  it('flags a line with no = as malformed', () => {
-    const entries = parseNpmrc('gibberish');
-    expect(entries[0]).toMatchObject({ malformed: true, line: 1, raw: 'gibberish' });
+  it('parses a bare key as key=true (ini semantics), not malformed', () => {
+    // regression #7: npm's `ini` reads `engine-strict` as `engine-strict=true`.
+    const entries = parseNpmrc('engine-strict');
+    expect(entries[0]).toEqual({ key: 'engine-strict', value: 'true', line: 1 });
+    expect(entries[0].malformed).toBeUndefined();
   });
 
   it('treats empty content as no entries', () => {
@@ -122,10 +124,70 @@ describe('validateNpmrc', () => {
     it('does not warn on a known key', () => {
       expect(codes(validateNpmrc('save-exact=true'))).not.toContain('NPMRC_UNKNOWN_KEY');
     });
+    it('does not warn on prefer-online (regression #5: was a `prefer-dline` typo)', () => {
+      const result = validateNpmrc('prefer-online=true');
+      expect(codes(result)).not.toContain('NPMRC_UNKNOWN_KEY');
+      expect(result.valid).toBe(true);
+      // sibling key still recognized
+      expect(codes(validateNpmrc('prefer-offline=true'))).not.toContain('NPMRC_UNKNOWN_KEY');
+    });
   });
 
-  it('errors on a malformed line', () => {
-    expect(codes(validateNpmrc('gibberish'))).toContain('NPMRC_SYNTAX');
+  describe('bare boolean keys (#7)', () => {
+    it('accepts a bare known key without a syntax error', () => {
+      const result = validateNpmrc('engine-strict');
+      expect(result.valid).toBe(true);
+      expect(codes(result)).not.toContain('NPMRC_SYNTAX');
+      expect(codes(result)).not.toContain('NPMRC_UNKNOWN_KEY');
+    });
+    it('still warns (not errors) on a bare unknown/typo key', () => {
+      const result = validateNpmrc('made-up-flag');
+      expect(codes(result)).not.toContain('NPMRC_SYNTAX');
+      expect(codes(result)).toContain('NPMRC_UNKNOWN_KEY');
+    });
+    it('still detects a bare security-weakening key as true', () => {
+      // `unsafe-perm` bare === `unsafe-perm=true`
+      expect(codes(validateNpmrc('unsafe-perm'))).toContain('NPMRC_UNSAFE_PERM');
+    });
+  });
+
+  describe('pnpm flavor (#6)', () => {
+    const pnpm = (content) => validateNpmrc(content, { flavor: 'pnpm' });
+
+    it('does not flag hoisting / node-linker / peer / proxy / TLS settings pnpm honors', () => {
+      const content = [
+        'shamefully-hoist=true',
+        'node-linker=hoisted',
+        'hoist-pattern[]=*eslint*',
+        'strict-peer-dependencies=false',
+        'https-proxy=http://proxy.corp.test:8080/',
+        'strict-ssl=true'
+      ].join('\n');
+      const result = pnpm(content);
+      expect(codes(result)).not.toContain('NPMRC_PNPM_IGNORED');
+      expect(result.valid).toBe(true);
+    });
+
+    it('does not flag registry/auth lines', () => {
+      const content = [
+        'registry=https://npm.corp.test/',
+        '@scope:registry=https://npm.corp.test/',
+        '//npm.corp.test/:_authToken=${NPM_TOKEN}',
+        'always-auth=true'
+      ].join('\n');
+      expect(codes(pnpm(content))).not.toContain('NPMRC_PNPM_IGNORED');
+    });
+
+    it('still flags npm-only keys pnpm genuinely ignores', () => {
+      expect(codes(pnpm('package-lock=false'))).toContain('NPMRC_PNPM_IGNORED');
+      expect(codes(pnpm('package-lock-only=true'))).toContain('NPMRC_PNPM_IGNORED');
+      expect(codes(pnpm('legacy-peer-deps=true'))).toContain('NPMRC_PNPM_IGNORED');
+    });
+
+    it('keeps security codes as hard errors under the pnpm flavor', () => {
+      expect(codes(pnpm('strict-ssl=false'))).toContain('NPMRC_STRICT_SSL_OFF');
+      expect(codes(pnpm('_authToken=plaintextsecret'))).toContain('NPMRC_PLAINTEXT_SECRET');
+    });
   });
 
   it('exposes the security codes that must always fail', () => {

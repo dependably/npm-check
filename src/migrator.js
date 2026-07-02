@@ -16,125 +16,228 @@ export function migrateToVersion(lockfile, targetVersion) {
     throw new MigrationError(`Unsupported target version: ${targetVersion}`);
   }
 
-  let migrated = { ...lockfile };
-
-  if (currentVersion === LOCKFILE_VERSIONS.V1 && targetVersion === LOCKFILE_VERSIONS.V2) {
-    migrated = migrateV1toV2(migrated);
-  } else if (currentVersion === LOCKFILE_VERSIONS.V2 && targetVersion === LOCKFILE_VERSIONS.V3) {
-    migrated = migrateV2toV3(migrated);
-  } else if (currentVersion === LOCKFILE_VERSIONS.V3 && targetVersion === LOCKFILE_VERSIONS.V2) {
-    migrated = migrateV3toV2(migrated);
-  } else if (currentVersion === LOCKFILE_VERSIONS.V1 && targetVersion === LOCKFILE_VERSIONS.V3) {
-    migrated = migrateV1toV3(migrated);
-  } else {
-    throw new MigrationError(`Unsupported migration path from ${currentVersion} to ${targetVersion}`);
-  }
-
+  const migrated = runMigrationPath(lockfile, currentVersion, targetVersion);
   migrated.lockfileVersion = targetVersion;
   return migrated;
 }
 
-function migrateV1toV2(lockfile) {
+// Dispatch to the concrete migration for a (current -> target) pair. Every pair
+// documented in CLAUDE.md is handled here (both upgrades and downgrades); the
+// multi-version hops (V1<->V3) are composed from the single-step migrations.
+function runMigrationPath(lockfile, currentVersion, targetVersion) {
+  const { V1, V2, V3 } = LOCKFILE_VERSIONS;
+  const key = `${currentVersion}->${targetVersion}`;
+  switch (key) {
+    case `${V1}->${V2}`: return migrateV1toV2(lockfile);
+    case `${V2}->${V3}`: return migrateV2toV3(lockfile);
+    case `${V3}->${V2}`: return migrateV3toV2(lockfile);
+    case `${V1}->${V3}`: return migrateV2toV3(migrateV1toV2(lockfile));
+    case `${V2}->${V1}`: return migrateV2toV1(lockfile);
+    case `${V3}->${V1}`: return migrateV2toV1(migrateV3toV2(lockfile));
+    default:
+      throw new MigrationError(`Unsupported migration path from ${currentVersion} to ${targetVersion}`);
+  }
+}
+
+// --- Path helpers -----------------------------------------------------------
+
+// Parse a packages-map install path into its node_modules name segments.
+// "node_modules/a"                       -> ['a']
+// "node_modules/@scope/a"                -> ['@scope/a']
+// "node_modules/a/node_modules/b"        -> ['a', 'b']
+// "node_modules/a/node_modules/@scope/b" -> ['a', '@scope/b']
+// Returns null for workspace source paths (e.g. "packages/app") which are not
+// node_modules installs and have no place in the legacy dependencies tree.
+function parseInstallPath(key) {
+  const prefix = 'node_modules/';
+  if (!key.startsWith(prefix)) return null;
+  return key.slice(prefix.length).split('/node_modules/');
+}
+
+// Merge a package entry's runtime/optional/peer dependency ranges into the
+// legacy tree's `requires` map (name -> range string). Returns null when empty.
+function buildRequires(pkg) {
+  const requires = {};
+  for (const section of ['dependencies', 'optionalDependencies', 'peerDependencies']) {
+    const deps = pkg[section];
+    if (deps && typeof deps === 'object') {
+      for (const [name, range] of Object.entries(deps)) {
+        if (typeof range === 'string') requires[name] = range;
+      }
+    }
+  }
+  return Object.keys(requires).length > 0 ? requires : null;
+}
+
+// Convert a v2/v3 packages-map entry into a legacy (v1/v2) dependencies-tree
+// node: a resolution object {version, resolved, integrity, requires, ...}.
+// `existing` preserves any nested `dependencies` already built from children
+// that were seen before their parent.
+function packageEntryToLegacyNode(pkg, existing) {
+  const node = { version: typeof pkg.version === 'string' ? pkg.version : '' };
+  if (pkg.resolved) node.resolved = pkg.resolved;
+  if (pkg.integrity) node.integrity = pkg.integrity;
+  if (pkg.dev) node.dev = true;
+  if (pkg.optional) node.optional = true;
+  const requires = buildRequires(pkg);
+  if (requires) node.requires = requires;
+  if (existing && existing.dependencies) node.dependencies = existing.dependencies;
+  return node;
+}
+
+// Reconstruct the nested legacy dependencies tree from a v2/v3 packages map.
+// Order-independent: parents seen after their children keep the children that
+// were already placed under them.
+function buildDependenciesTreeFromPackages(packages) {
+  const root = {};
+  for (const [key, pkg] of Object.entries(packages)) {
+    if (key === '' || !pkg || typeof pkg !== 'object') continue;
+    const segments = parseInstallPath(key);
+    if (!segments || segments.length === 0) continue; // workspace source dir, not an install
+
+    let tree = root;
+    for (let i = 0; i < segments.length - 1; i++) {
+      const seg = segments[i];
+      if (!tree[seg]) tree[seg] = { version: '' };
+      if (!tree[seg].dependencies) tree[seg].dependencies = {};
+      tree = tree[seg].dependencies;
+    }
+    const name = segments[segments.length - 1];
+    tree[name] = packageEntryToLegacyNode(pkg, tree[name]);
+  }
+  return root;
+}
+
+// npm hosted-git shorthands (github:/gitlab:/bitbucket:/gist:) as they appear in
+// a v1 lockfile's `version` field. Map them to a `git+`-form URL so v2/v3
+// classification (resolved startsWith git+/git://) recognizes them as git deps —
+// otherwise the entry looks like a plain registry package and gets a bogus
+// placeholder integrity stamped on it (EINTEGRITY on npm ci).
+const HOSTED_GIT_HOSTS = {
+  github: 'github.com',
+  gitlab: 'gitlab.com',
+  bitbucket: 'bitbucket.org',
+  gist: 'gist.github.com'
+};
+function normalizeHostedGitShorthand(version) {
+  if (typeof version !== 'string') return null;
+  const m = /^(github|gitlab|bitbucket|gist):(.+)$/.exec(version);
+  if (!m) return null;
+  return `git+https://${HOSTED_GIT_HOSTS[m[1]]}/${m[2]}`;
+}
+
+// Convert a v1 dependencies-tree node into a v2 packages-map entry (drops the
+// nested `dependencies` — those become their own path-keyed entries — and turns
+// `requires` back into a `dependencies` range map).
+function v1NodeToPackageEntry(node) {
+  const entry = {};
+  if (node.version !== undefined) entry.version = node.version;
+  if (node.resolved) entry.resolved = node.resolved;
+  if (node.integrity) entry.integrity = node.integrity;
+  if (node.dev) entry.dev = true;
+  if (node.optional) entry.optional = true;
+  // A v1 bundled dep is flagged `bundled: true`; v2/v3 spell it `inBundle`.
+  // Preserve it so forEachPackageEntry keeps classifying the entry as bundled
+  // (no registry tarball → the fixer must not stamp placeholder integrity).
+  if (node.bundled) entry.inBundle = true;
+  // A v1 git dep carries its git URL in `version`, often with no `resolved`.
+  // v2/v3 classify git deps by a `git+`/`git://` `resolved`, so surface it there;
+  // otherwise the entry looks like a plain registry package and gets a bogus
+  // placeholder integrity stamped on it. This covers both explicit git URLs and
+  // npm's hosted-git shorthands (github:/gitlab:/bitbucket:/gist:).
+  if (!entry.resolved && typeof node.version === 'string') {
+    if (node.version.startsWith('git+') || node.version.startsWith('git://')) {
+      entry.resolved = node.version;
+    } else {
+      const gitUrl = normalizeHostedGitShorthand(node.version);
+      if (gitUrl) entry.resolved = gitUrl;
+    }
+  }
+  if (node.requires && typeof node.requires === 'object') {
+    entry.dependencies = { ...node.requires };
+  }
+  return entry;
+}
+
+// Walk a v1 nested dependencies tree, emitting one packages-map entry per node
+// keyed by its full node_modules install path.
+function walkV1Tree(tree, pathPrefix, packages) {
+  for (const [name, node] of Object.entries(tree)) {
+    if (!node || typeof node !== 'object') continue;
+    const key = `${pathPrefix}/${name}`;
+    packages[key] = v1NodeToPackageEntry(node);
+    if (node.dependencies && typeof node.dependencies === 'object') {
+      walkV1Tree(node.dependencies, `${key}/node_modules`, packages);
+    }
+  }
+}
+
+// Build the v2 packages map from a v1 lockfile's dependencies tree: a root
+// entry ('') with direct-dependency range strings, plus a path-keyed entry for
+// every node in the tree carrying its resolution data.
+function buildPackagesFromV1Tree(lockfile) {
   const packages = {};
-  const rootPkg = {
-    name: lockfile.name,
-    version: lockfile.version,
-    dependencies: lockfile.dependencies
-  };
-  packages[''] = rootPkg;
+  const tree = lockfile.dependencies || {};
+
+  const root = { name: lockfile.name, version: lockfile.version };
+  for (const [name, node] of Object.entries(tree)) {
+    if (!node || typeof node !== 'object' || typeof node.version !== 'string') continue;
+    const section = node.dev ? 'devDependencies' : 'dependencies';
+    root[section] = root[section] || {};
+    root[section][name] = node.version;
+  }
+  packages[''] = root;
+
+  walkV1Tree(tree, 'node_modules', packages);
+  return packages;
+}
+
+// --- Single-step migrations -------------------------------------------------
+
+// V1 -> V2: keep the v1 dependencies tree verbatim (it IS a valid v2 legacy
+// tree) and add the packages map derived from it. Nothing is lost.
+function migrateV1toV2(lockfile) {
+  const packages = buildPackagesFromV1Tree(lockfile);
   return { ...lockfile, packages, requires: true };
 }
 
-function extractRootDependencies(rootPkg, dependencies) {
-  // Flatten the root package's dependency tree into top-level entries
-  if (!rootPkg.dependencies) return;
-  for (const [depName, dep] of Object.entries(rootPkg.dependencies)) {
-    dependencies[depName] = {
-      version: dep.version || '',
-      resolved: dep.resolved,
-      integrity: dep.integrity
-    };
-  }
-}
-
+// V2 -> V3: keep the packages map (including the root '' entry) verbatim; drop
+// the legacy dependencies tree and top-level `requires` that v3 must not carry.
 function migrateV2toV3(lockfile) {
-  // V3 format keeps the packages structure but simplifies to top-level dependencies
-  // However, we need to preserve all package metadata
-  const dependencies = {};
-  const packages = {};
-
-  // Preserve all non-root packages as-is
-  if (lockfile.packages) {
-    for (const [pkgPath, pkg] of Object.entries(lockfile.packages)) {
-      if (pkgPath === '') {
-        // Root package - extract top-level dependencies
-        extractRootDependencies(pkg, dependencies);
-      } else {
-        // Non-root packages - preserve them
-        packages[pkgPath] = { ...pkg };
-      }
-    }
+  const { dependencies, requires, ...rest } = lockfile;
+  void requires;
+  let packages = lockfile.packages;
+  if (!packages || typeof packages !== 'object' || Object.keys(packages).length === 0) {
+    // A merge-damaged v2 may carry only the legacy dependencies tree. Rebuild
+    // the packages map from it rather than silently emitting an empty v3 that
+    // destroys every locked resolution (mirrors migrateV2toV1's fallback).
+    packages = buildPackagesFromV1Tree(lockfile);
+  } else {
+    packages = { ...packages };
   }
-
-  // Build result maintaining structure
-  const result = { ...lockfile };
-  
-  // In v3, we can optionally keep packages or flatten to dependencies
-  // For better preservation, keep both structures
-  if (Object.keys(packages).length > 0) {
-    result.packages = packages;
-  }
-
-  result.dependencies = dependencies;
-  
-  return result;
+  void dependencies;
+  return { ...rest, packages };
 }
 
+// V3 -> V2: keep the packages map verbatim; reconstruct the legacy dependencies
+// tree as resolution objects so npm 6 gets its locked versions back.
 function migrateV3toV2(lockfile) {
-  const packages = {};
-  
-  // Pull dependencies from top-level or from packages['']
-  const topDependencies = lockfile.dependencies || 
-    (lockfile.packages && lockfile.packages[''] && lockfile.packages[''].dependencies) || 
-    {};
-  
-  // Root package entry
-  packages[''] = {
-    name: lockfile.name,
-    version: lockfile.version,
-    dependencies: topDependencies
-  };
-  
-  // Preserve all existing packages from v3 format
-  if (lockfile.packages) {
-    for (const [pkgPath, pkg] of Object.entries(lockfile.packages)) {
-      if (pkgPath !== '') {
-        // Preserve non-root packages as-is
-        packages[pkgPath] = { ...pkg };
-      }
-    }
-  }
-  
-  // Ensure top-level dependencies are also in the result
-  for (const [name, dep] of Object.entries(topDependencies)) {
-    // Only add node_modules entry if not already present
-    const nodeModulesPath = `node_modules/${name}`;
-    if (!packages[nodeModulesPath]) {
-      packages[nodeModulesPath] = {
-        name,
-        version: dep.version || '',
-        resolved: dep.resolved,
-        integrity: dep.integrity
-      };
-    }
-  }
-  
-  return { ...lockfile, packages, dependencies: topDependencies, requires: true };
+  const packages = { ...(lockfile.packages || {}) };
+  const dependencies = buildDependenciesTreeFromPackages(packages);
+  return { ...lockfile, packages, dependencies, requires: true };
 }
 
-function migrateV1toV3(lockfile) {
-  const migrated = migrateV1toV2(lockfile);
-  return migrateV2toV3(migrated);
+// V2 -> V1: drop the packages map (and `requires`), keep the legacy dependencies
+// tree. When a v2 file lacks that tree, reconstruct it from the packages map.
+function migrateV2toV1(lockfile) {
+  let dependencies = lockfile.dependencies;
+  if (!dependencies || typeof dependencies !== 'object' || Object.keys(dependencies).length === 0) {
+    dependencies = buildDependenciesTreeFromPackages(lockfile.packages || {});
+  }
+  const { packages, requires, ...rest } = lockfile;
+  void packages;
+  void requires;
+  return { ...rest, dependencies };
 }
 
 export class PackageLockMigrator {

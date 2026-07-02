@@ -15,8 +15,11 @@ export class NpmrcValidationError extends Error {
 /**
  * Parse ini-style .npmrc content into entries, recording 1-based line numbers.
  * Tolerant and comment-aware (`;` and `#` start comments, inline too); strips
- * surrounding quotes from values. A non-comment, non-blank line without `=` is
- * flagged `malformed` so the validator can report a syntax error.
+ * surrounding quotes from values. A non-comment, non-blank line without `=` is a
+ * bare boolean key: npm parses `.npmrc` with the `ini` package, which reads
+ * `engine-strict` as `engine-strict = true`, so we do the same (value `'true'`)
+ * and let the entry flow through the normal checks (a bare typo still trips the
+ * unknown-key warning) rather than hard-erroring on legal config.
  *
  * @returns {{ key: string|null, value: string|null, line: number, raw?: string, malformed?: boolean }[]}
  */
@@ -31,7 +34,8 @@ export function parseNpmrc(content) {
     if (!line) return;
     const eq = line.indexOf('=');
     if (eq === -1) {
-      entries.push({ key: null, value: null, line: i + 1, raw: raw.trim(), malformed: true });
+      // Bare boolean key (`ini` semantics): `engine-strict` === `engine-strict=true`.
+      entries.push({ key: line.toLowerCase(), value: 'true', line: i + 1 });
       return;
     }
     const value = line.slice(eq + 1).trim().replace(/(?:^["'])|(?:["']$)/g, '');
@@ -54,7 +58,7 @@ const KNOWN_KEYS = new Set([
   'prefix', 'cache', 'legacy-peer-deps', 'fetch-retries', 'fetch-retry-mintimeout',
   'fetch-retry-maxtimeout', 'fetch-timeout', 'access', 'tag', 'lockfile-version',
   'omit', 'include', 'ignore-scripts', 'foreground-scripts', 'node-options',
-  'progress', 'prefer-offline', 'prefer-dline', 'offline', 'global', 'unsafe-perm',
+  'progress', 'prefer-offline', 'prefer-online', 'offline', 'global', 'unsafe-perm',
   'user-agent', 'maxsockets', 'before', 'workspaces', 'workspace'
 ]);
 
@@ -143,21 +147,27 @@ function checkUnknownKey({ key, line }, sink) {
   }
 }
 
-// The ONLY keys pnpm reads from .npmrc: registry + authentication (incl. TLS
-// client-auth material). Everything else has moved to pnpm-workspace.yaml.
-const PNPM_HONORED_KEYS = new Set(['registry', 'ca', 'cafile', 'cert', 'key', 'always-auth']);
+// npm-specific keys that pnpm genuinely does NOT read from .npmrc. pnpm reads
+// virtually every other setting from `.npmrc` — registry/auth, TLS, proxies, and
+// its install behaviour (`shamefully-hoist`, `node-linker`, `hoist-pattern`,
+// `strict-peer-dependencies`, …) — across pnpm 7-10, so warning on "everything
+// non-auth" is factually wrong for most pnpm projects. We flag ONLY these
+// npm-only keys, each of which has a differently-named pnpm equivalent (or none)
+// and is therefore silently dropped by pnpm. The value is a remediation hint.
+const PNPM_IGNORED_KEYS = new Map([
+  ['package-lock', 'pnpm uses `lockfile`'],
+  ['package-lock-only', 'pnpm uses `lockfile-only`'],
+  ['legacy-peer-deps', 'pnpm uses `auto-install-peers` / `strict-peer-dependencies`']
+]);
 
-// pnpm flavor: pnpm ignores all non-auth/non-registry settings in .npmrc (they
-// belong in pnpm-workspace.yaml), so flag them — a setting that looks applied but
-// is silently dropped. Reached only for entries not already claimed by the
-// secret/TLS/registry checks. `//…` auth lines and the honored keys are fine.
+// pnpm flavor: flag the handful of npm-only settings pnpm does not honor. Reached
+// only for entries not already claimed by the secret/TLS/registry checks.
 function checkPnpmIgnored({ key, line }, sink) {
-  if (key.startsWith('//')) return; // per-registry auth line
-  if (key === 'registry' || key.endsWith(':registry')) return;
-  if (PNPM_HONORED_KEYS.has(key)) return;
+  const hint = PNPM_IGNORED_KEYS.get(key);
+  if (!hint) return;
   sink.warnings.push({
     code: 'NPMRC_PNPM_IGNORED',
-    message: `pnpm ignores non-auth setting "${key}" at line ${line} in .npmrc — move it to pnpm-workspace.yaml`
+    message: `npm-only setting "${key}" at line ${line} in .npmrc is not honored by pnpm — ${hint}`
   });
 }
 

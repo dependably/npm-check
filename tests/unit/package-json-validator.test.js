@@ -89,7 +89,38 @@ describe('validatePackageJson', () => {
       expect(codes(result)).toContain('PJ_INVALID_DEP_RANGE');
     });
 
-    it('flags an invalid dependency name', () => {
+    // Issue #3 regression: pnpm catalog: and jsr: protocol ranges must be accepted.
+    it('accepts pnpm catalog: ranges (bare and named)', () => {
+      const result = validatePackageJson({
+        ...base,
+        dependencies: { react: 'catalog:', 'react-dom': 'catalog:react18', vue: 'catalog:default' }
+      });
+      expect(codes(result)).not.toContain('PJ_INVALID_DEP_RANGE');
+      expect(result.valid).toBe(true);
+    });
+
+    it('accepts jsr: protocol ranges', () => {
+      const result = validatePackageJson({
+        ...base,
+        dependencies: { '@std/path': 'jsr:@std/path@^1.0.0' }
+      });
+      expect(codes(result)).not.toContain('PJ_INVALID_DEP_RANGE');
+      expect(result.valid).toBe(true);
+    });
+
+    // Issue #4 regression: legacy uppercase package names (e.g. JSONStream) must be accepted
+    // as dependency keys. npm forbids uppercase for NEW names but the registry still hosts
+    // legacy mixed-case packages.
+    it('accepts legacy uppercase dependency names like JSONStream', () => {
+      const result = validatePackageJson({
+        ...base,
+        dependencies: { JSONStream: '>=0.10.0', BigInteger: '1.6.51' }
+      });
+      expect(codes(result)).not.toContain('PJ_INVALID_DEP_NAME');
+      expect(result.valid).toBe(true);
+    });
+
+    it('still rejects dep names with spaces or other illegal chars', () => {
       const result = validatePackageJson({ ...base, dependencies: { 'BAD NAME': '1.0.0' } });
       expect(codes(result)).toContain('PJ_INVALID_DEP_NAME');
     });

@@ -1,6 +1,6 @@
 // src/fixer.js
 import { migrateToVersion } from './migrator.js';
-import { LOCKFILE_VERSIONS } from './format-library.js';
+import { LOCKFILE_VERSIONS, forEachPackageEntry } from './format-library.js';
 import { deduplicatePackages } from './updater.js';
 
 /**
@@ -105,8 +105,11 @@ function applyMigrations(fixed, normalizeTo, throwOnError, fixes) {
     );
   }
 
-  // If lockfile is v1 and has dependencies but no packages map, migrate to v2 by default
-  if (fixed.lockfileVersion === LOCKFILE_VERSIONS.V1 && fixed.dependencies) {
+  // If lockfile is v1 and has dependencies but no packages map, migrate to v2 by
+  // default — but only when the caller did NOT ask for an explicit target. When
+  // `normalizeTo` is given (even v1), honor it verbatim; otherwise this default
+  // would override the caller's stated target and silently re-upgrade to v2.
+  if (!normalizeTo && fixed.lockfileVersion === LOCKFILE_VERSIONS.V1 && fixed.dependencies) {
     fixed = runMigration(
       fixed, LOCKFILE_VERSIONS.V2,
       'Auto-migrated v1 dependencies tree to v2 packages map',
@@ -118,25 +121,29 @@ function applyMigrations(fixed, normalizeTo, throwOnError, fixes) {
 }
 
 /**
- * Fill placeholder integrity hashes for package entries that have none.
- * Mutates entries in place; the root entry is skipped (it carries no
- * integrity), and entries already holding a placeholder are left untouched.
- * @param {object} fixed - The working lockfile
+ * Fill placeholder integrity hashes for registry package entries that have none.
+ * Only registry deps legitimately carry an integrity hash, so entries the
+ * integrity/checksum tooling deliberately skips — the root, workspace source
+ * dirs, links, and git/file/bundled deps — are left alone (stamping a fake hash
+ * on them corrupts an otherwise-valid lockfile). Entries already holding a hash
+ * are untouched. Mutates entries in place on the (already-cloned) working copy.
+ * @param {object} fixed - The working lockfile (a private copy)
  * @param {string[]} fixes - Accumulator for fix descriptions
  */
 function fillPlaceholderIntegrity(fixed, fixes) {
   if (!hasPackagesMap(fixed)) return;
 
-  for (const [pkgPath, pkg] of Object.entries(fixed.packages)) {
-    // Skip root package - it should not have integrity field
-    if (pkgPath === '') continue;
-    if (!pkg || typeof pkg !== 'object') continue;
+  forEachPackageEntry(fixed, ({ key, entry, isRoot, isWorkspaceSource, isLink, isGitDep, isFileDep, isBundled }) => {
+    // Only registry entries carry an integrity hash; everything else legitimately
+    // has none (matches the checksum-fixer / integrity-checker skip list).
+    if (isRoot || isWorkspaceSource || isLink || isGitDep || isFileDep || isBundled) return;
+    if (!entry || typeof entry !== 'object') return;
     // Already has a placeholder or a real hash, no action needed
-    if (pkg.integrity) continue;
+    if (entry.integrity) return;
 
-    pkg.integrity = 'sha512-PLACEHOLDER';
-    fixes.push(`Added placeholder integrity for package at ${pkgPath}`);
-  }
+    entry.integrity = 'sha512-PLACEHOLDER';
+    fixes.push(`Added placeholder integrity for package at ${key}`);
+  });
 }
 
 /**
@@ -177,7 +184,9 @@ function applyDedupe(fixed, throwOnError, fixes) {
  */
 export function fixPackageLock(lockfile, options = {}) {
   const fixes = [];
-  let fixed = { ...lockfile };
+  // Deep-copy up front so every fix step (incl. the in-place integrity fill) is
+  // non-destructive — the caller's lockfile object is never written through.
+  let fixed = structuredClone(lockfile);
 
   const { fillMissingIntegrity = true, dedupe = true, normalizeTo = null, throwOnError = false, packageJson = null } = options;
 
