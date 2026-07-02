@@ -2,6 +2,7 @@
 
 import fs from 'fs';
 import path from 'path';
+import { fileURLToPath } from 'node:url';
 import { parseLockfile } from '../src/parser.js';
 import { validatePackageLock } from '../src/validator.js';
 import { validatePackageJson } from '../src/package-json-validator.js';
@@ -186,7 +187,7 @@ Default file: ./package-lock.json
 
 function getVersion() {
   try {
-    const packageJsonPath = path.join(path.dirname(new URL(import.meta.url).pathname), '../package.json');
+    const packageJsonPath = path.join(path.dirname(fileURLToPath(import.meta.url)), '../package.json');
     const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
     return packageJson.version;
   } catch {
@@ -429,6 +430,37 @@ function resolveFailOnDeprecated() {
   return true;
 }
 
+// Assert that --fail-on specs are applicable for the calling command.
+// `supportedKeys` shapes:
+//   { severity: true|false, count: true|false|'zero-only' }
+// When a key was supplied in argv but is not supported (or only count=0 is
+// supported and a non-zero value was given), exit 2 (usage error) with a
+// clear message — a silently-dropped gate key is a fail-open CI footgun.
+function assertFailOnSupported(supportedKeys, commandName) {
+  const failOn = parseFailOn();
+  if (failOn.severity !== null && !supportedKeys.severity) {
+    console.error(`❌ --fail-on severity= is not supported by the "${commandName}" command`);
+    if (supportedKeys.count) {
+      console.error('   Use --fail-on count=<N> to set a finding count budget');
+    }
+    process.exit(2);
+  }
+  if (failOn.count !== null) {
+    if (!supportedKeys.count) {
+      console.error(`❌ --fail-on count= is not supported by the "${commandName}" command`);
+      if (supportedKeys.severity) {
+        console.error('   Use --fail-on severity=<level> to set the minimum severity threshold');
+      }
+      process.exit(2);
+    }
+    if (supportedKeys.count === 'zero-only' && failOn.count > 0) {
+      console.error(`❌ --fail-on count=${failOn.count} is not supported by the "${commandName}" command`);
+      console.error('   Use --fail-on count=0 to fail when any deprecated package is found');
+      process.exit(2);
+    }
+  }
+}
+
 // Resolve the severity gate (the level at/above which a finding fails the run).
 // Precedence: `--fail-on severity=` > the deprecated `--min-severity` alias > fallback.
 function resolveSeverityGate(fallback = 'high', code = 2) {
@@ -497,11 +529,21 @@ function requireLockfileOrExit2(filePath, command) {
 }
 
 // Apply repeatable --rule <id>:<severity> overrides onto an audit config.
+// Exits 2 when the spec is missing a colon or has an empty severity part —
+// a bare `--rule <id>` would silently set severity=undefined and be dropped
+// by mergeConfig (a fail-open that could leave a CI gate disabled).
 function applyRuleOverrides(config) {
   const ruleOverrides = {};
   argv.forEach((arg, i) => {
     if (arg === '--rule' && argv[i + 1]) {
-      const [ruleId, severity] = argv[i + 1].split(':');
+      const spec = argv[i + 1];
+      const colonIdx = spec.indexOf(':');
+      if (colonIdx === -1 || colonIdx === spec.length - 1) {
+        console.error(`❌ Invalid --rule spec "${spec}". Use --rule <id>:<severity> (error|warn|off)`);
+        process.exit(2);
+      }
+      const ruleId = spec.slice(0, colonIdx);
+      const severity = spec.slice(colonIdx + 1);
       ruleOverrides[ruleId] = severity;
     }
   });
@@ -938,6 +980,10 @@ function runUnusedCommand() {
 
 function runAuditCommand() {
   const filePath = getFilePath(positionals()[0]);
+  // The audit command gates on warning/finding count, not severity level.
+  // `--fail-on severity=` is a no-op here — reject it before the run so a CI
+  // pipeline that meant `--fail-on count=` never silently passes.
+  assertFailOnSupported({ severity: false, count: true }, 'audit');
 
   let report;
   try {
@@ -1253,6 +1299,9 @@ function printVulnResult(result, minSeverity, failOnUnresolved) {
 
 async function runVulnCommand(command) {
   const filePath = getFilePath(positionals()[0]);
+  // `count=` has no meaning for a per-package severity scanner — reject it early
+  // so a CI pipeline that meant `--fail-on severity=` never silently passes.
+  assertFailOnSupported({ severity: true, count: false }, 'vuln');
   requireLockfileOrExit2(filePath, 'vuln');
 
   const format = parseFormatFlag(['human', 'json'], 'human');
@@ -1335,6 +1384,10 @@ function printDeprecatedResult(result, failOnUnresolved) {
 
 async function runDeprecatedCommand(command) {
   const filePath = getFilePath(positionals()[0]);
+  // Deprecation is not on the severity ladder (`severity=` is a no-op here).
+  // Only `count=0` (fail on ANY deprecation) is supported; a non-zero budget
+  // (count=3) has no defined semantics for this command — reject both early.
+  assertFailOnSupported({ severity: false, count: 'zero-only' }, 'deprecated');
   requireLockfileOrExit2(filePath, 'deprecated');
 
   const format = parseFormatFlag(['human', 'json'], 'human');
