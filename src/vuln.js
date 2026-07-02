@@ -34,9 +34,140 @@ export class VulnError extends Error {
 // Advisory severity ordering. Used to compare against the minSeverity threshold.
 const SEVERITY_RANK = { info: 0, low: 1, moderate: 2, high: 3, critical: 4 };
 
+// Fail-closed ranking: a severity we recognize maps to its ladder rank; a missing
+// or off-vocabulary severity ranks ABOVE any threshold so it fails the run rather
+// than being silently demoted to a warning (this module commits to fail-closed).
 function severityRank(severity) {
   const key = typeof severity === 'string' ? severity.toLowerCase() : '';
-  return key in SEVERITY_RANK ? SEVERITY_RANK[key] : SEVERITY_RANK.low; // unknown → low
+  return key in SEVERITY_RANK ? SEVERITY_RANK[key] : Number.POSITIVE_INFINITY; // unknown → fail closed
+}
+
+// Preserve the advisory's raw severity for display; substitute a visible sentinel
+// (never a fabricated 'low') when it is missing, so consumers see the real value.
+function normalizeSeverity(severity) {
+  return typeof severity === 'string' && severity.trim() ? severity.trim().toLowerCase() : 'unknown';
+}
+
+// --- Dependency-free exact-version range matching -----------------------------
+// The locked version is always a concrete semver; advisory `vulnerable_versions`
+// ranges are the plain comparator grammar the npm/GitHub advisory API emits
+// (`<4.17.21`, `>=1.0.0 <1.2.3`, `>=1 <2 || >=3 <4`, `*`). We match the exact
+// locked version against that range WITHOUT pulling in a `semver` dependency.
+// Anything outside this comparator grammar (^, ~, x-ranges) is treated as
+// "unparseable" → the caller stays conservative rather than guessing.
+const SEMVER_RE = /^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/;
+const COMPARATOR_RE = /(<=|>=|<|>|=)?\s*v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?/g;
+
+function parseSemver(v) {
+  if (typeof v !== 'string') return null;
+  const m = SEMVER_RE.exec(v.trim());
+  if (!m) return null;
+  return { major: +m[1], minor: +m[2], patch: +m[3], prerelease: m[4] ? m[4].split('.') : [] };
+}
+
+function comparePreReleaseId(a, b) {
+  const an = /^\d+$/.test(a);
+  const bn = /^\d+$/.test(b);
+  if (an && bn) return Number(a) - Number(b);
+  if (an) return -1; // numeric identifiers have lower precedence than alphanumeric
+  if (bn) return 1;
+  if (a < b) return -1;
+  return a > b ? 1 : 0;
+}
+
+function compareSemver(a, b) {
+  if (a.major !== b.major) return a.major - b.major;
+  if (a.minor !== b.minor) return a.minor - b.minor;
+  if (a.patch !== b.patch) return a.patch - b.patch;
+  const ap = a.prerelease;
+  const bp = b.prerelease;
+  if (ap.length === 0 && bp.length === 0) return 0;
+  if (ap.length === 0) return 1; // a release outranks a prerelease of the same core
+  if (bp.length === 0) return -1;
+  const len = Math.min(ap.length, bp.length);
+  for (let i = 0; i < len; i++) {
+    const cmp = comparePreReleaseId(ap[i], bp[i]);
+    if (cmp !== 0) return cmp;
+  }
+  return ap.length - bp.length;
+}
+
+// Parse one AND-term (space-separated comparators). Returns the comparator list,
+// or null when the term contains anything outside the supported comparator grammar.
+function parseComparatorTerm(term) {
+  const t = term.trim();
+  if (t === '' || t === '*') return [{ any: true }];
+  const matches = [...t.matchAll(COMPARATOR_RE)];
+  if (matches.length === 0) return null;
+  const comps = matches.map((m) => ({
+    op: m[1] || '=',
+    version: { major: +m[2], minor: +m[3], patch: +m[4], prerelease: m[5] ? m[5].split('.') : [] }
+  }));
+  // Reject the term if any non-comparator syntax (^, ~, x-range, ...) remains.
+  const leftover = t.replace(COMPARATOR_RE, '').replace(/\s+/g, '');
+  return leftover === '' ? comps : null;
+}
+
+// Parse a full range into OR-terms of AND-comparators, or null if unparseable.
+function parseRange(range) {
+  if (typeof range !== 'string') return null;
+  const trimmed = range.trim();
+  if (trimmed === '' || trimmed === '*') return [[{ any: true }]];
+  const terms = [];
+  for (const part of trimmed.split('||')) {
+    const comps = parseComparatorTerm(part);
+    if (comps === null) return null;
+    terms.push(comps);
+  }
+  return terms;
+}
+
+function satisfiesComparator(v, comp) {
+  if (comp.any) return true;
+  const cmp = compareSemver(v, comp.version);
+  switch (comp.op) {
+    case '<': return cmp < 0;
+    case '<=': return cmp <= 0;
+    case '>': return cmp > 0;
+    case '>=': return cmp >= 0;
+    default: return cmp === 0; // '='
+  }
+}
+
+// True/false when we can decide, null ("uncertain") when either the range or the
+// version can't be parsed with this dependency-free matcher.
+function satisfiesRange(versionStr, range) {
+  const parsed = parseRange(range);
+  if (parsed === null) return null;
+  const v = parseSemver(versionStr);
+  if (v === null) return null;
+  for (const term of parsed) {
+    if (term.every((c) => satisfiesComparator(v, c))) return true;
+  }
+  return false;
+}
+
+/**
+ * Decide whether an advisory returned by the bulk endpoint actually applies to a
+ * specific locked version. The endpoint keys advisories by NAME and filters
+ * server-side to the set of versions we submitted, but does NOT say which of those
+ * versions each advisory covers. So when a single version was submitted for a name
+ * we trust the server verbatim; when MULTIPLE versions share a name we must match
+ * each version against the advisory's `vulnerable_versions` range ourselves, or a
+ * patched version sharing the name gets falsely flagged.
+ *
+ * Returns 'yes' (record by severity), 'no' (not this version — skip), or
+ * 'uncertain' (multi-version group but the range/version isn't matchable — record
+ * as a warning, never a run-failing error, to avoid a false CI failure).
+ */
+function advisoryAppliesTo(version, advisory, multiVersion) {
+  if (!multiVersion) return 'yes'; // single submitted version: server filtering is authoritative
+  const range = advisory.vulnerable_versions ?? advisory.vulnerableVersions ?? null;
+  if (typeof range !== 'string' || range.trim() === '') return 'uncertain';
+  const verdict = satisfiesRange(version, range);
+  if (verdict === true) return 'yes';
+  if (verdict === false) return 'no';
+  return 'uncertain';
 }
 
 /**
@@ -146,26 +277,50 @@ function recordUnresolvedUnit(unitCandidates, reason, results, failOnUnresolved)
 
 /**
  * Attribute the registry's advisory response to each submitted candidate.
- * The endpoint already filters server-side to the versions we submitted, so we
- * trust per-name attribution without local semver range matching.
+ *
+ * The endpoint keys advisories by NAME and filters server-side to the versions we
+ * submitted, but doesn't say which submitted version each advisory covers. When a
+ * name has a SINGLE locked version we trust that per-name attribution; when it has
+ * MULTIPLE versions we match each version against the advisory's vulnerable range
+ * so a patched sibling version isn't falsely flagged (issue #14). A per-name value
+ * that isn't an array (a malformed 200) is treated as "no advisories" rather than
+ * crashing the whole scan (issue #24).
  */
 function recordResolvedUnit(unitCandidates, advisoriesByName, results, threshold) {
+  // Count distinct submitted versions per name to know when to version-match.
+  const versionsByName = new Map();
+  for (const c of unitCandidates) {
+    if (!versionsByName.has(c.name)) versionsByName.set(c.name, new Set());
+    versionsByName.get(c.name).add(c.version);
+  }
+
   for (const cand of unitCandidates) {
-    const advisories = advisoriesByName[cand.name] || [];
-    if (advisories.length === 0) {
+    const raw = advisoriesByName[cand.name];
+    const advisories = Array.isArray(raw) ? raw : []; // malformed per-name value → no advisories
+    const multiVersion = versionsByName.get(cand.name).size > 1;
+
+    // Keep only advisories that actually apply to THIS version.
+    const applicable = [];
+    for (const advisory of advisories) {
+      const verdict = advisoryAppliesTo(cand.version, advisory, multiVersion);
+      if (verdict === 'no') continue;
+      applicable.push({ advisory, uncertain: verdict === 'uncertain' });
+    }
+
+    if (applicable.length === 0) {
       results.clean++;
       results.details.push({ vulnerable: false, package: cand.name, version: cand.version, packagePath: cand.key });
       continue;
     }
     results.vulnerable++;
-    for (const advisory of advisories) recordVuln(cand, advisory, results, threshold);
+    for (const { advisory, uncertain } of applicable) recordVuln(cand, advisory, results, threshold, uncertain);
     results.details.push({
       vulnerable: true,
       package: cand.name,
       version: cand.version,
       packagePath: cand.key,
-      advisories: advisories.map((a) => ({
-        id: a.id, title: a.title, severity: (a.severity || 'low').toLowerCase(),
+      advisories: applicable.map(({ advisory: a }) => ({
+        id: a.id, title: a.title, severity: normalizeSeverity(a.severity),
         vulnerable_versions: a.vulnerable_versions, fixedVersion: fixedVersionOf(a), url: a.url
       }))
     });
@@ -174,23 +329,27 @@ function recordResolvedUnit(unitCandidates, advisoriesByName, results, threshold
 
 /**
  * Classify one advisory: at/above the threshold it's an error (fails the run),
- * below it a warning.
+ * below it a warning. A missing/unknown severity ranks above every threshold, so
+ * it fails closed rather than being silently downgraded. `forceWarning` records
+ * the finding as a warning regardless of severity — used when a multi-version
+ * group can't be matched to a specific version, so an unmatchable advisory never
+ * produces a run-failing false positive on a possibly-patched version (issue #14).
  */
-function recordVuln(cand, advisory, results, threshold) {
+function recordVuln(cand, advisory, results, threshold, forceWarning = false) {
   const finding = {
     package: cand.name,
     version: cand.version,
     packagePath: cand.key,
     advisoryId: advisory.id,
     title: advisory.title,
-    severity: (advisory.severity || 'low').toLowerCase(),
+    severity: normalizeSeverity(advisory.severity), // raw value surfaced; 'unknown' when absent
     fixedVersion: fixedVersionOf(advisory), // null when the advisory publishes no fix
     cve: cveOf(advisory), // null when the advisory carries no CVE
     vulnerableRange: advisory.vulnerable_versions ?? null,
     references: referencesOf(advisory),
     url: advisory.url
   };
-  if (severityRank(finding.severity) >= threshold) {
+  if (!forceWarning && severityRank(finding.severity) >= threshold) {
     results.errors.push(finding);
     results.valid = false;
   } else {
@@ -227,10 +386,17 @@ async function scanUnit(unit, fetcher, timeoutMs, results, threshold, failOnUnre
     networkError = e;
   }
 
-  if (networkError || advisoriesByName === null) {
-    const reason = networkError
-      ? `registry unreachable (${networkError.message})`
-      : 'registry does not support the bulk advisory endpoint';
+  const malformed = advisoriesByName !== null
+    && (typeof advisoriesByName !== 'object' || Array.isArray(advisoriesByName));
+  if (networkError || advisoriesByName === null || malformed) {
+    let reason;
+    if (networkError) {
+      reason = `registry unreachable (${networkError.message})`;
+    } else if (malformed) {
+      reason = 'registry returned a malformed advisory response';
+    } else {
+      reason = 'registry does not support the bulk advisory endpoint';
+    }
     recordUnresolvedUnit(unitCandidates, reason, results, failOnUnresolved);
   } else {
     recordResolvedUnit(unitCandidates, advisoriesByName, results, threshold);
@@ -317,6 +483,15 @@ export async function checkVulnerabilities(lockfileData, options = {}) {
     );
   }
   const threshold = severityRank(minSeverity);
+
+  // A non-positive / non-integer batchSize makes the name-slicing loop never
+  // advance (infinite loop). Reject it up front, mirroring the minSeverity guard.
+  if (!Number.isInteger(batchSize) || batchSize < 1) {
+    throw new VulnError(
+      `Invalid batchSize "${batchSize}"; must be a positive integer`,
+      'INVALID_BATCH_SIZE'
+    );
+  }
 
   if (lockfileData && lockfileData.lockfileVersion === 1) {
     throw new VulnError(
@@ -408,8 +583,13 @@ function toSchemaFinding(f) {
  * @returns {object} the shared envelope
  */
 export function vulnEnvelope(result, { target, exitCode }) {
+  // errors holds BOTH advisory findings and unresolved items; the latter carry a
+  // `reason` (and no advisory payload). Discriminate on `reason` — not on
+  // `advisoryId` — so an advisory that merely lacks an `id` still reaches the
+  // envelope (it falls back to the 'NPM-ADVISORY' ruleId) instead of vanishing
+  // while the run still exits non-zero (issue #24). Mirrors deprecationEnvelope.
   const advisories = [
-    ...result.errors.filter((e) => e.advisoryId != null),
+    ...result.errors.filter((e) => !e.reason),
     ...result.warnings
   ];
   const findings = advisories.map(toSchemaFinding);

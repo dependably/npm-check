@@ -228,6 +228,173 @@ describe('checkVulnerabilities', () => {
   });
 });
 
+// A lockfile package entry at an explicit install path (lets us lock two
+// distinct versions of the same name at different paths).
+function pkgAt(installPath, name, version) {
+  return {
+    [installPath]: {
+      version,
+      resolved: `${reg}/${name}/-/${name}-${version}.tgz`,
+      integrity: HASH_A
+    }
+  };
+}
+
+describe('per-version advisory attribution (issue #14)', () => {
+  // A lockfile holding both a vulnerable and a patched version of the same name.
+  // The bulk endpoint keys by name and returns the advisory (because 1.0.0 is
+  // affected) without saying which version it covers — the OLD code smeared it
+  // across BOTH versions, failing CI on the patched 2.0.0.
+  it('flags only the versions the advisory range actually covers', async () => {
+    const lockfile = lockfileWith({
+      ...pkgAt('node_modules/foo', 'foo', '2.0.0'),
+      ...pkgAt('node_modules/legacy/node_modules/foo', 'foo', '1.0.0')
+    });
+    const result = await checkVulnerabilities(lockfile, {
+      fetchAdvisories: fakeAdvisories({ foo: [adv('critical', { vulnerable_versions: '<2.0.0' })] })
+    });
+    expect(result.vulnerable).toBe(1); // OLD code: 2
+    expect(result.clean).toBe(1); // the patched 2.0.0
+    expect(result.errors).toHaveLength(1);
+    expect(result.errors[0].version).toBe('1.0.0');
+    expect(result.errors.some((e) => e.version === '2.0.0')).toBe(false);
+  });
+
+  it('flags every version when the advisory range covers all of them', async () => {
+    const lockfile = lockfileWith({
+      ...pkgAt('node_modules/foo', 'foo', '1.5.0'),
+      ...pkgAt('node_modules/legacy/node_modules/foo', 'foo', '1.0.0')
+    });
+    const result = await checkVulnerabilities(lockfile, {
+      fetchAdvisories: fakeAdvisories({ foo: [adv('critical', { vulnerable_versions: '<2.0.0' })] })
+    });
+    expect(result.vulnerable).toBe(2);
+    expect(result.errors).toHaveLength(2);
+  });
+
+  it('honors a disjoint (||) advisory range across multiple locked versions', async () => {
+    const lockfile = lockfileWith({
+      ...pkgAt('node_modules/foo', 'foo', '2.5.0'), // in >=2.0.0 <2.6.0
+      ...pkgAt('node_modules/a/node_modules/foo', 'foo', '1.2.0'), // in <1.5.0
+      ...pkgAt('node_modules/b/node_modules/foo', 'foo', '3.0.0') // outside both
+    });
+    const result = await checkVulnerabilities(lockfile, {
+      fetchAdvisories: fakeAdvisories({
+        foo: [adv('critical', { vulnerable_versions: '<1.5.0 || >=2.0.0 <2.6.0' })]
+      })
+    });
+    const flagged = result.errors.map((e) => e.version).sort();
+    expect(flagged).toEqual(['1.2.0', '2.5.0']);
+    expect(result.clean).toBe(1); // 3.0.0
+  });
+
+  it('demotes an unparseable range in a multi-version group to a warning (no false CI failure)', async () => {
+    const lockfile = lockfileWith({
+      ...pkgAt('node_modules/foo', 'foo', '2.0.0'),
+      ...pkgAt('node_modules/legacy/node_modules/foo', 'foo', '1.0.0')
+    });
+    const result = await checkVulnerabilities(lockfile, {
+      // caret ranges are outside the comparator grammar → uncertain, not error
+      fetchAdvisories: fakeAdvisories({ foo: [adv('critical', { vulnerable_versions: '^1.0.0' })] })
+    });
+    expect(result.valid).toBe(true);
+    expect(result.errors).toHaveLength(0);
+    expect(result.warnings).toHaveLength(2);
+  });
+
+  it('does not version-match a single locked version (server filtering stays authoritative)', async () => {
+    // A single-version group must NOT be re-filtered locally: even a range the
+    // local matcher can't parse still fails the run, trusting the server.
+    const lockfile = lockfileWith(pkg('bad'));
+    const result = await checkVulnerabilities(lockfile, {
+      fetchAdvisories: fakeAdvisories({ bad: [adv('critical', { vulnerable_versions: '^1.0.0' })] })
+    });
+    expect(result.valid).toBe(false);
+    expect(result.errors).toHaveLength(1);
+  });
+});
+
+describe('vuln robustness (issue #24)', () => {
+  // #24.1 — a per-name value that isn't an array used to be iterated with
+  // `for..of`, throwing TypeError and rejecting the entire scan.
+  it('does not crash when a per-name advisory value is not an array', async () => {
+    const lockfile = lockfileWith(pkg('bad'));
+    const result = await checkVulnerabilities(lockfile, {
+      fetchAdvisories: () => Promise.resolve({ bad: { not: 'an-array' } })
+    });
+    expect(result.clean).toBe(1);
+    expect(result.valid).toBe(true);
+  });
+
+  // #24.1 — a top-level non-object 200 body is malformed; route to unresolved
+  // (fail closed) instead of silently reporting everything clean.
+  it('routes a top-level malformed 200 body to unresolved (fail closed)', async () => {
+    const lockfile = lockfileWith(pkg('bad'));
+    const result = await checkVulnerabilities(lockfile, {
+      fetchAdvisories: () => Promise.resolve(['unexpected', 'array'])
+    });
+    expect(result.unresolved).toBe(1);
+    expect(result.valid).toBe(false);
+    expect(result.unresolvedItems[0].reason).toMatch(/malformed/);
+  });
+
+  it('keeps the malformed-body scan non-fatal when failOnUnresolved is opted out', async () => {
+    const lockfile = lockfileWith(pkg('bad'));
+    const result = await checkVulnerabilities(lockfile, {
+      failOnUnresolved: false,
+      fetchAdvisories: () => Promise.resolve('not-an-object')
+    });
+    expect(result.unresolved).toBe(1);
+    expect(result.valid).toBe(true);
+  });
+
+  // #24.2 — an id-less advisory error used to be filtered OUT of the envelope,
+  // leaving exitCode=1 with zero findings.
+  it('keeps an id-less error advisory in the envelope (NPM-ADVISORY fallback)', async () => {
+    const lockfile = lockfileWith(pkg('bad'));
+    const result = await checkVulnerabilities(lockfile, {
+      fetchAdvisories: fakeAdvisories({ bad: [adv('critical', { id: undefined })] })
+    });
+    expect(result.errors).toHaveLength(1);
+    const env = vulnEnvelope(result, { target: 'package-lock.json', exitCode: 1 });
+    expect(env.findings).toHaveLength(1);
+    expect(env.findings[0].ruleId).toBe('NPM-ADVISORY');
+  });
+
+  // #24.3 — an unknown severity used to be demoted to a warning (fail-open) at
+  // the default high threshold. It must now fail closed and surface the raw value.
+  it('fails closed on an advisory with an unknown severity', async () => {
+    const lockfile = lockfileWith(pkg('bad'));
+    const result = await checkVulnerabilities(lockfile, {
+      fetchAdvisories: fakeAdvisories({ bad: [adv('spicy')] })
+    });
+    expect(result.valid).toBe(false);
+    expect(result.errors).toHaveLength(1);
+    expect(result.warnings).toHaveLength(0);
+    expect(result.errors[0].severity).toBe('spicy'); // raw value surfaced
+  });
+
+  it('fails closed on an advisory with a missing severity', async () => {
+    const lockfile = lockfileWith(pkg('bad'));
+    const result = await checkVulnerabilities(lockfile, {
+      fetchAdvisories: fakeAdvisories({ bad: [adv(undefined)] })
+    });
+    expect(result.valid).toBe(false);
+    expect(result.errors).toHaveLength(1);
+    expect(result.errors[0].severity).toBe('unknown');
+  });
+
+  // #24.4 — a non-positive batchSize used to make the name-slicing loop hang.
+  it('rejects a non-positive or non-integer batchSize', async () => {
+    await expect(checkVulnerabilities(lockfileWith(pkg('a')), { batchSize: 0 }))
+      .rejects.toThrow(VulnError);
+    await expect(checkVulnerabilities(lockfileWith(pkg('a')), { batchSize: -5 }))
+      .rejects.toThrow(VulnError);
+    await expect(checkVulnerabilities(lockfileWith(pkg('a')), { batchSize: 2.5 }))
+      .rejects.toThrow(VulnError);
+  });
+});
+
 describe('vulnEnvelope (shared finding schema)', () => {
   it('wraps a result in the suite envelope with the six core keys', async () => {
     const lockfile = lockfileWith(pkg('bad'));
