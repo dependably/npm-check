@@ -1109,7 +1109,7 @@ function runBackupsCommand() {
   const filePath = getFilePath(positionals()[0]);
   const fileName = path.basename(filePath);
 
-  const backups = listBackups(fileName);
+  const backups = listBackups(filePath);
 
   if (backups.length === 0) {
     console.log(`\n📦 No backups found for ${fileName}`);
@@ -1131,7 +1131,6 @@ function runRestoreCommand() {
 
 function runCleanBackupsCommand() {
   const filePath = getFilePath(positionals()[0]);
-  const fileName = path.basename(filePath);
 
   // Parse --keep flag
   let keepCount = 5;
@@ -1146,7 +1145,7 @@ function runCleanBackupsCommand() {
     }
   }
 
-  const deleted = cleanOldBackups(fileName, keepCount);
+  const deleted = cleanOldBackups(filePath, keepCount);
   if (deleted === 0) {
     console.log(`\n📦 No old backups to clean (keeping ${keepCount})`);
   } else {
