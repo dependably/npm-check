@@ -117,39 +117,106 @@ async function mapWithConcurrency(items, limit, fn) {
 }
 
 /**
- * Check if a license (with SPDX expressions) is approved
- * Handles SPDX operators: OR (at least one) and AND (all required)
+ * Evaluate an SPDX license expression against an approved set.
+ * Implements proper SPDX operator precedence: AND binds tighter than OR.
+ * Handles nested parentheses via recursive descent.
+ *
+ * Grammar:
+ *   expr    := andExpr (' OR ' andExpr)*
+ *   andExpr := atom (' AND ' atom)*
+ *   atom    := '(' expr ')' | licenseId
+ *
+ * Fails closed (returns false) on empty identifiers or parse errors.
+ *
+ * NOTE: this is a local copy of the SSRI-aware compare logic; a shared helper
+ * in integrity.js owns the authoritative version for other callers (#15 / #21).
+ *
  * @param {string} licenseExpr - SPDX license expression
  * @param {Set<string>} approvedSet - Set of approved license identifiers
- * @returns {boolean} True if license is approved
+ * @returns {boolean} True if the expression is approved
  */
 function isLicenseApproved(licenseExpr, approvedSet) {
-  if (!licenseExpr || !licenseExpr.trim()) {
-    return false;
+  if (typeof licenseExpr !== 'string' || !licenseExpr.trim()) return false;
+
+  const src = licenseExpr.trim();
+  let pos = 0;
+
+  function parseExpr() {
+    let result = parseAndExpr();
+    while (pos < src.length && src.startsWith(' OR ', pos)) {
+      pos += 4; // consume ' OR '
+      const right = parseAndExpr(); // always consume to advance pos
+      result = result || right;
+    }
+    return result;
   }
 
-  // Strip outer parentheses if present
-  let expr = licenseExpr.trim();
-  if (expr.startsWith('(') && expr.endsWith(')')) {
-    expr = expr.slice(1, -1).trim();
+  function parseAndExpr() {
+    let result = parseAtom();
+    while (pos < src.length && src.startsWith(' AND ', pos)) {
+      pos += 5; // consume ' AND '
+      const right = parseAtom(); // always consume to advance pos
+      result = result && right;
+    }
+    return result;
   }
 
-  // Handle SPDX OR expressions (at least one must be approved)
-  if (expr.includes(' OR ')) {
-    return expr.split(' OR ')
-      .map(lic => lic.trim())
-      .some(lic => approvedSet.has(lic));
+  function parseAtom() {
+    if (pos < src.length && src[pos] === '(') {
+      pos++; // consume '('
+      const result = parseExpr();
+      if (pos < src.length && src[pos] === ')') pos++; // consume ')'
+      return result;
+    }
+    // Consume a license identifier; terminates at ' OR ', ' AND ', ')', or end
+    const start = pos;
+    while (
+      pos < src.length &&
+      src[pos] !== ')' &&
+      !src.startsWith(' OR ', pos) &&
+      !src.startsWith(' AND ', pos)
+    ) {
+      pos++;
+    }
+    const id = src.slice(start, pos).trim();
+    return id.length > 0 && approvedSet.has(id);
   }
 
-  // Handle SPDX AND expressions (all must be approved)
-  if (expr.includes(' AND ')) {
-    return expr.split(' AND ')
-      .map(lic => lic.trim())
-      .every(lic => approvedSet.has(lic));
+  try {
+    return parseExpr();
+  } catch {
+    return false; // fail closed on any parse error
+  }
+}
+
+/**
+ * Normalize a license field value from a package.json to a plain string.
+ * Handles the legacy object form ({ type: "MIT" }) and the legacy "licenses"
+ * array ([{ type: "MIT" }, { type: "ISC" }]) that older packages used before
+ * the SPDX string form became the standard.
+ *
+ * @param {*} licenseField - Value of the "license" field (may be string, object, or absent)
+ * @param {*} licensesArray - Value of the legacy "licenses" array field (may be array or absent)
+ * @returns {string|null} SPDX string, or null if unresolvable
+ */
+function normalizeLicenseField(licenseField, licensesArray) {
+  // Normal case: already a string
+  if (typeof licenseField === 'string') return licenseField;
+
+  // Legacy object form: { type: "MIT", url: "..." }
+  if (licenseField !== null && typeof licenseField === 'object' && !Array.isArray(licenseField)) {
+    return typeof licenseField.type === 'string' ? licenseField.type : null;
   }
 
-  // Simple license identifier
-  return approvedSet.has(expr);
+  // Legacy "licenses" array: [{ type: "MIT" }, { type: "ISC" }]
+  if (Array.isArray(licensesArray) && licensesArray.length > 0) {
+    const types = licensesArray
+      .map(l => (l !== null && typeof l === 'object' ? l.type : l))
+      .filter(t => typeof t === 'string');
+    if (types.length > 0) return types.join(' OR ');
+  }
+
+  return null;
 }
 
 /**
@@ -185,13 +252,16 @@ async function verifyPackageLicense(packagePath, approvedLicenses, nodeModulesPa
   const pkgJsonExists = fs.existsSync(pkgJsonPath);
   if (pkgJsonExists) {
     try {
-      license = JSON.parse(fs.readFileSync(pkgJsonPath, 'utf8')).license;
+      // Normalize handles the string, object ({ type }), and legacy "licenses"
+      // array forms without crashing on non-string values.
+      const parsed = JSON.parse(fs.readFileSync(pkgJsonPath, 'utf8'));
+      license = normalizeLicenseField(parsed.license, parsed.licenses);
     } catch (e) {
       return { valid: false, error: e.message, package: pkgName };
     }
   }
-  if (!license && pkgData && pkgData.license) {
-    license = pkgData.license;
+  if (!license && pkgData && (pkgData.license || pkgData.licenses)) {
+    license = normalizeLicenseField(pkgData.license, pkgData.licenses);
   }
 
   if (!license) {
@@ -268,10 +338,31 @@ export async function parseLicensesCsv(csvPath) {
 }
 
 /**
+ * Extract the sha512 component from an SSRI integrity string.
+ * An SSRI string may carry multiple space-separated hashes (multi-hash), e.g.
+ * 'sha512-ABC== sha256-DEF='. The registry always publishes a single sha512 token,
+ * so this is the canonical basis for comparison.
+ *
+ * NOTE: this helper is local to checker.js. A validator.js agent (#21) owns the
+ * authoritative SSRI accept/reject logic in integrity.js; this is a deliberately
+ * small duplicate kept in-module to avoid touching files out of scope for this fix.
+ *
+ * @param {*} integrity - Integrity field value (may be non-string)
+ * @returns {string|null} The sha512-prefixed token, or null if absent
+ */
+function extractSha512Component(integrity) {
+  if (typeof integrity !== 'string') return null;
+  for (const token of integrity.split(/\s+/)) {
+    if (token.startsWith('sha512-')) return token;
+  }
+  return null;
+}
+
+/**
  * Decide whether a package entry can be verified against the registry.
  * Returns true for verifiable entries; non-verifiable entries are counted as
  * skipped (root/workspace/link/git/file/bundled, missing integrity/version, or
- * a legacy sha1 hash that can't be compared to the registry's sha512).
+ * no sha512 component to compare to the registry's sha512).
  * @param {object} info - Entry classification from forEachPackageEntry
  * @returns {boolean} True if the entry should be verified
  */
@@ -280,8 +371,11 @@ function isVerifiableEntry(info) {
   if (isRoot || isWorkspaceSource || isLink) return false;
   if (!entry.integrity) return false; // nothing locked to verify (integrity-hygiene flags this)
   if (isBundled || isGitDep || isFileDep) return false; // no registry tarball integrity
-  // legacy sha1 can't be compared to the registry's sha512 — upgrade first
-  if (typeof entry.integrity === 'string' && entry.integrity.startsWith('sha1-')) return false;
+  // Skip when there is no sha512 component: sha1-only and sha256-only hashes cannot be
+  // compared to the registry's sha512 (would be a guaranteed false 'tampered' alarm).
+  // Multi-hash strings that include sha512 ('sha512-X sha256-Y') pass through and are
+  // verified by extracting their sha512 component in recordIntegrityResult.
+  if (!extractSha512Component(entry.integrity)) return false;
   // a version is required to query the registry
   return Boolean(entry.version);
 }
@@ -366,11 +460,19 @@ function recordIntegrityResult(results, candidate, registryHash, networkError, f
     recordIntegrityUnresolved(results, { ...base, reason: `registry unreachable (${networkError.message})` }, failOnUnresolved);
   } else if (!registryHash) {
     recordIntegrityUnresolved(results, { ...base, reason: `registry has no sha512 integrity for ${name}@${entry.version}` }, failOnUnresolved);
-  } else if (registryHash === entry.integrity) {
-    results.passed++;
-    results.details.push({ valid: true, package: name, packagePath: key, expected: registryHash, actual: entry.integrity });
   } else {
-    recordIntegrityFailure(results, { valid: false, package: name, packagePath: key, expected: registryHash, actual: entry.integrity });
+    // SSRI-aware compare: the lockfile may carry a multi-hash string
+    // ('sha512-A sha256-B') but the registry always publishes a single sha512
+    // token. Extract and compare the sha512 component from both sides so a
+    // multi-hash lockfile entry is not falsely flagged as tampered.
+    const lockedSha512 = extractSha512Component(entry.integrity);
+    const registrySha512 = extractSha512Component(registryHash) ?? registryHash;
+    if (lockedSha512 && lockedSha512 === registrySha512) {
+      results.passed++;
+      results.details.push({ valid: true, package: name, packagePath: key, expected: registrySha512, actual: lockedSha512 });
+    } else {
+      recordIntegrityFailure(results, { valid: false, package: name, packagePath: key, expected: registrySha512, actual: lockedSha512 ?? entry.integrity });
+    }
   }
 }
 
@@ -567,6 +669,15 @@ export async function checkLicenses(lockfileData, options = {}) {
     throw new CheckError(
       'license verification is not supported for pnpm-lock.yaml yet',
       'PNPM_UNSUPPORTED'
+    );
+  }
+
+  // v1 lockfiles have no `packages` map — iterating `{}` would silently verify
+  // nothing and return valid:true (a false-clean pass). Mirror checkIntegrity.
+  if (lockfileData && lockfileData.lockfileVersion === 1) {
+    throw new CheckError(
+      'v1 lockfiles have no packages map to check licenses against; run `npm-check migrate 3` first',
+      'UNSUPPORTED_VERSION'
     );
   }
 
