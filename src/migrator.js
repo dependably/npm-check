@@ -129,6 +129,17 @@ function normalizeHostedGitShorthand(version) {
 // Convert a v1 dependencies-tree node into a v2 packages-map entry (drops the
 // nested `dependencies` — those become their own path-keyed entries — and turns
 // `requires` back into a `dependencies` range map).
+// A v1 git dep carries its git URL in `version`, often with no `resolved`. v2/v3
+// classify git deps by a `git+`/`git://` `resolved`, so derive one — otherwise the
+// entry looks like a plain registry package and gets a bogus placeholder integrity
+// stamped on it. Covers explicit git URLs and npm's hosted-git shorthands
+// (github:/gitlab:/bitbucket:/gist:). Returns null when the version isn't a git ref.
+function v1GitResolved(node) {
+  if (typeof node.version !== 'string') return null;
+  if (node.version.startsWith('git+') || node.version.startsWith('git://')) return node.version;
+  return normalizeHostedGitShorthand(node.version);
+}
+
 function v1NodeToPackageEntry(node) {
   const entry = {};
   if (node.version !== undefined) entry.version = node.version;
@@ -140,18 +151,9 @@ function v1NodeToPackageEntry(node) {
   // Preserve it so forEachPackageEntry keeps classifying the entry as bundled
   // (no registry tarball → the fixer must not stamp placeholder integrity).
   if (node.bundled) entry.inBundle = true;
-  // A v1 git dep carries its git URL in `version`, often with no `resolved`.
-  // v2/v3 classify git deps by a `git+`/`git://` `resolved`, so surface it there;
-  // otherwise the entry looks like a plain registry package and gets a bogus
-  // placeholder integrity stamped on it. This covers both explicit git URLs and
-  // npm's hosted-git shorthands (github:/gitlab:/bitbucket:/gist:).
-  if (!entry.resolved && typeof node.version === 'string') {
-    if (node.version.startsWith('git+') || node.version.startsWith('git://')) {
-      entry.resolved = node.version;
-    } else {
-      const gitUrl = normalizeHostedGitShorthand(node.version);
-      if (gitUrl) entry.resolved = gitUrl;
-    }
+  if (!entry.resolved) {
+    const gitUrl = v1GitResolved(node);
+    if (gitUrl) entry.resolved = gitUrl;
   }
   if (node.requires && typeof node.requires === 'object') {
     entry.dependencies = { ...node.requires };
@@ -204,8 +206,10 @@ function migrateV1toV2(lockfile) {
 // V2 -> V3: keep the packages map (including the root '' entry) verbatim; drop
 // the legacy dependencies tree and top-level `requires` that v3 must not carry.
 function migrateV2toV3(lockfile) {
-  const { dependencies, requires, ...rest } = lockfile;
-  void requires;
+  // v3 carries neither the legacy dependencies tree nor top-level `requires`.
+  const rest = { ...lockfile };
+  delete rest.dependencies;
+  delete rest.requires;
   let packages = lockfile.packages;
   if (!packages || typeof packages !== 'object' || Object.keys(packages).length === 0) {
     // A merge-damaged v2 may carry only the legacy dependencies tree. Rebuild
@@ -215,7 +219,6 @@ function migrateV2toV3(lockfile) {
   } else {
     packages = { ...packages };
   }
-  void dependencies;
   return { ...rest, packages };
 }
 
@@ -234,9 +237,10 @@ function migrateV2toV1(lockfile) {
   if (!dependencies || typeof dependencies !== 'object' || Object.keys(dependencies).length === 0) {
     dependencies = buildDependenciesTreeFromPackages(lockfile.packages || {});
   }
-  const { packages, requires, ...rest } = lockfile;
-  void packages;
-  void requires;
+  // v1 carries neither the packages map nor top-level `requires`.
+  const rest = { ...lockfile };
+  delete rest.packages;
+  delete rest.requires;
   return { ...rest, dependencies };
 }
 

@@ -341,7 +341,8 @@ export async function fixChecksums(lockfile, options = {}) {
     concurrency = 8,
     timeoutMs = 10000,
     localFallback = false,
-    nodeModulesPath = './node_modules', // accepted for API compat; path is now derived from baseDir + key
+    // `nodeModulesPath` is still accepted in options for API compat but no longer
+    // used — the on-disk path is derived from baseDir + the lockfile key (fix #17).
     defaultRegistry = DEFAULT_REGISTRY,
     fetchIntegrity = null,
     baseDir = '.'
@@ -399,10 +400,6 @@ export async function fixChecksums(lockfile, options = {}) {
       'Use only for air-gapped/internal verification.'
     );
   }
-
-  // Suppress the unused variable warning — nodeModulesPath is kept in the destructuring
-  // for backward-compatible API surface but is no longer used internally (see fix #17).
-  void nodeModulesPath;
 
   return {
     lockfile: applyChanges(lockfile, changes),

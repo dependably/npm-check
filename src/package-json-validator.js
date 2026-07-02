@@ -265,13 +265,28 @@ function validatePnpmRanges(packageJson, errors) {
 // INSIDE the tarball). npm accepts either spelling, and a boolean (bundle all /
 // none). Validate array-of-valid-names and warn when a name isn't declared in
 // dependencies/optionalDependencies (npm requires it). ---
-function validateBundleDependencies(packageJson, errors, warnings) {
+function collectDeclaredDeps(packageJson) {
   const declared = new Set();
   for (const section of ['dependencies', 'optionalDependencies']) {
     if (isPlainObject(packageJson[section])) {
       for (const name of Object.keys(packageJson[section])) declared.add(name);
     }
   }
+  return declared;
+}
+
+function validateBundledName(name, field, declared, errors, warnings) {
+  if (typeof name !== 'string' || !LEGACY_NAME_RE.test(name)) {
+    errors.push(new PackageJsonValidationError(
+      `invalid bundled dependency name ${JSON.stringify(name)} in ${field}`, 'PJ_INVALID_BUNDLE_DEP_NAME'));
+  } else if (!declared.has(name)) {
+    warnings.push({ code: 'PJ_BUNDLE_DEP_NOT_IN_DEPS',
+      message: `bundled dependency "${name}" is not listed in dependencies/optionalDependencies` });
+  }
+}
+
+function validateBundleDependencies(packageJson, errors, warnings) {
+  const declared = collectDeclaredDeps(packageJson);
   for (const field of ['bundleDependencies', 'bundledDependencies']) {
     const value = packageJson[field];
     if (value === undefined || typeof value === 'boolean') continue; // boolean = bundle all/none
@@ -280,15 +295,7 @@ function validateBundleDependencies(packageJson, errors, warnings) {
         `"${field}" must be an array of package names (or a boolean)`, 'PJ_INVALID_BUNDLE_DEPS'));
       continue;
     }
-    for (const name of value) {
-      if (typeof name !== 'string' || !LEGACY_NAME_RE.test(name)) {
-        errors.push(new PackageJsonValidationError(
-          `invalid bundled dependency name ${JSON.stringify(name)} in ${field}`, 'PJ_INVALID_BUNDLE_DEP_NAME'));
-      } else if (!declared.has(name)) {
-        warnings.push({ code: 'PJ_BUNDLE_DEP_NOT_IN_DEPS',
-          message: `bundled dependency "${name}" is not listed in dependencies/optionalDependencies` });
-      }
-    }
+    for (const name of value) validateBundledName(name, field, declared, errors, warnings);
   }
 }
 
