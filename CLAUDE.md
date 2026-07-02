@@ -143,10 +143,10 @@ if (!result.valid) {
 ### Migration to V3
 
 ```javascript
-import { upgradeToV3 } from './migrator.js';
+import { migrateToVersion, LOCKFILE_VERSIONS } from './index.js';
 
 const oldLockfile = JSON.parse(fs.readFileSync('package-lock.json'));
-const newLockfile = upgradeToV3(oldLockfile);
+const newLockfile = migrateToVersion(oldLockfile, LOCKFILE_VERSIONS.V3);
 
 fs.writeFileSync('package-lock.json', JSON.stringify(newLockfile, null, 2));
 ```

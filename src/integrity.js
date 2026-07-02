@@ -83,9 +83,12 @@ export function deriveRegistryBase(resolvedUrl, packageName, options = {}) {
   }
   if (url.protocol !== 'https:' && url.protocol !== 'http:') return null;
   // Refuse to derive a base from a host outside the caller's allowlist. Without
-  // this, a hostile lockfile steers integrity/vuln/deprecation fetches to an
-  // arbitrary (internal) host of its choosing and can self-attest a tampered
-  // `integrity` by also pointing `resolved` at a server it controls.
+  // this, a hostile lockfile could steer a fetch to an arbitrary (internal) host
+  // of its choosing and self-attest a tampered `integrity` by also pointing
+  // `resolved` at a server it controls. NOTE: only checkIntegrity() currently
+  // passes `allowedHosts` (see checker.js); vuln/deprecation/checksum-fixer keep
+  // the historical "trust the lockfile" default until an allowlist is threaded
+  // through those entry points. With no allowlist this is a no-op.
   if (!isAllowedRegistryHost(url, options.allowedHosts)) return null;
 
   const markerIdx = url.pathname.indexOf('/-/');
