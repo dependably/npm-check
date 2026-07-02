@@ -1,6 +1,7 @@
 // src/backup.js
 import fs from 'fs';
 import path from 'path';
+import crypto from 'crypto';
 
 export class BackupError extends Error {
   constructor(message) {
@@ -9,16 +10,41 @@ export class BackupError extends Error {
   }
 }
 
-const BACKUPS_DIR = '.backups';
+/**
+ * Derive the backup directory for a given source file.
+ * Backups live in a `.backups/` sibling directory next to the source file,
+ * so they follow the file regardless of the caller's cwd.
+ *
+ * @param {string} absFilePath - Absolute path to the source file
+ * @returns {string} Absolute path to the backup directory
+ */
+function backupDirFor(absFilePath) {
+  return path.join(path.dirname(absFilePath), '.backups');
+}
 
 /**
- * Create a backup directory if it doesn't exist
+ * A short, stable hex hash of the absolute source path.  Used as part of the
+ * backup filename so that two files with the same basename in different
+ * directories (e.g. `web/package-lock.json` and `api/package-lock.json`) get
+ * distinct backup names and never overwrite each other's history.
+ *
+ * @param {string} absPath - Absolute path to hash
+ * @returns {string} 8-character lowercase hex string
+ */
+function pathHash(absPath) {
+  return crypto.createHash('sha1').update(absPath).digest('hex').slice(0, 8);
+}
+
+/**
+ * Create a backup directory if it doesn't exist.
+ *
+ * @param {string} dir - Absolute path to the backup directory
  * @throws {BackupError} If directory creation fails
  */
-function ensureBackupsDir() {
+function ensureBackupsDir(dir) {
   try {
-    if (!fs.existsSync(BACKUPS_DIR)) {
-      fs.mkdirSync(BACKUPS_DIR, { recursive: true });
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
     }
   } catch (e) {
     throw new BackupError(`Failed to create backups directory: ${e.message}`);
@@ -26,26 +52,59 @@ function ensureBackupsDir() {
 }
 
 /**
- * Create a timestamped backup of a file
- * @param {string} filePath - Path to the file to backup
- * @returns {string} Path to the backup file
- * @throws {BackupError} If backup creation fails
+ * Create a timestamped backup of a file.
+ *
+ * The backup is placed in a `.backups/` directory next to the source file so
+ * that backups are always adjacent to what they protect and are not sensitive
+ * to the caller's cwd.
+ *
+ * Filename format: `<basename>.<pathHash8>.<isoTimestampMs>.bak`
+ *
+ * - `pathHash8` — 8-char hash of the absolute source path, preventing
+ *   cross-file collisions when two files share the same basename.
+ * - Millisecond-precision ISO timestamp — prevents same-second overwrites.
+ * - `wx` open flag — refuses to overwrite an existing file; a monotonically
+ *   increasing counter suffix (`.1`, `.2`, …) is appended on the rare
+ *   EEXIST collision (e.g. two calls within the same millisecond in tests).
+ *
+ * @param {string} filePath - Path to the file to backup (absolute or relative)
+ * @returns {string} Absolute path to the created backup file
+ * @throws {BackupError} If the source file is missing or backup creation fails
  */
 export function createBackup(filePath) {
-  if (!fs.existsSync(filePath)) {
+  const absPath = path.resolve(filePath);
+  if (!fs.existsSync(absPath)) {
     throw new BackupError(`File not found: ${filePath}`);
   }
 
+  const backupDir = backupDirFor(absPath);
   try {
-    ensureBackupsDir();
+    ensureBackupsDir(backupDir);
 
-    const fileName = path.basename(filePath);
-    const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, -5); // YYYY-MM-DDTHH-mm-ss
-    const backupFileName = `${fileName}.${timestamp}.bak`;
-    const backupPath = path.join(BACKUPS_DIR, backupFileName);
+    const basename = path.basename(absPath);
+    const hash = pathHash(absPath);
+    // ms-precision: YYYY-MM-DDTHH-mm-ss-mmmZ (all colons/dots replaced)
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const baseBackupName = `${basename}.${hash}.${timestamp}.bak`;
+    const content = fs.readFileSync(absPath, 'utf8');
 
-    const content = fs.readFileSync(filePath, 'utf8');
-    fs.writeFileSync(backupPath, content, 'utf8');
+    // Open with 'wx' — errors on EEXIST rather than overwriting.  On the rare
+    // same-millisecond collision append a counter and retry.
+    let backupPath = path.join(backupDir, baseBackupName);
+    let counter = 0;
+    for (;;) {
+      try {
+        fs.writeFileSync(backupPath, content, { encoding: 'utf8', flag: 'wx' });
+        break;
+      } catch (e) {
+        if (e.code === 'EEXIST') {
+          counter++;
+          backupPath = path.join(backupDir, `${baseBackupName}.${counter}`);
+        } else {
+          throw e;
+        }
+      }
+    }
 
     return backupPath;
   } catch (e) {
@@ -55,33 +114,42 @@ export function createBackup(filePath) {
 }
 
 /**
- * List all backups for a given file
- * @param {string} fileName - Name of the file (e.g., 'package-lock.json')
- * @returns {Array} Array of backup file info { name, path, timestamp }
+ * List all backups for a given source file, ordered newest-first.
+ *
+ * Backups are scoped by both the basename and the path hash, so only backups
+ * for this exact file are returned — not backups for same-named files in other
+ * directories.
+ *
+ * @param {string} filePath - Path to the source file (not a bare basename)
+ * @returns {Array<{name: string, path: string, timestamp: string, created: Date}>}
  * @throws {BackupError} If backup listing fails
  */
-export function listBackups(fileName) {
+export function listBackups(filePath) {
+  const absPath = path.resolve(filePath);
+  const backupDir = backupDirFor(absPath);
   try {
-    ensureBackupsDir();
+    ensureBackupsDir(backupDir);
 
-    if (!fs.existsSync(BACKUPS_DIR)) {
+    if (!fs.existsSync(backupDir)) {
       return [];
     }
 
-    const files = fs.readdirSync(BACKUPS_DIR);
+    const basename = path.basename(absPath);
+    const hash = pathHash(absPath);
+    // All backups for this exact source file share this prefix.
+    const prefix = `${basename}.${hash}.`;
+
+    const files = fs.readdirSync(backupDir);
     const backups = files
-      .filter(f => f.startsWith(fileName))
+      .filter(f => f.startsWith(prefix) && f.includes('.bak'))
       .map(f => {
-        const backupPath = path.join(BACKUPS_DIR, f);
+        const backupPath = path.join(backupDir, f);
         const stats = fs.statSync(backupPath);
-        // Parse "<name>.<timestamp>.bak" without a backtracking-prone regex:
-        // strip the ".bak" suffix, then take everything after the first dot.
+        // Timestamp is everything between the prefix and ".bak"
         let timestamp = 'unknown';
-        if (f.endsWith('.bak')) {
-          const withoutExt = f.slice(0, -4);
-          const firstDot = withoutExt.indexOf('.');
-          if (firstDot !== -1) timestamp = withoutExt.slice(firstDot + 1);
-        }
+        const withoutPrefix = f.slice(prefix.length);
+        const bakIdx = withoutPrefix.indexOf('.bak');
+        if (bakIdx !== -1) timestamp = withoutPrefix.slice(0, bakIdx);
         return {
           name: f,
           path: backupPath,
@@ -99,25 +167,26 @@ export function listBackups(fileName) {
 }
 
 /**
- * Restore a file from its most recent backup
+ * Restore a file from its most recent backup.
+ *
  * @param {string} filePath - Path to the file to restore
  * @returns {boolean} True if restoration was successful
- * @throws {BackupError} If restoration fails
+ * @throws {BackupError} If restoration fails or no backups exist
  */
 export function restoreFromLatestBackup(filePath) {
   try {
-    const fileName = path.basename(filePath);
-    const backups = listBackups(fileName);
+    const absPath = path.resolve(filePath);
+    const backups = listBackups(absPath);
 
     if (backups.length === 0) {
-      throw new BackupError(`No backups found for ${fileName}`);
+      throw new BackupError(`No backups found for ${filePath}`);
     }
 
     const latestBackup = backups[0];
     const backupContent = fs.readFileSync(latestBackup.path, 'utf8');
-    fs.writeFileSync(filePath, backupContent, 'utf8');
+    fs.writeFileSync(absPath, backupContent, 'utf8');
 
-    console.log(`Restored ${fileName} from backup: ${latestBackup.name}`);
+    console.log(`Restored ${path.basename(absPath)} from backup: ${latestBackup.name}`);
     return true;
   } catch (e) {
     if (e instanceof BackupError) throw e;
@@ -126,17 +195,21 @@ export function restoreFromLatestBackup(filePath) {
 }
 
 /**
- * Clean old backups, keeping only the most recent N
- * @param {string} fileName - Name of the file
+ * Clean old backups for a source file, keeping only the most recent N.
+ *
+ * Cleanup is scoped to the specific source file (by absolute path) so that
+ * pruning one file's history never deletes backups for a same-named file in a
+ * different directory.
+ *
+ * @param {string} filePath - Path to the source file
  * @param {number} keepCount - Number of backups to keep (default: 5)
  * @returns {number} Number of backups deleted
  * @throws {BackupError} If cleanup fails
  */
-export function cleanOldBackups(fileName, keepCount = 5) {
+export function cleanOldBackups(filePath, keepCount = 5) {
   try {
-    ensureBackupsDir();
-
-    const backups = listBackups(fileName);
+    const absPath = path.resolve(filePath);
+    const backups = listBackups(absPath);
     if (backups.length <= keepCount) {
       return 0;
     }

@@ -110,6 +110,25 @@ describe('remediateDependencies', () => {
     expect(result.guidance[0].kind).toBe('latest-still-affected');
   });
 
+  it('guides (not bumps) when locked version equals latest even if the range string differs (regression #20)', async () => {
+    // Declared range `^8.0.0`, installed at `9.39.0` which is also the registry
+    // latest.  `rewriteRange('^8.0.0', '9.39.0', 'caret')` yields `'^9.39.0'`
+    // which differs from `'^8.0.0'`, so the OLD range-string check incorrectly
+    // classified this as a genuine bump.  Nothing actually changes because
+    // `^8.0.0` already resolves to `9.39.0`.
+    const lockfile = lockfileWith(pkgEntry('eslint', '9.39.0'), { devDependencies: { eslint: '^8.0.0' } });
+    const packageJson = { name: 'demo', version: '1.0.0', devDependencies: { eslint: '^8.0.0' } };
+    const result = await remediateDependencies(lockfile, packageJson, {
+      fetchManifest: deprecate(['eslint']),
+      fetchAdvisories: advise({}),
+      fetchLatest: latest({ eslint: '9.39.0' }) // installed version == latest
+    });
+    expect(result.bumped).toHaveLength(0);
+    expect(result.guidance).toHaveLength(1);
+    expect(result.guidance[0].kind).toBe('latest-still-affected');
+    expect(result.changed).toBe(false);
+  });
+
   it('records a warning when the registry has no latest version', async () => {
     const lockfile = lockfileWith(pkgEntry('eslint', '8.57.1'), { devDependencies: { eslint: '^8.0.0' } });
     const packageJson = { name: 'demo', version: '1.0.0', devDependencies: { eslint: '^8.0.0' } };

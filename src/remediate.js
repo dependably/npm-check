@@ -169,9 +169,20 @@ async function processFlagged(name, reasons, ctx) {
     return;
   }
 
+  // If the currently-installed version is already at registry latest, bumping
+  // the range string won't change what `npm install` resolves — it is a no-op
+  // fix.  This check must happen before the range-string comparison because
+  // a range like `^1.0.0` resolved to `1.4.2` (== latest) would produce a
+  // rewritten range of `^1.4.2` which differs from `^1.0.0`, misleading the
+  // old range-string check into classifying a no-op as a genuine bump.
+  if (current && current.version === latest) {
+    buckets.guidance.push({ package: name, reasons: reasonList, kind: 'latest-still-affected', range: direct.range });
+    return;
+  }
+
   const newRange = rewriteRange(direct.range, latest, rangeType);
   if (newRange === direct.range) {
-    // Already at latest yet still flagged → latest itself is affected; guide.
+    // Range string already points at latest yet still flagged; guide.
     buckets.guidance.push({ package: name, reasons: reasonList, kind: 'latest-still-affected', range: direct.range });
     return;
   }
