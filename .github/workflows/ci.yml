@@ -11,12 +11,12 @@
 #        release (tags v* only — creates a GitHub Release + attaches the .tgz +
 #                 SLSA build provenance, L2; npm publish when NPM_TOKEN is set)
 #
-# Action pins: third-party/marketplace steps are intended to be pinned by commit
-# SHA for supply-chain safety. The official GitHub-maintained actions below use
-# `@v5` major tags, which run on the Node 24 runtime (`@v4` ran on the now-
-# deprecated Node 20). Exception: actions/upload-artifact stays on `@v7` — its
-# v5/v5.0.0 still declare `using: node20`; only v6+ moved to node24. Tighten to
-# SHAs when convenient.
+# Action pins: every `uses:` step is pinned by commit SHA for supply-chain
+# safety, with the human-readable version in a trailing `# vN` comment. The
+# chosen majors: checkout/setup-node `v5` and attest-build-provenance `v2` run on
+# the Node 24 runtime; actions/upload-artifact is `v7` (its v5/v5.0.0 still
+# declare `using: node20`; only v6+ moved to node24). Bump a SHA when updating
+# the version comment alongside it (e.g. via Dependabot/Renovate).
 
 name: CI
 
@@ -47,7 +47,7 @@ jobs:
   secret-scan:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
           fetch-depth: 0
       - name: TruffleHog (full-history, verified secrets only)
@@ -59,8 +59,8 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
@@ -79,8 +79,8 @@ jobs:
       matrix:
         node-version: [22, 24]
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: ${{ matrix.node-version }}
           registry-url: https://registry.npmjs.org
@@ -95,15 +95,15 @@ jobs:
     runs-on: ubuntu-latest
     needs: [lint, test]
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
           cache: npm
       - run: npm ci
       - run: npm pack
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: npm-tarball
           path: "*.tgz"
@@ -147,8 +147,8 @@ jobs:
       id-token: write      # OIDC -> sigstore signature (GitHub attestation + npm provenance)
       attestations: write  # store the GitHub build-provenance attestation on the repo
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
@@ -157,8 +157,8 @@ jobs:
       # Pack the exact tarball we attest, release, and publish (one set of bytes).
       - run: npm pack
       # NuGet-equivalent: signed GitHub attestation over the tarball, registry-
-      # independent. SHA-pin this action when convenient (see header note).
-      - uses: actions/attest-build-provenance@v2
+      # independent.
+      - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
         with:
           subject-path: "*.tgz"
       # Public-npm provenance bonus; publishes the same packed tarball. Skipped

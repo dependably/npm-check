@@ -1,6 +1,6 @@
-# Package Lockfile Fixer
+# npm-check (`@dependably/npm-check`)
 
-A comprehensive tool for validating, migrating, fixing, and updating npm `package-lock.json` files across versions 1, 2, and 3.
+A comprehensive tool for validating, migrating, fixing, and updating npm `package-lock.json` files across versions 1, 2, and 3. Installs the `npm-check` CLI and is also usable as a library.
 
 ## Features
 

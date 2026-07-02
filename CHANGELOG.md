@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`overrides` support across pin / audit / validate.** A floating `^`/`~` in the package.json `overrides` field was previously invisible — neither flagged nor pinned — silently defeating an otherwise fully-pinned manifest. Now:
+  - `npm-check pin` rewrites caret/tilde ranges in npm `overrides` (nested `.`/child form) to their lockfile-resolved versions, pinning only when the name resolves to a single version tree-wide (a name present at multiple versions is skipped `ambiguous-resolution` rather than mis-pinned). `$`-references are left alone; `pnpm.overrides` is flagged but not auto-pinned (pin refuses pnpm lockfiles).
+  - The `pinned-versions` audit rule (now npm + pnpm flavored) flags unpinned caret/tilde in both `overrides` and `pnpm.overrides`, by full path.
+  - New shared `walkOverrides()` helper (`overrides.js`) descends the nested npm form and the flat pnpm form, stripping `@version` selectors and skipping `$`-references.
+- **Wider package.json config-field validation** in `valid-package-json`: override-range syntax in `overrides`/`pnpm.overrides`; the range-carrying pnpm sub-fields (`packageExtensions` inner `dependencies`/`optionalDependencies`/`peerDependencies`, `peerDependencyRules.allowedVersions`, `allowedDeprecatedVersions` — validated but never flagged/pinned, since those ranges are loose by design); and `bundleDependencies`/`bundledDependencies` (array of valid names, warn when a bundled name isn't declared in dependencies). New codes: `PJ_INVALID_OVERRIDES`, `PJ_INVALID_OVERRIDE_RANGE`, `PJ_INVALID_RANGE`, `PJ_INVALID_PKG_EXTENSION`, `PJ_INVALID_BUNDLE_DEPS`, `PJ_INVALID_BUNDLE_DEP_NAME`, `PJ_BUNDLE_DEP_NOT_IN_DEPS`.
+
+### Fixed
+- **Self-audit hardening** — a broad pass across the toolkit closing 30+ correctness/robustness findings. Highlights: SSRI-aware integrity comparison that rejects a lockfile carrying a second, non-registry `sha512` token (tamper vector); all conversion paths in the migrator corrected and covered by round-trip tests; the fixer no longer mutates caller input or stamps placeholder integrity on git/bundled/link/workspace/file deps (incl. npm 6 hosted-git shorthand); registry transport hardened against hostile lockfiles (response size cap, wall-clock deadline, `http`/`https` scheme selection, scoped-name URL encoding, host allowlist) with abbreviated-packument fetches so large packuments still resolve; per-version advisory attribution so an advisory only fails the versions it actually affects; the suite-wide `--fail-on severity=` gate applied across all report sections (was vuln-only); id-less advisories no longer silently dropped; WorkerPool deadlock / listener-leak / clean-exit-hang fixed; pnpm v5/v6 leading-slash depPath parsing; and numerous validator/npmrc/package-json/checker/checksum-fixer edge-case fixes.
+
+### Changed
+- CI: all GitHub Actions `uses:` steps are pinned by commit SHA (supply-chain hardening); added an `exports` map and `publishConfig.access: "public"` to package.json.
+
+## [1.6.1] - 2026-06-22
+
+### Added
+- **Tag-driven GitHub Release with SLSA build provenance (L2).** Pushing a `v*` tag creates a GitHub Release, attaches the packed `.tgz`, and produces a signed `attest-build-provenance` attestation over that exact tarball; npm publish gains `--provenance` (OIDC → sigstore) when `NPM_TOKEN` is set.
+
+### Changed
+- CI runs on Node 24 runners (dropped EOL Node); fixed a Jest CI hang and runner-image deprecations.
+
 ## [1.6.0] - 2026-06-21
 
 ### Added
