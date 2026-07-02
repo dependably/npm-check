@@ -14,6 +14,34 @@ import fs from 'fs';
 import { EventEmitter } from 'events';
 import { parseLockfile as parseLockfileFromFormat } from './format-library.js';
 
+// Record one incremental `package` event into the accumulating lockfile: the
+// root ('') merges into rootMetadata, others land in the packages map.
+function recordStreamPackage(path, pkg, lockfile, rootMetadata, options) {
+  if (path === '') {
+    Object.assign(rootMetadata, pkg); // root package → root metadata
+  } else {
+    lockfile.packages[path] = pkg;
+  }
+  if (options.onPackage) options.onPackage(path, pkg);
+}
+
+// Assemble the final result from the buffered `complete` event. The parsed result
+// is authoritative; anything the (currently no-op) incremental events collected is
+// layered on WITHOUT injecting empty skeleton keys — a v3 file must not gain a
+// spurious `dependencies: {}`, nor a v1 file a `packages: {}`, which a write-back
+// would then persist.
+function assembleStreamResult(result, lockfile, rootMetadata) {
+  const parsed = (result && typeof result === 'object') ? result : {};
+  const merged = { ...parsed };
+  for (const [k, v] of Object.entries(rootMetadata)) {
+    if (!(k in merged)) merged[k] = v;
+  }
+  if (Object.keys(lockfile.packages).length > 0) {
+    merged.packages = { ...(parsed.packages || {}), ...lockfile.packages };
+  }
+  return merged;
+}
+
 /**
  * Streaming parser for package-lock.json files
  * Handles large files by parsing incrementally
@@ -72,45 +100,12 @@ export class StreamingParser extends EventEmitter {
       // Collect root metadata
       let rootMetadata = {};
 
-      parser.on('package', (path, pkg) => {
-        if (path === '') {
-          // Root package - merge into root metadata
-          Object.assign(rootMetadata, pkg);
-        } else {
-          lockfile.packages[path] = pkg;
-        }
-        if (options.onPackage) {
-          options.onPackage(path, pkg);
-        }
-      });
-
+      parser.on('package', (path, pkg) => recordStreamPackage(path, pkg, lockfile, rootMetadata, options));
       parser.on('metadata', (key, value) => {
         rootMetadata[key] = value;
       });
-
       parser.on('error', reject);
-
-      parser.on('complete', (result) => {
-        // `finish()` parses the fully-buffered content and emits it here. The
-        // parsed result is the authoritative lockfile — resolve IT, not the empty
-        // skeleton (the old code ignored `result` and resolved `{packages:{}}`,
-        // making every downstream check pass on nothing). Any packages/metadata
-        // collected via the (currently no-op) incremental events are layered on so
-        // this never regresses to an empty result.
-        const parsed = (result && typeof result === 'object') ? result : {};
-        // The parsed result is authoritative. Layer in anything the (currently
-        // no-op) incremental events collected WITHOUT injecting empty skeleton
-        // keys — a v3 file must not gain a spurious `dependencies: {}`, nor a v1
-        // file a spurious `packages: {}`, which a write-back would then persist.
-        const merged = { ...parsed };
-        for (const [k, v] of Object.entries(rootMetadata)) {
-          if (!(k in merged)) merged[k] = v;
-        }
-        if (Object.keys(lockfile.packages).length > 0) {
-          merged.packages = { ...(parsed.packages || {}), ...lockfile.packages };
-        }
-        resolve(merged);
-      });
+      parser.on('complete', (result) => resolve(assembleStreamResult(result, lockfile, rootMetadata)));
 
       const stream = fs.createReadStream(filePath, {
         encoding: 'utf8',

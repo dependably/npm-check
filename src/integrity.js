@@ -177,55 +177,71 @@ function collectJsonBody(res, url, maxBytes, settle) {
  * can keep resetting the idle timer forever — issue #12), plus a response-stream
  * error handler.
  */
+function buildRequestHeaders(payload, accept) {
+  if (payload !== null) {
+    return {
+      'Content-Type': 'application/json',
+      'Accept': accept || 'application/json',
+      'Content-Length': Buffer.byteLength(payload)
+    };
+  }
+  // GET with an explicit Accept (e.g. the abbreviated-packument media type).
+  return accept ? { 'Accept': accept } : undefined;
+}
+
+// Handle a same-host redirect. Returns true if the response WAS a redirect (and
+// has been dealt with — followed, or rejected for an invalid/cross-host target),
+// false if it wasn't a redirect and normal status handling should proceed.
+function handleRedirect(res, { url, redirectsLeft, settle, followRedirect }) {
+  const isRedirect = res.statusCode >= 300 && res.statusCode < 400 && res.headers.location && redirectsLeft > 0;
+  if (!isRedirect) return false;
+  res.resume();
+  let target;
+  try {
+    target = new URL(res.headers.location, url);
+  } catch {
+    settle.reject(new Error(`Invalid redirect location "${res.headers.location}" for ${url}`));
+    return true;
+  }
+  // Only follow a redirect to the SAME host — a security check must not be
+  // bounced to an arbitrary attacker-controlled origin for its answer.
+  if (target.host !== new URL(url).host) {
+    settle.reject(new Error(`refusing cross-host redirect to ${target.host} for ${url}`));
+    return true;
+  }
+  followRedirect(target.toString(), redirectsLeft - 1).then(settle.resolve, settle.reject);
+  return true;
+}
+
+// Classify a registry response: follow redirects, resolve null on 404, reject on
+// other non-200s, else collect + parse the JSON body.
+function handleRegistryResponse(res, ctx) {
+  const { url, maxBytes, settle } = ctx;
+  if (handleRedirect(res, ctx)) return;
+  if (res.statusCode === 404) {
+    res.resume();
+    settle.resolve(null);
+    return;
+  }
+  if (res.statusCode !== 200) {
+    res.resume();
+    settle.reject(new Error(`Registry responded with status ${res.statusCode} for ${url}`));
+    return;
+  }
+  collectJsonBody(res, url, maxBytes, settle);
+}
+
 function requestJson({ url, method, payload, timeoutMs, redirectsLeft, maxBytes, deadlineMs, accept, followRedirect }) {
   return new Promise((resolve, reject) => {
     const settle = onceSettlers(resolve, reject);
     const requestOptions = { method };
-    if (payload !== null) {
-      requestOptions.headers = {
-        'Content-Type': 'application/json',
-        'Accept': accept || 'application/json',
-        'Content-Length': Buffer.byteLength(payload)
-      };
-    } else if (accept) {
-      // GET with an explicit Accept (e.g. the abbreviated-packument media type).
-      requestOptions.headers = { 'Accept': accept };
-    }
-    const handleResponse = (res) => {
-      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location && redirectsLeft > 0) {
-        res.resume();
-        let target;
-        try {
-          target = new URL(res.headers.location, url);
-        } catch {
-          settle.reject(new Error(`Invalid redirect location "${res.headers.location}" for ${url}`));
-          return;
-        }
-        // Only follow a redirect to the SAME host — a security check must not be
-        // bounced to an arbitrary attacker-controlled origin for its answer.
-        if (target.host !== new URL(url).host) {
-          settle.reject(new Error(`refusing cross-host redirect to ${target.host} for ${url}`));
-          return;
-        }
-        followRedirect(target.toString(), redirectsLeft - 1).then(settle.resolve, settle.reject);
-        return;
-      }
-      if (res.statusCode === 404) {
-        res.resume();
-        settle.resolve(null);
-        return;
-      }
-      if (res.statusCode !== 200) {
-        res.resume();
-        settle.reject(new Error(`Registry responded with status ${res.statusCode} for ${url}`));
-        return;
-      }
-      collectJsonBody(res, url, maxBytes, settle);
-    };
+    const headers = buildRequestHeaders(payload, accept);
+    if (headers) requestOptions.headers = headers;
+    const ctx = { url, redirectsLeft, maxBytes, settle, followRedirect };
 
     let req;
     try {
-      req = transportFor(url).request(url, requestOptions, handleResponse);
+      req = transportFor(url).request(url, requestOptions, (res) => handleRegistryResponse(res, ctx));
     } catch (e) {
       settle.reject(e);
       return;

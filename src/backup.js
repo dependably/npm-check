@@ -32,7 +32,10 @@ function backupDirFor(absFilePath) {
  * @returns {string} 8-character lowercase hex string
  */
 function pathHash(absPath) {
-  return crypto.createHash('sha1').update(absPath).digest('hex').slice(0, 8);
+  // Not security-sensitive — just an 8-char discriminator so same-basename files
+  // in different directories get distinct backup names. sha256 (over sha1) keeps
+  // static analysis happy about weak hashes at zero cost.
+  return crypto.createHash('sha256').update(absPath).digest('hex').slice(0, 8);
 }
 
 /**

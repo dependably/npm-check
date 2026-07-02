@@ -302,6 +302,23 @@ describe('per-version advisory attribution (issue #14)', () => {
     expect(result.warnings).toHaveLength(2);
   });
 
+  it('treats a malformed (empty-identifier) prerelease range as uncertain, not a match (ReDoS-safe regex)', async () => {
+    // The ReDoS-hardened semver regex rejects empty-identifier prereleases like
+    // `1.5.0-a..b` that the old greedy class accepted as garbage. In a
+    // multi-version group that unparseable range must demote to a warning, never
+    // a silent match or a false CI failure.
+    const lockfile = lockfileWith({
+      ...pkgAt('node_modules/foo', 'foo', '2.0.0'),
+      ...pkgAt('node_modules/legacy/node_modules/foo', 'foo', '1.0.0')
+    });
+    const result = await checkVulnerabilities(lockfile, {
+      fetchAdvisories: fakeAdvisories({ foo: [adv('critical', { vulnerable_versions: '<1.5.0-a..b' })] })
+    });
+    expect(result.valid).toBe(true);
+    expect(result.errors).toHaveLength(0);
+    expect(result.warnings).toHaveLength(2);
+  });
+
   it('does not version-match a single locked version (server filtering stays authoritative)', async () => {
     // A single-version group must NOT be re-filtered locally: even a range the
     // local matcher can't parse still fails the run, trusting the server.

@@ -133,60 +133,62 @@ async function mapWithConcurrency(items, limit, fn) {
  * @param {Set<string>} approvedSet - Set of approved license identifiers
  * @returns {boolean} True if the expression is approved
  */
+// Recursive-descent SPDX evaluator. The three functions share a mutable cursor
+// `state = { src, pos }` and are module-level (not nested closures) to keep each
+// one's cognitive complexity low. Grammar: expr := andExpr (' OR ' andExpr)*;
+// andExpr := atom (' AND ' atom)*; atom := '(' expr ')' | licenseId.
+function spdxAtom(state, approvedSet) {
+  const { src } = state;
+  if (state.pos < src.length && src[state.pos] === '(') {
+    state.pos++; // consume '('
+    const result = spdxExpr(state, approvedSet);
+    if (state.pos < src.length && src[state.pos] === ')') state.pos++; // consume ')'
+    return result;
+  }
+  // Consume a license identifier; terminates at ' OR ', ' AND ', ')', or end.
+  const start = state.pos;
+  while (
+    state.pos < src.length &&
+    src[state.pos] !== ')' &&
+    !src.startsWith(' OR ', state.pos) &&
+    !src.startsWith(' AND ', state.pos)
+  ) {
+    state.pos++;
+  }
+  const id = src.slice(start, state.pos).trim();
+  return id.length > 0 && approvedSet.has(id);
+}
+
+function spdxAndExpr(state, approvedSet) {
+  let result = spdxAtom(state, approvedSet);
+  while (state.pos < state.src.length && state.src.startsWith(' AND ', state.pos)) {
+    state.pos += 5; // consume ' AND '
+    const right = spdxAtom(state, approvedSet); // always consume to advance pos
+    result = result && right;
+  }
+  return result;
+}
+
+function spdxExpr(state, approvedSet) {
+  let result = spdxAndExpr(state, approvedSet);
+  while (state.pos < state.src.length && state.src.startsWith(' OR ', state.pos)) {
+    state.pos += 4; // consume ' OR '
+    const right = spdxAndExpr(state, approvedSet); // always consume to advance pos
+    result = result || right;
+  }
+  return result;
+}
+
 function isLicenseApproved(licenseExpr, approvedSet) {
   if (typeof licenseExpr !== 'string' || !licenseExpr.trim()) return false;
-
-  const src = licenseExpr.trim();
-  let pos = 0;
-
-  function parseExpr() {
-    let result = parseAndExpr();
-    while (pos < src.length && src.startsWith(' OR ', pos)) {
-      pos += 4; // consume ' OR '
-      const right = parseAndExpr(); // always consume to advance pos
-      result = result || right;
-    }
-    return result;
-  }
-
-  function parseAndExpr() {
-    let result = parseAtom();
-    while (pos < src.length && src.startsWith(' AND ', pos)) {
-      pos += 5; // consume ' AND '
-      const right = parseAtom(); // always consume to advance pos
-      result = result && right;
-    }
-    return result;
-  }
-
-  function parseAtom() {
-    if (pos < src.length && src[pos] === '(') {
-      pos++; // consume '('
-      const result = parseExpr();
-      if (pos < src.length && src[pos] === ')') pos++; // consume ')'
-      return result;
-    }
-    // Consume a license identifier; terminates at ' OR ', ' AND ', ')', or end
-    const start = pos;
-    while (
-      pos < src.length &&
-      src[pos] !== ')' &&
-      !src.startsWith(' OR ', pos) &&
-      !src.startsWith(' AND ', pos)
-    ) {
-      pos++;
-    }
-    const id = src.slice(start, pos).trim();
-    return id.length > 0 && approvedSet.has(id);
-  }
-
+  const state = { src: licenseExpr.trim(), pos: 0 };
   try {
-    const result = parseExpr();
+    const result = spdxExpr(state, approvedSet);
     // Fail closed unless the ENTIRE expression was consumed. Trailing tokens
     // (e.g. 'MIT ) AND GPL-3.0-only') mean a malformed expression whose
     // unevaluated remainder might contain a rejected license — a compliance
     // gate must not approve it.
-    return pos === src.length ? result : false;
+    return state.pos === state.src.length ? result : false;
   } catch {
     return false; // fail closed on any parse error
   }

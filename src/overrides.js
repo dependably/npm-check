@@ -42,6 +42,15 @@ function overrideName(key) {
  *   container - the object holding the leaf (so a caller can rewrite in place)
  *   key       - the leaf's key within `container`
  */
+// Build the leaf descriptor for a non-object override value, or null when the
+// leaf should be skipped: a "$name" reference (points at a direct dep's version,
+// not a range) or a stray "." with no parent (malformed).
+function overrideLeaf(container, key, value, name, path) {
+  if (typeof value === 'string' && value.startsWith('$')) return null;
+  if (name == null) return null;
+  return { path, name, range: value, container, key };
+}
+
 export function* walkOverrides(overrides, opts = {}) {
   if (!overrides || typeof overrides !== 'object' || Array.isArray(overrides)) return;
   const { parentName = null, path = '' } = opts;
@@ -55,12 +64,8 @@ export function* walkOverrides(overrides, opts = {}) {
       // Nested override object: the "." inside it refers to THIS key's package.
       yield* walkOverrides(value, { parentName: name, path: here });
     } else {
-      // Leaf value: a range string, or a malformed non-string (number/null/array).
-      // "$name" is a reference to a direct dep's version, not a range — skip it.
-      if (typeof value === 'string' && value.startsWith('$')) continue;
-      // A stray "." at the top level (no parent) is malformed — skip it.
-      if (name == null) continue;
-      yield { path: here, name, range: value, container: overrides, key };
+      const leaf = overrideLeaf(overrides, key, value, name, here);
+      if (leaf) yield leaf;
     }
   }
 }

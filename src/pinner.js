@@ -118,27 +118,31 @@ function pinDependency(ctx, deps, section, name, range) {
  * @param {boolean} hasPackages - v2/v3 (packages map) vs v1 (dependencies tree)
  * @returns {Set<string>} Distinct resolved versions
  */
-function collectResolvedVersions(lockfile, name, hasPackages) {
+function versionsFromPackagesMap(packages, name) {
   const versions = new Set();
-  if (hasPackages) {
-    const suffix = `node_modules/${name}`;
-    for (const [key, entry] of Object.entries(lockfile.packages || {})) {
-      if ((key === suffix || key.endsWith(`/${suffix}`)) && entry && entry.version) {
-        versions.add(entry.version);
-      }
+  const suffix = `node_modules/${name}`;
+  for (const [key, entry] of Object.entries(packages || {})) {
+    if ((key === suffix || key.endsWith(`/${suffix}`)) && entry && entry.version) {
+      versions.add(entry.version);
     }
-  } else {
-    const walk = (tree) => {
-      if (!tree || typeof tree !== 'object') return;
-      for (const [depName, node] of Object.entries(tree)) {
-        if (!node || typeof node !== 'object') continue;
-        if (depName === name && node.version) versions.add(node.version);
-        if (node.dependencies) walk(node.dependencies);
-      }
-    };
-    walk(lockfile.dependencies);
   }
   return versions;
+}
+
+function versionsFromV1Tree(tree, name, versions = new Set()) {
+  if (!tree || typeof tree !== 'object') return versions;
+  for (const [depName, node] of Object.entries(tree)) {
+    if (!node || typeof node !== 'object') continue;
+    if (depName === name && node.version) versions.add(node.version);
+    if (node.dependencies) versionsFromV1Tree(node.dependencies, name, versions);
+  }
+  return versions;
+}
+
+function collectResolvedVersions(lockfile, name, hasPackages) {
+  return hasPackages
+    ? versionsFromPackagesMap(lockfile.packages, name)
+    : versionsFromV1Tree(lockfile.dependencies, name);
 }
 
 /**

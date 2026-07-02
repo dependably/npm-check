@@ -55,8 +55,14 @@ function normalizeSeverity(severity) {
 // locked version against that range WITHOUT pulling in a `semver` dependency.
 // Anything outside this comparator grammar (^, ~, x-ranges) is treated as
 // "unparseable" → the caller stays conservative rather than guessing.
-const SEMVER_RE = /^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/;
-const COMPARATOR_RE = /(<=|>=|<|>|=)?\s*v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?/g;
+// Prerelease/build are dot-separated identifiers. Matching them as
+// `identifier(?:\.identifier)*` — where the `.` separator is NOT in the
+// identifier class — is linear and free of the backtracking ambiguity a single
+// `[0-9A-Za-z.-]+` greedy class invites (and it's the correct semver grammar:
+// identifiers can't be empty).
+const IDENT = '[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*';
+const SEMVER_RE = new RegExp(`^v?(\\d+)\\.(\\d+)\\.(\\d+)(?:-(${IDENT}))?(?:\\+${IDENT})?$`);
+const COMPARATOR_RE = new RegExp(`(<=|>=|<|>|=)?\\s*v?(\\d+)\\.(\\d+)\\.(\\d+)(?:-(${IDENT}))?(?:\\+${IDENT})?`, 'g');
 
 function parseSemver(v) {
   if (typeof v !== 'string') return null;
