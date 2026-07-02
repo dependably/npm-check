@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.7.0] - 2026-07-02
+
 ### Added
 - **`overrides` support across pin / audit / validate.** A floating `^`/`~` in the package.json `overrides` field was previously invisible — neither flagged nor pinned — silently defeating an otherwise fully-pinned manifest. Now:
   - `npm-check pin` rewrites caret/tilde ranges in npm `overrides` (nested `.`/child form) to their lockfile-resolved versions, pinning only when the name resolves to a single version tree-wide (a name present at multiple versions is skipped `ambiguous-resolution` rather than mis-pinned). `$`-references are left alone; `pnpm.overrides` is flagged but not auto-pinned (pin refuses pnpm lockfiles).
@@ -19,6 +21,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - CI: all GitHub Actions `uses:` steps are pinned by commit SHA (supply-chain hardening); added an `exports` map and `publishConfig.access: "public"` to package.json.
+- Internal refactors to clear static-analysis complexity warnings (extract-method only, no behavior change).
+
+### Security
+- Hardened the `vuln` semver range matcher's regex against super-linear (ReDoS) backtracking by switching to the canonical dot-separated-identifier grammar; unparseable/malformed ranges stay conservative (a warning, never a false-clean).
 
 ## [1.6.1] - 2026-06-22
 
