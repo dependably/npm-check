@@ -16,10 +16,17 @@ const LOCK_PATH = path.join(FIXTURE, 'pnpm-lock.yaml');
 const codes = (arr) => arr.map((x) => x.code);
 
 describe('validateNpmrc (pnpm flavor)', () => {
-  test('flags a non-auth setting pnpm ignores in .npmrc', () => {
-    const r = validateNpmrc('node-linker=hoisted\n', { flavor: 'pnpm' });
+  test('flags an npm-only setting pnpm genuinely ignores in .npmrc', () => {
+    // `package-lock` is npm's lockfile toggle; pnpm uses `lockfile` and drops it.
+    const r = validateNpmrc('package-lock=false\n', { flavor: 'pnpm' });
     expect(r.valid).toBe(true); // warning, not error
     expect(codes(r.warnings)).toContain('NPMRC_PNPM_IGNORED');
+  });
+
+  test('does NOT flag install settings pnpm honors (node-linker, hoisting, peer)', () => {
+    // regression #6: pnpm 7-10 read these from .npmrc — they must not be flagged.
+    const r = validateNpmrc('node-linker=hoisted\nshamefully-hoist=true\nstrict-peer-dependencies=false\n', { flavor: 'pnpm' });
+    expect(codes(r.warnings)).not.toContain('NPMRC_PNPM_IGNORED');
   });
 
   test('does NOT flag registry/auth keys pnpm honors', () => {
@@ -101,10 +108,10 @@ describe('runAudit flavor gating', () => {
     expect(ruleIds.has('lockfile-version')).toBe(false);
     expect(ruleIds.has('secure-resolved')).toBe(false);
     expect(ruleIds.has('no-orphan-packages')).toBe(false);
-    // .npmrc has node-linker=hoisted → pnpm-ignored warning surfaces via valid-npmrc
+    // .npmrc has package-lock=false → pnpm-ignored warning surfaces via valid-npmrc
     const npmrcFinding = report.findings.find((f) => f.ruleId === 'valid-npmrc');
     expect(npmrcFinding).toBeTruthy();
-    expect(npmrcFinding.message).toMatch(/pnpm ignores/);
+    expect(npmrcFinding.message).toMatch(/not honored by pnpm/);
   });
 
   test('npm lockfile does NOT run pnpm rules', () => {
