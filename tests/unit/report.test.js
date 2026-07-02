@@ -193,6 +193,21 @@ describe('runReport', () => {
     expect(vuln.findings.some((f) => /Prototype pollution/.test(f.message))).toBe(true);
   });
 
+  it('runs the Pinned versions section for a pnpm lockfile (not N/A) and flags pnpm.overrides', async () => {
+    // pinned-versions is npm+pnpm flavored, so on a pnpm lockfile the section must
+    // be LIVE — not rendered "N/A (pnpm)" while still carrying/counting findings.
+    const pnpmLock = { lockfileVersion: '9.0', importers: { '.': {} } };
+    const packageJson = { name: 'p', version: '1.0.0', license: 'MIT', pnpm: { overrides: { 'foo@1': '^1.2.0' } } };
+    const report = await runReport(
+      { lockfile: pnpmLock, packageJson, filePath: 'pnpm-lock.yaml' },
+      baseOpts()
+    );
+    const pinned = report.sections.find((s) => s.id === 'pinned');
+    expect(pinned.status).not.toBe('skip');
+    expect(pinned.summary).not.toMatch(/N\/A/);
+    expect(pinned.findings.some((f) => /not pinned/.test(f.message))).toBe(true);
+  });
+
   it('surfaces an id-LESS critical advisory instead of silently passing (fail-open regression)', async () => {
     // The vuln envelope was fixed to discriminate on `reason`, but report.js still
     // dropped advisories with no `id` (the check gated on advisoryId), so an
