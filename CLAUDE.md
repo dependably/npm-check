@@ -518,4 +518,4 @@ This project aims to be the definitive solution for package-lock.json management
 
 ## License
 
-MIT
+Apache-2.0
