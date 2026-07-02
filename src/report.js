@@ -509,7 +509,7 @@ const DEFAULT_PASS_SUMMARY = {
   fund: 'suppressed'
 };
 
-const ICON = { pass: '✔', warn: '⚠', error: '✖', skip: '·' };
+const ICON = { pass: ' ', warn: ' ', error: ' ', skip: '·' };
 
 // Map each report section to a shared-schema `category`. The lockfile-hygiene
 // audit sections fold into `lint`; policy-ish sections into `policy`; the scan
@@ -647,7 +647,7 @@ function renderSectionDetail(s) {
   const shown = s.findings.slice(0, MAX_DETAIL);
   for (const f of shown) {
     const loc = f.location ? `${f.location}  ` : '';
-    lines.push(`  ${ICON[f.severity] || '·'}  ${loc}${f.message}`);
+    lines.push(`  ${ICON[f.severity] || ' '}  ${loc}${f.message}`);
   }
   if (s.findings.length > shown.length) {
     lines.push(`  …and ${s.findings.length - shown.length} more`);
@@ -657,7 +657,7 @@ function renderSectionDetail(s) {
 
 // Closing totals line: an all-clear, or an error/warning count.
 function renderFooter({ errors, warnings, total }) {
-  if (total === 0) return '✔ all checks passed';
+  if (total === 0) return 'all checks passed';
   const word = total === 1 ? 'problem' : 'problems';
-  return `✖ ${total} ${word} (${errors} error${errors === 1 ? '' : 's'}, ${warnings} warning${warnings === 1 ? '' : 's'})`;
+  return `${total} ${word} (${errors} error${errors === 1 ? '' : 's'}, ${warnings} warning${warnings === 1 ? '' : 's'})`;
 }

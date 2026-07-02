@@ -585,7 +585,7 @@ describe('formatAuditReport', () => {
     expect(output).toContain('error');
     expect(output).toContain('lockfile-version');
     expect(output).toContain('pinned-versions');
-    expect(output).toMatch(/✖ \d+ problems \(\d+ errors?, \d+ warnings?\)/);
+    expect(output).toMatch(/\d+ problems \(\d+ errors?, \d+ warnings?\)/);
   });
 
   it('emits machine-readable JSON', () => {

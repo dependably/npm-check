@@ -8,7 +8,7 @@ The npm-check now includes specialized performance utilities for handling large 
 
 1. **Memory optimization** through shallow copying and lazy evaluation
 2. **Batch processing** with automatic garbage collection yielding
-3. **Efficient deduplication** using Map-based lookups (O(1) instead of O(n))
+3. **Duplicate analysis** using Map-based lookups (O(1) instead of O(n))
 4. **Chunking support** for parallel processing or streaming
 5. **Performance profiling** utilities for monitoring memory usage
 
@@ -30,7 +30,7 @@ import {
   mergeLockfileChunks,
   estimateLockfileSize,
   isLargeLockfile
-} from 'npm-check';
+} from '@dependably/npm-check';
 ```
 
 #### Shallow Copying
@@ -87,34 +87,40 @@ if (isLargeLockfile(lockfile, 10)) { // 10MB threshold
 }
 ```
 
-### Optimized Updater Module (`src/updater.js`)
+### Updater utilities (`src/updater.js`)
 
 High-level operations using performance utilities:
 
 ```javascript
 import {
-  upgradeIntegrityHashesOptimized,
-  deduplicatePackagesOptimized,
+  upgradeIntegrityHashes,
+  deduplicatePackages,
   findPackagesMatching,
   countUniquePackages,
   findDuplicatePackages
-} from 'npm-check';
+} from '@dependably/npm-check';
 ```
 
 #### Optimized Hash Upgrade
 ```javascript
 // Memory-efficient: processes packages once, uses shallow copies
-const result = upgradeIntegrityHashesOptimized(lockfile, {
+const result = upgradeIntegrityHashes(lockfile, {
   all: false  // only upgrade sha1 hashes
 });
 ```
 
-#### Optimized Deduplication
+#### Duplicate analysis
+
+`findDuplicatePackages` reports `name -> [{path, version}, ...]` across the tree
+using a Map (O(1) lookups instead of nested scans). Note: `deduplicatePackages`
+is **preserve-only** for the v2/v3 packages map — it never drops path-keyed
+entries (npm's real dedupe is tree hoisting, which needs full re-resolution).
+
 ```javascript
-// Uses Map-based deduplication for 50%+ faster performance
-const dedupedLockfile = deduplicatePackagesOptimized(lockfile, {
-  keepLatest: true
-});
+const duplicates = findDuplicatePackages(lockfile);
+for (const [name, versions] of duplicates) {
+  console.log(`${name} has ${versions.length} versions`);
+}
 ```
 
 #### Package Matching
@@ -139,24 +145,21 @@ for (const [name, versions] of duplicates) {
 
 ## Performance Characteristics
 
-### Memory Usage Comparison
+There is no benchmark harness in this repository, so no absolute numbers are
+claimed here. The wins come from the algorithmic shape of the optimized paths:
 
-For a 50MB lockfile with 10,000 packages:
-
-| Operation | Standard | Optimized | Improvement |
-|-----------|----------|-----------|-------------|
-| Shallow Copy | ~150MB peak | ~10MB peak | 15x less |
-| Deduplication | ~180MB peak | ~50MB peak | 3.6x less |
-| Hash Upgrade | ~160MB peak | ~40MB peak | 4x less |
-| Filtering | ~140MB peak | ~20MB peak | 7x less |
-
-### Speed Comparison
-
-| Operation | Standard | Optimized |
-|-----------|----------|-----------|
-| Deduplicate (10k packages) | 250ms | 50ms |
-| Find Duplicates (10k packages) | 180ms | 30ms |
-| Upgrade Hashes (10k packages) | 200ms | 45ms |
+- **Shallow copying** duplicates only the top-level structure instead of deep
+  cloning every package entry, so peak memory scales with the number of
+  *modified* entries rather than the whole lockfile.
+- **Map-based deduplication** replaces nested object scans with O(1)
+  `name#version` key lookups, turning an O(n²)-shaped pass into O(n).
+- **Batch processing** yields to the event loop between batches
+  (`setImmediate`), letting garbage collection reclaim memory mid-run instead
+  of accumulating a single giant working set.
+- **Lazy filtering** creates entries only for matches, never copying the
+  unmatched majority.
+- **Chunking** bounds the working set per chunk, so very large lockfiles can be
+  processed (or parallelized) without ever holding a second full copy.
 
 ## Usage Examples
 
@@ -166,8 +169,8 @@ For a 50MB lockfile with 10,000 packages:
 import {
   isLargeLockfile,
   processBatchedPackages,
-  upgradeIntegrityHashesOptimized
-} from 'npm-check';
+  upgradeIntegrityHashes
+} from '@dependably/npm-check';
 import fs from 'fs';
 
 const lockfile = JSON.parse(fs.readFileSync('package-lock.json', 'utf8'));
@@ -176,7 +179,7 @@ if (isLargeLockfile(lockfile, 10)) {
   console.log('Large lockfile detected, using optimized functions...');
 
   // Use batch processing to avoid memory spikes
-  const upgraded = upgradeIntegrityHashesOptimized(lockfile);
+  const upgraded = upgradeIntegrityHashes(lockfile);
   fs.writeFileSync('package-lock.json', JSON.stringify(upgraded, null, 2));
 }
 ```
@@ -184,7 +187,7 @@ if (isLargeLockfile(lockfile, 10)) {
 ### Example 2: Find and Report Duplicates
 
 ```javascript
-import { findDuplicatePackages, countUniquePackages } from 'npm-check';
+import { findDuplicatePackages, countUniquePackages } from '@dependably/npm-check';
 
 const lockfile = JSON.parse(fs.readFileSync('package-lock.json', 'utf8'));
 const uniqueCount = countUniquePackages(lockfile);
@@ -204,7 +207,7 @@ for (const [name, versions] of duplicates) {
 ### Example 3: Process in Chunks for Parallel Operations
 
 ```javascript
-import { chunkLockfile, mergeLockfileChunks } from 'npm-check';
+import { chunkLockfile, mergeLockfileChunks } from '@dependably/npm-check';
 
 const lockfile = JSON.parse(fs.readFileSync('package-lock.json', 'utf8'));
 const chunks = chunkLockfile(lockfile, 1000); // 1000 packages per chunk
@@ -222,7 +225,7 @@ console.log(`Processed ${Object.keys(merged.packages).length} packages`);
 ### Example 4: Memory Monitoring During Operations
 
 ```javascript
-import { getMemoryStats, processBatchedPackages } from 'npm-check';
+import { getMemoryStats, processBatchedPackages } from '@dependably/npm-check';
 
 const lockfile = JSON.parse(fs.readFileSync('package-lock.json', 'utf8'));
 
@@ -241,10 +244,10 @@ console.log('After processing:', getMemoryStats());
    - Default threshold is 10MB, adjust as needed
    - Avoids unnecessary overhead for small lockfiles
 
-2. **Prefer optimized functions for large files**
-   - `upgradeIntegrityHashesOptimized` vs `upgradeIntegrityHashes`
-   - `deduplicatePackagesOptimized` vs `deduplicatePackages`
-   - 2-15x memory savings depending on operation
+2. **Use the parallel variants for very large files**
+   - `parallelUpgradeIntegrityHashes` vs `upgradeIntegrityHashes`
+   - `parallelDeduplicatePackages` vs `deduplicatePackages`
+   - Distributes work across CPU cores; avoids deep-cloning the whole lockfile per operation
 
 3. **Use batch processing for streaming scenarios**
    - Allows garbage collection between batches
@@ -261,24 +264,13 @@ console.log('After processing:', getMemoryStats());
 
 ## Internal Implementation Notes
 
-- **Shallow copies**: Copy structure, not data; reduces memory by 10-15x
+- **Shallow copies**: Copy structure, not data — avoids a full deep clone
 - **Batch processing**: Uses `setImmediate` to yield control, allowing GC
-- **Map-based deduplication**: O(1) lookups instead of nested object searches
+- **Map-based duplicate analysis**: O(1) lookups instead of nested object searches
 - **Lazy filtering**: Doesn't copy unmatched packages, only creates entries for matches
 - **Memory stats**: Uses Node.js `process.memoryUsage()`, values in MB
 
 ## Testing
 
-All performance utilities include comprehensive tests:
-- `tests/performance.test.js`: 30+ tests for core utilities
-- `tests/updater.test.js`: 20+ tests for optimized operations
-
-Run tests with: `npm test`
-
-## Future Improvements
-
-Planned optimizations for future releases:
-1. Streaming JSON parser (parse without full file in memory)
-2. Parallel processing API for CPU-bound operations
-3. Progress reporting for long-running operations
-4. Benchmarking suite for performance comparison
+Performance utilities are covered by `tests/unit/performance.test.js` and
+`tests/unit/updater.test.js`. Run with `npm test`.

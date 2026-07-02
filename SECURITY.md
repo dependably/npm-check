@@ -8,8 +8,8 @@ fixes. Older minor versions are not maintained — please upgrade to the latest
 
 | Version | Supported |
 | ------- | --------- |
-| latest `1.x` | ✅ |
-| < latest | ❌ |
+| latest `1.x` | Yes |
+| < latest | No |
 
 ## Reporting a vulnerability
 

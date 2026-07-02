@@ -1,55 +1,8 @@
 version: '3.8'
 
+# Local reproduction of the CI Node matrix (the package supports Node >= 22).
 services:
-  # Node 18 with npm 9
-  test-node18-npm9:
-    build:
-      context: ../../..
-      dockerfile: tests/integration/docker/Dockerfile
-      args:
-        NODE_VERSION: 18
-        NPM_VERSION: 9
-    volumes:
-      - ../../../src:/workspace/src:ro
-      - ../../../tests:/workspace/tests:ro
-      - test-cache-18-9:/root/.npm
-    environment:
-      - NODE_ENV=test
-      - CI=true
-
-  # Node 18 with npm 10
-  test-node18-npm10:
-    build:
-      context: ../../..
-      dockerfile: tests/integration/docker/Dockerfile
-      args:
-        NODE_VERSION: 18
-        NPM_VERSION: 10
-    volumes:
-      - ../../../src:/workspace/src:ro
-      - ../../../tests:/workspace/tests:ro
-      - test-cache-18-10:/root/.npm
-    environment:
-      - NODE_ENV=test
-      - CI=true
-
-  # Node 20 with npm 10
-  test-node20-npm10:
-    build:
-      context: ../../..
-      dockerfile: tests/integration/docker/Dockerfile
-      args:
-        NODE_VERSION: 20
-        NPM_VERSION: 10
-    volumes:
-      - ../../../src:/workspace/src:ro
-      - ../../../tests:/workspace/tests:ro
-      - test-cache-20-10:/root/.npm
-    environment:
-      - NODE_ENV=test
-      - CI=true
-
-  # Node 22 with npm 10
+  # Node 22 with npm 10 (minimum supported)
   test-node22-npm10:
     build:
       context: ../../..
@@ -65,8 +18,22 @@ services:
       - NODE_ENV=test
       - CI=true
 
+  # Node 24 with npm 11 (current)
+  test-node24-npm11:
+    build:
+      context: ../../..
+      dockerfile: tests/integration/docker/Dockerfile
+      args:
+        NODE_VERSION: 24
+        NPM_VERSION: 11
+    volumes:
+      - ../../../src:/workspace/src:ro
+      - ../../../tests:/workspace/tests:ro
+      - test-cache-24-11:/root/.npm
+    environment:
+      - NODE_ENV=test
+      - CI=true
+
 volumes:
-  test-cache-18-9:
-  test-cache-18-10:
-  test-cache-20-10:
   test-cache-22-10:
+  test-cache-24-11:

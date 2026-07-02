@@ -19,9 +19,6 @@ Package-lock.json files can become problematic in several ways:
 
 Manual fixes are error prone and time consuming. This tool automates detection, validation, repair, and migration of lockfiles.
 
-## Project Plan
-refer to project_plan.txt for project outline and todo items. Keep tproject_plan.txt up to date when items are completed and contribute to the file if more todo items are needed.
-
 ## Core Components
 
 ### 1. Format Library (`format-library.js`)
@@ -48,8 +45,7 @@ Defines comprehensive schemas and specifications for all three lockfile versions
 
 **Key Functions:**
 - `detectLockfileVersion()` - Identifies lockfile format
-- `getSchemaForVersion()` - Returns validation schema
-- `parsePackagePath()` / `buildPackagePath()` - Path manipulation utilities
+- `detectLockfileFlavor()` - npm vs pnpm
 - `forEachPackageEntry()` - Iterates the packages map, classifying each entry (root, workspace, link, bundled, git, file)
 - `resolvePackageName()` - Real package name for an entry (handles npm: aliases and scopes)
 
@@ -113,8 +109,8 @@ Handles format conversion between all lockfile versions:
 
 **Additional Utilities:**
 - `upgradeIntegrityHashes()` - Convert SHA1 to SHA512
-- `deduplicatePackages()` - Remove redundant package entries
-- `normalizeToV2()` - Standardize to transition format
+- `deduplicatePackages()` - Preserve-only for the v2/v3 packages map (never drops path-keyed entries); reports what real hoisting would need. See the Fixer note below.
+- `findDuplicatePackages()` / `countUniquePackages()` - Identify duplicate name@versions and count unique packages
 
 **Migration Safety:**
 - Validates source format before migration
@@ -130,10 +126,7 @@ Handles format conversion between all lockfile versions:
 import { validatePackageLock } from './validator.js';
 
 const lockfile = JSON.parse(fs.readFileSync('package-lock.json'));
-const result = validatePackageLock(lockfile, {
-  strictMode: false,
-  checkIntegrity: true
-});
+const result = validatePackageLock(lockfile);
 
 if (!result.valid) {
   console.error('Validation errors:', result.errors);
@@ -154,12 +147,12 @@ fs.writeFileSync('package-lock.json', JSON.stringify(newLockfile, null, 2));
 ### Validation Against package.json
 
 ```javascript
-import { validateWithPackageJson } from './validator.js';
+import { validatePackageLock } from './validator.js';
 
 const lockfile = JSON.parse(fs.readFileSync('package-lock.json'));
 const packageJson = JSON.parse(fs.readFileSync('package.json'));
 
-const result = validateWithPackageJson(lockfile, packageJson);
+const result = validatePackageLock(lockfile, packageJson, { validateAgainstPackageJson: true });
 ```
 
 ### 4. Checker (`checker.js`)
@@ -414,7 +407,7 @@ The whole toolkit couples to the lockfile shape through **two seams**, both made
 ## Technical Details
 
 **Node.js Version:**
-- Requires Node.js 18.0.0 or higher
+- Requires Node.js 22.0.0 or higher (npm >= 10)
 - Uses native ES modules
 - Zero external dependencies for the npm core path; pnpm support pulls one audited YAML parser
   (`yaml`), loaded lazily (createRequire) only when a `pnpm-lock.yaml` is actually parsed — npm-only
@@ -426,7 +419,7 @@ The whole toolkit couples to the lockfile shape through **two seams**, both made
 - UTF-8 encoding standard
 
 **Performance Considerations:**
-- Streaming for large lockfiles (planned)
+- Streaming/chunked processing for large lockfiles (`streaming-parser.js`, `parallel-processor.js`)
 - In-memory operations for typical sizes
 - Efficient tree traversal algorithms
 - Minimal memory footprint
@@ -466,10 +459,10 @@ The whole toolkit couples to the lockfile shape through **two seams**, both made
 ## Installation & Usage
 
 ```bash
-npm install npm-check
+npm install @dependably/npm-check
 
 # or for global CLI usage
-npm install -g npm-check
+npm install -g @dependably/npm-check
 ```
 
 **Programmatic Usage:**
@@ -479,7 +472,7 @@ import {
   validatePackageLock,
   migrateToVersion,
   LOCKFILE_VERSIONS
-} from 'npm-check';
+} from '@dependably/npm-check';
 
 const result = validatePackageLock(lockfileData);
 const migrated = migrateToVersion(lockfileData, LOCKFILE_VERSIONS.V3);

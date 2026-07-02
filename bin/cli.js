@@ -232,7 +232,7 @@ function isPnpmLockPath(filePath) {
 // Exit 2: this is a usage error (the command was given input it cannot accept).
 function refuseIfPnpm(filePath, command) {
   if (isPnpmLockPath(filePath)) {
-    console.error(`\n❌ \`${command}\` does not support pnpm-lock.yaml.`);
+    console.error(`\n\`${command}\` does not support pnpm-lock.yaml.`);
     console.error('   pnpm lockfiles are machine-generated — regenerate with `pnpm install` instead.');
     process.exit(2);
   }
@@ -251,7 +251,7 @@ function ensureFileExists(filePath) {
 // exception (bad input, unsupported lockfile, registry/scan failure, internal bug)
 // is an operational error, distinct from a clean "findings found" run (exit 1).
 function handleError(error, context = '') {
-  console.error(`\n❌ ${context || 'Error'}:`);
+  console.error(`\n${context || 'Error'}:`);
   if (error instanceof BackupError) {
     console.error(`   Backup Error: ${error.message}`);
   } else if (error.fixes) {
@@ -291,7 +291,7 @@ function parsePositiveIntFlag(name, fallback, label, code = 2) {
   if (raw === undefined) return fallback;
   const parsed = parseInt(raw, 10);
   if (isNaN(parsed) || parsed < 1) {
-    console.error(`❌ Invalid ${label} value. Must be a positive number`);
+    console.error(`Invalid ${label} value. Must be a positive number`);
     process.exit(code);
   }
   return parsed;
@@ -302,7 +302,7 @@ function parseFormatFlag(allowed, fallback, code = 2) {
   const raw = flagValue('--format');
   if (raw === undefined) return fallback;
   if (!allowed.includes(raw)) {
-    console.error(`❌ Invalid --format value. Use: ${allowed.join(' or ')}`);
+    console.error(`Invalid --format value. Use: ${allowed.join(' or ')}`);
     process.exit(code);
   }
   return raw;
@@ -381,7 +381,7 @@ const SEVERITIES = ['info', 'low', 'moderate', 'high', 'critical'];
 // Emit a one-line deprecation notice to stderr (never stdout, so machine output
 // stays clean). Each retired flag is a thin alias that still maps onto --fail-on.
 function warnDeprecated(oldFlag, replacement) {
-  console.error(`⚠️  ${oldFlag} is deprecated; use \`${replacement}\` instead.`);
+  console.error(`${oldFlag} is deprecated; use \`${replacement}\` instead.`);
 }
 
 // Parse the unified, repeatable CI gate: `--fail-on <key>=<value>`.
@@ -394,7 +394,7 @@ function parseFailOn(code = 2) {
     if (arg !== '--fail-on') return;
     const spec = argv[i + 1];
     if (!spec || !spec.includes('=')) {
-      console.error('❌ Invalid --fail-on. Use --fail-on <key>=<value> (severity=<level> or count=<N>)');
+      console.error('Invalid --fail-on. Use --fail-on <key>=<value> (severity=<level> or count=<N>)');
       process.exit(code);
     }
     const eq = spec.indexOf('=');
@@ -402,19 +402,19 @@ function parseFailOn(code = 2) {
     const value = spec.slice(eq + 1);
     if (key === 'severity') {
       if (!SEVERITIES.includes(value)) {
-        console.error(`❌ Invalid --fail-on severity value. Use: ${SEVERITIES.join(', ')}`);
+        console.error(`Invalid --fail-on severity value. Use: ${SEVERITIES.join(', ')}`);
         process.exit(code);
       }
       out.severity = value;
     } else if (key === 'count') {
       const n = parseInt(value, 10);
       if (isNaN(n) || n < 0 || String(n) !== value.trim()) {
-        console.error('❌ Invalid --fail-on count value. Must be a non-negative integer');
+        console.error('Invalid --fail-on count value. Must be a non-negative integer');
         process.exit(code);
       }
       out.count = n;
     } else {
-      console.error(`❌ Unknown --fail-on key "${key}". Use: severity or count`);
+      console.error(`Unknown --fail-on key "${key}". Use: severity or count`);
       process.exit(code);
     }
   });
@@ -439,7 +439,7 @@ function resolveFailOnDeprecated() {
 function assertFailOnSupported(supportedKeys, commandName) {
   const failOn = parseFailOn();
   if (failOn.severity !== null && !supportedKeys.severity) {
-    console.error(`❌ --fail-on severity= is not supported by the "${commandName}" command`);
+    console.error(`--fail-on severity= is not supported by the "${commandName}" command`);
     if (supportedKeys.count === 'zero-only') {
       console.error('   Use --fail-on count=0 to fail when any deprecated package is found');
     } else if (supportedKeys.count) {
@@ -449,14 +449,14 @@ function assertFailOnSupported(supportedKeys, commandName) {
   }
   if (failOn.count !== null) {
     if (!supportedKeys.count) {
-      console.error(`❌ --fail-on count= is not supported by the "${commandName}" command`);
+      console.error(`--fail-on count= is not supported by the "${commandName}" command`);
       if (supportedKeys.severity) {
         console.error('   Use --fail-on severity=<level> to set the minimum severity threshold');
       }
       process.exit(2);
     }
     if (supportedKeys.count === 'zero-only' && failOn.count > 0) {
-      console.error(`❌ --fail-on count=${failOn.count} is not supported by the "${commandName}" command`);
+      console.error(`--fail-on count=${failOn.count} is not supported by the "${commandName}" command`);
       console.error('   Use --fail-on count=0 to fail when any deprecated package is found');
       process.exit(2);
     }
@@ -472,7 +472,7 @@ function resolveSeverityGate(fallback = 'high', code = 2) {
   const legacy = flagValue('--min-severity');
   if (legacy !== undefined) {
     if (!SEVERITIES.includes(legacy)) {
-      console.error(`❌ Invalid --min-severity value. Use: ${SEVERITIES.join(', ')}`);
+      console.error(`Invalid --min-severity value. Use: ${SEVERITIES.join(', ')}`);
       process.exit(code);
     }
     warnDeprecated('--min-severity', '--fail-on severity=<level>');
@@ -524,7 +524,7 @@ function writeJsonFile(targetPath, data, indent = 2) {
 // Guard for the report/vuln/deprecated commands: a missing lockfile is exit 2.
 function requireLockfileOrExit2(filePath, command) {
   if (!fs.existsSync(filePath)) {
-    console.error(`❌ No lockfile found at ${filePath}`);
+    console.error(`No lockfile found at ${filePath}`);
     console.error(`   Run \`npm-check ${command} <path>\` or \`npm-check --help\`.`);
     process.exit(2);
   }
@@ -541,7 +541,7 @@ function applyRuleOverrides(config) {
       const spec = argv[i + 1];
       const colonIdx = spec.indexOf(':');
       if (colonIdx === -1 || colonIdx === spec.length - 1) {
-        console.error(`❌ Invalid --rule spec "${spec}". Use --rule <id>:<severity> (error|warn|off)`);
+        console.error(`Invalid --rule spec "${spec}". Use --rule <id>:<severity> (error|warn|off)`);
         process.exit(2);
       }
       const ruleId = spec.slice(0, colonIdx);
@@ -578,7 +578,7 @@ function applyMaxWarnings(config) {
   if (raw === undefined) return;
   const parsed = parseInt(raw, 10);
   if (isNaN(parsed)) {
-    console.error('❌ Invalid --max-warnings value. Must be a number');
+    console.error('Invalid --max-warnings value. Must be a number');
     process.exit(2);
   }
   warnDeprecated('--max-warnings', '--fail-on count=<N>');
@@ -640,7 +640,7 @@ async function runReportCommand() {
     const packageJson = loadSiblingPackageJson(filePath);
 
     if ((opts.integrity || opts.vuln || opts.deprecated) && opts.format === 'human') {
-      console.error('🔎 Running all checks (querying the registry)…');
+      console.error('Running all checks (querying the registry)…');
     }
     const onProgress = opts.format === 'human' ? makeProgressReporter() : null;
 
@@ -660,7 +660,7 @@ async function runReportCommand() {
     const rendered = formatReport(report, { format: opts.format });
     console.log(opts.format === 'human' ? '\n' + rendered : rendered);
   } catch (error) {
-    console.error(`\n❌ Report error: ${error.message}`);
+    console.error(`\nReport error: ${error.message}`);
     process.exit(2);
   }
 
@@ -731,7 +731,7 @@ function runValidateCommand() {
       '.npmrc': norm(npmrcResult, 'not found (skipped)')
     };
 
-  console.log('\n📋 Validation Result:');
+  console.log('\nValidation Result:');
   console.log(JSON.stringify(out, null, 2));
 
   const valid = [lockResult, pkgResult, npmrcResult, wsResult].every((r) => !r || r.valid);
@@ -756,14 +756,14 @@ function runMigrateCommand() {
   const lockfile = parseLockfile(filePath);
   const migrated = migrateToVersion(lockfile, target);
 
-  console.log(`\n✅ Migrated lockfile to version ${target}`);
+  console.log(`\nMigrated lockfile to version ${target}`);
 
   if (hasWrite) {
     createBackup(filePath);
     fs.writeFileSync(filePath, JSON.stringify(migrated, null, 2) + '\n', 'utf8');
-    console.log(`📝 Changes written to ${filePath}`);
+    console.log(`Changes written to ${filePath}`);
   } else {
-    console.log('\n⚠️  Use --write flag to save changes');
+    console.log('\nUse --write flag to save changes');
     console.log(JSON.stringify(migrated, null, 2));
   }
 }
@@ -778,29 +778,29 @@ function runUpgradeCommand() {
   const sourceVersion = detectLockfileVersion(lockfile);
 
   if (sourceVersion === 3) {
-    console.log('\n✅ Already at version 3, nothing to do');
+    console.log('\nAlready at version 3, nothing to do');
     return;
   }
 
   const migrated = migrateToVersion(lockfile, 3);
-  console.log(`\n✅ Migrated lockfile v${sourceVersion} → v3`);
+  console.log(`\nMigrated lockfile v${sourceVersion} → v3`);
 
   if (hasWrite) {
     createBackup(filePath);
     fs.writeFileSync(filePath, JSON.stringify(migrated, null, 2) + '\n', 'utf8');
-    console.log(`📝 Changes written to ${filePath}`);
+    console.log(`Changes written to ${filePath}`);
   } else {
-    console.log('\n⚠️  Use --write flag to save changes');
+    console.log('\nUse --write flag to save changes');
   }
 }
 
 // Print the fix-checksums result summary, changes, unresolved entries and warnings.
 function printChecksumResult(result, hasWrite) {
   clearProgressLine();
-  console.log('\n✅ Checksum fix complete');
+  console.log('\nChecksum fix complete');
   console.log(`   Candidates:          ${result.summary.candidates}`);
   console.log(`   Fixed from registry: ${result.summary.fixedFromRegistry}`);
-  console.log(`   Fixed locally:       ${result.summary.fixedFromLocal}${result.summary.fixedFromLocal > 0 ? ' ⚠️  (flagged)' : ''}`);
+  console.log(`   Fixed locally:       ${result.summary.fixedFromLocal}${result.summary.fixedFromLocal > 0 ? ' (flagged)' : ''}`);
   console.log(`   Unresolved:          ${result.summary.unresolved}`);
   console.log(`   Skipped:             ${result.summary.skipped}`);
 
@@ -816,7 +816,7 @@ function printChecksumResult(result, hasWrite) {
       console.log(`     • ${item.packagePath}: ${item.reason}`);
     });
   }
-  result.warnings.forEach((warning) => console.log(`\n⚠️  ${warning}`));
+  result.warnings.forEach((warning) => console.log(`\n${warning}`));
 }
 
 async function runFixChecksumsCommand() {
@@ -830,7 +830,7 @@ async function runFixChecksumsCommand() {
   const lockfile = parseLockfile(filePath);
   const onProgress = makeProgressReporter();
 
-  console.log('🔐 Fixing integrity checksums...');
+  console.log('Fixing integrity checksums...');
   const lockfileDir = path.dirname(filePath);
   const result = await fixChecksums(lockfile, {
     onProgress, concurrency, timeoutMs, localFallback,
@@ -843,9 +843,9 @@ async function runFixChecksumsCommand() {
 
   if (hasWrite && result.changes.length > 0) {
     writeJsonFile(filePath, result.lockfile);
-    console.log(`\n📝 Changes written to ${filePath}`);
+    console.log(`\nChanges written to ${filePath}`);
   } else if (result.changes.length > 0) {
-    console.log('\n⚠️  Use --write flag to save changes');
+    console.log('\nUse --write flag to save changes');
   }
 
   process.exit(result.unresolved.length > 0 ? 1 : 0);
@@ -868,7 +868,7 @@ function runPinCommand() {
 
   const result = pinVersions(packageJson, lockfile, { includePeer });
 
-  console.log('\n📌 Pin Results:');
+  console.log('\nPin Results:');
   if (result.changes.length === 0) {
     console.log('   Nothing to pin — all ranges already exact (or skipped)');
   } else {
@@ -885,7 +885,7 @@ function runPinCommand() {
   }
 
   result.warnings.forEach((warning) => {
-    console.log(`\n⚠️  ${warning}`);
+    console.log(`\n${warning}`);
   });
 
   if (hasWrite && result.changes.length > 0) {
@@ -894,9 +894,9 @@ function runPinCommand() {
     createBackup(lockfilePath);
     fs.writeFileSync(packageJsonPath, JSON.stringify(result.packageJson, null, indent) + '\n', 'utf8');
     fs.writeFileSync(lockfilePath, JSON.stringify(result.lockfile, null, 2) + '\n', 'utf8');
-    console.log(`\n📝 Changes written to ${packageJsonPath} and ${lockfilePath}`);
+    console.log(`\nChanges written to ${packageJsonPath} and ${lockfilePath}`);
   } else if (result.changes.length > 0) {
-    console.log('\n⚠️  Use --write flag to save changes');
+    console.log('\nUse --write flag to save changes');
   }
 }
 
@@ -909,7 +909,7 @@ function runPruneCommand() {
   const lockfile = parseLockfile(filePath);
   const result = prunePackages(lockfile);
 
-  console.log('\n🧹 Prune Results:');
+  console.log('\nPrune Results:');
   if (result.removed.length === 0) {
     console.log('   No orphaned packages found — lockfile is fully connected');
   } else {
@@ -921,15 +921,15 @@ function runPruneCommand() {
   }
 
   result.warnings.forEach((warning) => {
-    console.log(`\n⚠️  ${warning}`);
+    console.log(`\n${warning}`);
   });
 
   if (hasWrite && result.removed.length > 0) {
     createBackup(filePath);
     fs.writeFileSync(filePath, JSON.stringify(result.lockfile, null, 2) + '\n', 'utf8');
-    console.log(`\n📝 Changes written to ${filePath}`);
+    console.log(`\nChanges written to ${filePath}`);
   } else if (result.removed.length > 0) {
-    console.log('\n⚠️  Use --write flag to save changes');
+    console.log('\nUse --write flag to save changes');
   }
 }
 
@@ -960,7 +960,7 @@ function runUnusedCommand() {
     const split = result.buildFiles
       ? ` — ${result.appFiles} app, ${result.buildFiles} build [${result.buildDirsScanned.join(', ')}]`
       : '';
-    console.log(`\n🔎 Scanned ${result.scannedFiles} source file(s)${split} (${result.sectionsChecked.join(', ')})`);
+    console.log(`\nScanned ${result.scannedFiles} source file(s)${split} (${result.sectionsChecked.join(', ')})`);
     if (result.buildOnly.length > 0) {
       console.log(`   ${result.buildOnly.length} package(s) imported only by build tooling (kept): ${result.buildOnly.join(', ')}`);
     }
@@ -1006,7 +1006,7 @@ function runAuditCommand() {
     report = runAudit({ lockfile, packageJson, filePath: path.relative(process.cwd(), filePath) || filePath }, config);
     console.log('\n' + formatAuditReport(report, { format }));
   } catch (error) {
-    console.error(`\n❌ Audit error: ${error.message}`);
+    console.error(`\nAudit error: ${error.message}`);
     process.exit(2);
   }
 
@@ -1028,14 +1028,14 @@ function runUpgradeHashesCommand() {
 
   // Clear progress line and show completion
   clearProgressLine();
-  console.log('\n✅ Upgraded integrity hashes');
+  console.log('\nUpgraded integrity hashes');
 
   if (hasWrite) {
     createBackup(filePath);
     fs.writeFileSync(filePath, JSON.stringify(upgraded, null, 2) + '\n', 'utf8');
-    console.log(`📝 Changes written to ${filePath}`);
+    console.log(`Changes written to ${filePath}`);
   } else {
-    console.log('\n⚠️  Use --write flag to save changes');
+    console.log('\nUse --write flag to save changes');
     console.log(JSON.stringify(upgraded, null, 2));
   }
 }
@@ -1057,7 +1057,7 @@ function runDedupeCommand() {
 
   // Clear progress line and show completion
   clearProgressLine();
-  console.log(`\n✅ Deduplication complete`);
+  console.log(`\nDeduplication complete`);
   console.log(`   Packages: ${beforeCount} → ${afterCount} (removed ${beforeCount - afterCount})`);
   if (afterCount === beforeCount && beforeCount > 0) {
     console.log('   (a v2/v3 packages map is keyed by install path — every entry is required,');
@@ -1067,9 +1067,9 @@ function runDedupeCommand() {
   if (hasWrite) {
     createBackup(filePath);
     fs.writeFileSync(filePath, JSON.stringify(deduped, null, 2) + '\n', 'utf8');
-    console.log(`📝 Changes written to ${filePath}`);
+    console.log(`Changes written to ${filePath}`);
   } else {
-    console.log('\n⚠️  Use --write flag to save changes');
+    console.log('\nUse --write flag to save changes');
     console.log(JSON.stringify(deduped, null, 2));
   }
 }
@@ -1090,7 +1090,7 @@ function runFixCommand() {
   }
   const { fixedLockfile, fixes } = fixPackageLock(lockfile, { packageJson: pkgJson });
 
-  console.log('\n✅ Fixer Results:');
+  console.log('\nFixer Results:');
   if (fixes.length === 0) {
     console.log('   • Nothing to fix — lockfile structure is already consistent');
   } else {
@@ -1100,9 +1100,9 @@ function runFixCommand() {
   if (hasWrite) {
     createBackup(filePath);
     fs.writeFileSync(filePath, JSON.stringify(fixedLockfile, null, 2) + '\n', 'utf8');
-    console.log(`📝 Changes written to ${filePath}`);
+    console.log(`Changes written to ${filePath}`);
   } else {
-    console.log('\n⚠️  Use --write flag to save changes');
+    console.log('\nUse --write flag to save changes');
     console.log(JSON.stringify(fixedLockfile, null, 2));
   }
 }
@@ -1114,9 +1114,9 @@ function runBackupsCommand() {
   const backups = listBackups(filePath);
 
   if (backups.length === 0) {
-    console.log(`\n📦 No backups found for ${fileName}`);
+    console.log(`\nNo backups found for ${fileName}`);
   } else {
-    console.log(`\n📦 Backups for ${fileName}:`);
+    console.log(`\nBackups for ${fileName}:`);
     backups.forEach((backup, i) => {
       console.log(`   ${i + 1}. ${backup.name} (${backup.created.toLocaleString()})`);
     });
@@ -1128,7 +1128,7 @@ function runRestoreCommand() {
   ensureFileExists(filePath);
 
   restoreFromLatestBackup(filePath);
-  console.log(`\n✅ File restored successfully`);
+  console.log(`\nFile restored successfully`);
 }
 
 function runCleanBackupsCommand() {
@@ -1142,16 +1142,16 @@ function runCleanBackupsCommand() {
     if (!isNaN(parsed) && parsed > 0) {
       keepCount = parsed;
     } else {
-      console.error('❌ Invalid --keep value. Must be a positive number');
+      console.error('Invalid --keep value. Must be a positive number');
       process.exit(2);
     }
   }
 
   const deleted = cleanOldBackups(filePath, keepCount);
   if (deleted === 0) {
-    console.log(`\n📦 No old backups to clean (keeping ${keepCount})`);
+    console.log(`\nNo old backups to clean (keeping ${keepCount})`);
   } else {
-    console.log(`\n✅ Cleaned ${deleted} old backup(s), keeping ${keepCount}`);
+    console.log(`\nCleaned ${deleted} old backup(s), keeping ${keepCount}`);
   }
 }
 
@@ -1160,7 +1160,7 @@ function parseCheckType() {
   const raw = flagValue('--check');
   if (raw === undefined) return 'all';
   if (!['hash', 'license', 'all'].includes(raw)) {
-    console.error('❌ Invalid check type. Use: hash, license, or all');
+    console.error('Invalid check type. Use: hash, license, or all');
     process.exit(2);
   }
   return raw;
@@ -1170,10 +1170,10 @@ function parseCheckType() {
 function printHashResult(hashResult, failOnUnresolved) {
   clearProgressLine();
   console.log(`   Checked: ${hashResult.checked}`);
-  console.log(`   ✅ Passed: ${hashResult.passed}`);
-  console.log(`   ❌ Failed: ${hashResult.failed}`);
-  console.log(`   ⏭️  Skipped: ${hashResult.skipped}`);
-  console.log(`   ❔ Unresolved: ${hashResult.unresolved}`);
+  console.log(`   Passed: ${hashResult.passed}`);
+  console.log(`   Failed: ${hashResult.failed}`);
+  console.log(`   Skipped: ${hashResult.skipped}`);
+  console.log(`   Unresolved: ${hashResult.unresolved}`);
 
   const mismatches = hashResult.errors.filter(e => e.expected && e.actual);
   if (mismatches.length > 0) {
@@ -1201,9 +1201,9 @@ function printHashResult(hashResult, failOnUnresolved) {
 function printLicenseResult(licenseResult, strict) {
   clearProgressLine();
   console.log(`   Checked: ${licenseResult.checked}`);
-  console.log(`   ✅ Approved: ${licenseResult.approved}`);
-  console.log(`   ❌ Rejected: ${licenseResult.rejected}`);
-  console.log(`   ⚠️  Unknown: ${licenseResult.unknown}`);
+  console.log(`   Approved: ${licenseResult.approved}`);
+  console.log(`   Rejected: ${licenseResult.rejected}`);
+  console.log(`   Unknown: ${licenseResult.unknown}`);
 
   if (licenseResult.errors.length > 0) {
     console.log('\n   Unapproved/Unknown licenses:');
@@ -1240,7 +1240,7 @@ async function runCheckCommand(command) {
   try {
     // Run hash check (verifies locked integrity against the registry)
     if (checkType === 'hash' || checkType === 'all') {
-      console.log('🔐 Verifying integrity against the registry...');
+      console.log('Verifying integrity against the registry...');
       const hashResult = await checkIntegrity(lockfile, {
         ...options, concurrency, timeoutMs, failOnUnresolved, ...registryOption(defaultRegistry)
       });
@@ -1250,13 +1250,13 @@ async function runCheckCommand(command) {
 
     // Run license check
     if (checkType === 'license' || checkType === 'all') {
-      console.log('\n📜 Checking licenses...');
+      console.log('\nChecking licenses...');
       const licenseResult = await checkLicenses(lockfile, options);
       printLicenseResult(licenseResult, strict);
       allValid = allValid && licenseResult.valid;
     }
 
-    console.log(allValid ? '\n✅ All checks passed' : '\n❌ Some checks failed');
+    console.log(allValid ? '\nAll checks passed' : '\nSome checks failed');
     process.exit(allValid ? 0 : 1);
   } catch (error) {
     handleError(error, `${command} command failed`);
@@ -1266,9 +1266,9 @@ async function runCheckCommand(command) {
 // Print the vuln-scan result in pretty form: counts, advisories, unresolved entries.
 function printVulnResult(result, minSeverity, failOnUnresolved) {
   console.log(`   Scanned: ${result.scanned}`);
-  console.log(`   🛑 Vulnerable: ${result.vulnerable}`);
-  console.log(`   ⏭️  Skipped: ${result.skipped}`);
-  console.log(`   ❔ Unresolved: ${result.unresolved}`);
+  console.log(`   Vulnerable: ${result.vulnerable}`);
+  console.log(`   Skipped: ${result.skipped}`);
+  console.log(`   Unresolved: ${result.unresolved}`);
 
   if (result.errors.length > 0) {
     console.log(`\n   Vulnerabilities at/above ${minSeverity} (fail the run):`);
@@ -1297,7 +1297,7 @@ function printVulnResult(result, minSeverity, failOnUnresolved) {
       console.log('   (unresolved entries are NOT failing the scan because --allow-unresolved is set)');
     }
   }
-  console.log(result.valid ? '\n✅ No known vulnerabilities at/above the threshold' : '\n❌ Scan failed (vulnerabilities found or packages could not be scanned)');
+  console.log(result.valid ? '\nNo known vulnerabilities at/above the threshold' : '\nScan failed (vulnerabilities found or packages could not be scanned)');
 }
 
 async function runVulnCommand(command) {
@@ -1320,7 +1320,7 @@ async function runVulnCommand(command) {
   const onProgress = format === 'human' ? makeProgressReporter() : null;
 
   try {
-    if (format === 'human' && !offline) console.log('🛡️  Scanning locked packages for known vulnerabilities…');
+    if (format === 'human' && !offline) console.log('Scanning locked packages for known vulnerabilities…');
     const result = await checkVulnerabilities(lockfile, {
       concurrency, timeoutMs, minSeverity, offline, failOnUnresolved, onProgress,
       ...registryOption(defaultRegistry)
@@ -1346,9 +1346,9 @@ async function runVulnCommand(command) {
 // Print the deprecation-scan result in pretty form: counts, notices, unresolved, verdict.
 function printDeprecatedResult(result, failOnUnresolved) {
   console.log(`   Scanned: ${result.scanned}`);
-  console.log(`   📉 Deprecated: ${result.deprecated}`);
-  console.log(`   ⏭️  Skipped: ${result.skipped}`);
-  console.log(`   ❔ Unresolved: ${result.unresolved}`);
+  console.log(`   Deprecated: ${result.deprecated}`);
+  console.log(`   Skipped: ${result.skipped}`);
+  console.log(`   Unresolved: ${result.unresolved}`);
 
   if (result.errors.some(e => e.message)) {
     console.log('\n   Deprecated (fail the run):');
@@ -1375,13 +1375,13 @@ function printDeprecatedResult(result, failOnUnresolved) {
     }
   }
   if (!result.valid && result.deprecated === 0) {
-    console.log('\n❌ Scan incomplete — some packages could not be checked (see unresolved above)');
+    console.log('\nScan incomplete — some packages could not be checked (see unresolved above)');
   } else if (result.deprecated === 0) {
-    console.log('\n✅ No deprecated packages found');
+    console.log('\nNo deprecated packages found');
   } else if (result.valid) {
-    console.log('\n⚠️  Deprecated packages found (warnings; pass --fail-on count=0 to fail the run)');
+    console.log('\nDeprecated packages found (warnings; pass --fail-on count=0 to fail the run)');
   } else {
-    console.log('\n❌ Deprecated packages found');
+    console.log('\nDeprecated packages found');
   }
 }
 
@@ -1408,7 +1408,7 @@ async function runDeprecatedCommand(command) {
   const onProgress = format === 'human' ? makeProgressReporter() : null;
 
   try {
-    if (format === 'human' && !offline) console.log('📉 Scanning locked packages for deprecation notices…');
+    if (format === 'human' && !offline) console.log('Scanning locked packages for deprecation notices…');
     const result = await checkDeprecations(lockfile, {
       concurrency, timeoutMs, offline, failOnDeprecated, failOnUnresolved, onProgress,
       ...registryOption(defaultRegistry)
@@ -1433,7 +1433,7 @@ async function runDeprecatedCommand(command) {
 
 // Print the remediation result in pretty form: bumps, guidance, skips, warnings.
 function printRemediateResult(result) {
-  console.log('\n🩹 Remediation Results:');
+  console.log('\nRemediation Results:');
   if (result.bumped.length === 0) {
     console.log('   • No direct dependencies to bump');
   } else {
@@ -1453,7 +1453,7 @@ function printRemediateResult(result) {
     console.log('\n   Skipped:');
     result.skipped.forEach((s) => console.log(`     • ${s.section}/${s.package} (${s.range}): ${s.reason}`));
   }
-  result.warnings.forEach((w) => console.log(`\n⚠️  ${w.package}: ${w.reason}`));
+  result.warnings.forEach((w) => console.log(`\n${w.package}: ${w.reason}`));
 }
 
 async function runRemediateCommand(command) {
@@ -1478,7 +1478,7 @@ async function runRemediateCommand(command) {
   const onProgress = format === 'human' ? makeProgressReporter() : null;
 
   try {
-    if (format === 'human') console.log('🩹 Scanning for remediable direct dependencies…');
+    if (format === 'human') console.log('Scanning for remediable direct dependencies…');
     const result = await remediateDependencies(lockfile, packageJson, {
       minSeverity, includeDeprecated, onProgress,
       ...registryOption(defaultRegistry)
@@ -1501,10 +1501,10 @@ async function runRemediateCommand(command) {
       const indent = detectIndent(packageJsonRaw);
       writeJsonFile(packageJsonPath, result.packageJson, indent);
       writeJsonFile(lockfilePath, result.lockfile);
-      console.log(`\n📝 Changes written to ${packageJsonPath} and ${lockfilePath}`);
-      console.log('   ▶ Run `npm install` to re-resolve the dependency tree, then re-run `npm-check`.');
+      console.log(`\nChanges written to ${packageJsonPath} and ${lockfilePath}`);
+      console.log('   Run `npm install` to re-resolve the dependency tree, then re-run `npm-check`.');
     } else if (result.changed) {
-      console.log('\n⚠️  Use --write to apply these bumps (then run `npm install`)');
+      console.log('\nUse --write to apply these bumps (then run `npm install`)');
     }
     process.exit(0);
   } catch (error) {

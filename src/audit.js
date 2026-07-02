@@ -786,7 +786,7 @@ export function formatAuditReport(report, options = {}) {
   lines.push(report.filePath);
 
   if (report.findings.length === 0) {
-    lines.push('  ✔ no problems found');
+    lines.push('  no problems found');
     return lines.join('\n');
   }
 
@@ -800,6 +800,6 @@ export function formatAuditReport(report, options = {}) {
   const { errors, warnings, total } = report.summary;
   const problemWord = total === 1 ? 'problem' : 'problems';
   lines.push('');
-  lines.push(`✖ ${total} ${problemWord} (${errors} error${errors === 1 ? '' : 's'}, ${warnings} warning${warnings === 1 ? '' : 's'})`);
+  lines.push(`${total} ${problemWord} (${errors} error${errors === 1 ? '' : 's'}, ${warnings} warning${warnings === 1 ? '' : 's'})`);
   return lines.join('\n');
 }

@@ -78,7 +78,7 @@ function runMigration(fixed, targetVersion, successMsg, failPrefix, throwOnError
     if (throwOnError) {
       throw new FixerError(`${failPrefix}: ${e.message}`, fixes);
     }
-    fixes.push(`⚠️  ${failPrefix}: ${e.message}`);
+    fixes.push(`${failPrefix}: ${e.message}`);
     return fixed;
   }
 }
@@ -169,7 +169,7 @@ function applyDedupe(fixed, throwOnError, fixes) {
     if (throwOnError) {
       throw new FixerError(`Deduplication failed: ${e.message}`, fixes);
     }
-    fixes.push(`⚠️  Deduplication failed: ${e.message}`);
+    fixes.push(`Deduplication failed: ${e.message}`);
   }
   return fixed;
 }
