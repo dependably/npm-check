@@ -58,8 +58,8 @@ describe('runReport', () => {
       baseOpts()
     );
     expect(report.sections.map((s) => s.id)).toEqual([
-      'structure', 'package-json', 'npmrc', 'pnpm-config', 'integrity', 'vuln', 'deprecated', 'resolved', 'licenses',
-      'install-scripts', 'git', 'remote', 'pinned', 'orphans', 'unused', 'fund'
+      'structure', 'package-json', 'npmrc', 'pnpm-config', 'integrity', 'vuln', 'deprecated', 'unresolved', 'resolved',
+      'licenses', 'install-scripts', 'git', 'remote', 'pinned', 'orphans', 'unused', 'fund'
     ]);
 
     const vuln = report.sections.find((s) => s.id === 'vuln');
@@ -109,19 +109,28 @@ describe('runReport', () => {
   // OLD summary read this as "1 mismatched · 1 unresolved" (implying two
   // distinct problem packages, and a detail count of 2) for what is really
   // ONE package that simply could not be checked. The summary must not claim a
-  // "mismatched" (tamper) package here, and the single detail line must be
-  // categorized "unresolved:", not "mismatched:".
-  it('reconciles the Integrity summary with its detail section for an unresolved (not mismatched) entry', async () => {
+  // "mismatched" (tamper) package here.
+  //
+  // moonlitlabs/npm-check#35: that single "could not be checked" entry no
+  // longer lives in the Integrity section at all — it moves to the shared
+  // "Unresolved (could not check)" section, tagged `check: 'integrity'`, so
+  // Integrity's own findings/summary only ever describe what it FOUND.
+  it('moves an unresolved (not mismatched) integrity entry to the shared Unresolved section', async () => {
     const report = await runReport(
       { lockfile: cleanLockfile(), packageJson: cleanPackageJson(), filePath: 'package-lock.json' },
       baseOpts({ fetchIntegrity: fakeRegistry({}) }) // registry has no sha512 for good-pkg → unresolved
     );
     const integrity = report.sections.find((s) => s.id === 'integrity');
     expect(integrity.summary).not.toMatch(/mismatched/);
-    expect(integrity.summary).toMatch(/1 unresolved/);
-    // Detail count equals the summary's non-verified sum (1 unresolved, 0 mismatched).
-    expect(integrity.findings).toHaveLength(1);
-    expect(integrity.findings[0].message).toMatch(/^unresolved: good-pkg@1\.0\.0: /);
+    expect(integrity.summary).not.toMatch(/unresolved/);
+    expect(integrity.findings).toHaveLength(0);
+
+    const unresolved = report.sections.find((s) => s.id === 'unresolved');
+    expect(unresolved.status).toBe('error'); // failOnUnresolved defaults true
+    expect(unresolved.summary).toBe('1 integrity');
+    expect(unresolved.findings).toHaveLength(1);
+    expect(unresolved.findings[0].check).toBe('integrity');
+    expect(unresolved.findings[0].message).toMatch(/^\[integrity\] good-pkg@1\.0\.0: /);
   });
 
   // moonlitlabs/npm-check#33: `secure-resolved` and `no-remote-deps` both flag a
@@ -224,8 +233,11 @@ describe('runReport', () => {
     const integrity = report.sections.find((s) => s.id === 'integrity');
     // Genuinely empty (clean lockfile → no offline hygiene findings) → honest skip.
     // Flag-neutral label: `integrity:false` can't tell --offline from --no-integrity.
+    // moonlitlabs/npm-check#35: the fixed status column already says "skipped";
+    // the detail text is just the bare reason (no more "skipped (registry check
+    // skipped)" stutter).
     expect(integrity.status).toBe('skip');
-    expect(integrity.summary).toMatch(/registry check skipped/);
+    expect(integrity.summary).toMatch(/--offline/);
   });
 
   it('surfaces offline integrity-hygiene findings even when the registry check is off (issue #26)', async () => {
@@ -273,6 +285,8 @@ describe('runReport', () => {
     const vuln = report.sections.find((s) => s.id === 'vuln');
     expect(vuln.status).toBe('error');
     expect(vuln.findings.some((f) => /Prototype pollution/.test(f.message))).toBe(true);
+    // moonlitlabs/npm-check#35: singular unit grammar for exactly 1 flagged package/advisory.
+    expect(vuln.summary).toMatch(/1 vulnerable package \(1 advisory\)/);
   });
 
   it('runs the Pinned versions section for a pnpm lockfile (not N/A) and flags pnpm.overrides', async () => {
@@ -342,6 +356,10 @@ describe('runReport', () => {
     expect(jf.extra.reportSeverity).toBe('error'); // the gate signal survives under extra
   });
 
+  // moonlitlabs/npm-check#35: a scan that couldn't complete at all no longer
+  // makes its OWN section report error/warn (it found nothing — it just
+  // couldn't check) — that signal now lives solely in the shared "Unresolved"
+  // section, which still rolls up into the same report.summary gate.
   it('fails the report by default when the vuln scan cannot complete (registry error)', async () => {
     const report = await runReport(
       { lockfile: cleanLockfile(), packageJson: cleanPackageJson(), filePath: 'package-lock.json' },
@@ -350,8 +368,11 @@ describe('runReport', () => {
     expect(report.summary.pass).toBe(false);
     expect(report.summary.errors).toBeGreaterThanOrEqual(1);
     const vuln = report.sections.find((s) => s.id === 'vuln');
-    expect(vuln.status).toBe('error');
-    expect(vuln.findings.some((f) => /could not scan/.test(f.message))).toBe(true);
+    expect(vuln.status).toBe('pass'); // no advisory found — the scan just couldn't run
+    expect(vuln.findings).toHaveLength(0);
+    const unresolved = report.sections.find((s) => s.id === 'unresolved');
+    expect(unresolved.status).toBe('error');
+    expect(unresolved.findings.some((f) => f.check === 'vuln' && /could not scan|ECONNREFUSED/.test(f.message))).toBe(true);
   });
 
   it('fails the report by default when integrity cannot be verified (registry error)', async () => {
@@ -361,7 +382,10 @@ describe('runReport', () => {
     );
     expect(report.summary.pass).toBe(false);
     const integrity = report.sections.find((s) => s.id === 'integrity');
-    expect(integrity.status).toBe('error');
+    expect(integrity.status).toBe('pass'); // no mismatch found — the scan just couldn't run
+    const unresolved = report.sections.find((s) => s.id === 'unresolved');
+    expect(unresolved.status).toBe('error');
+    expect(unresolved.findings.some((f) => f.check === 'integrity')).toBe(true);
   });
 
   it('downgrades an incomplete scan to a warning under --allow-unresolved (failOnUnresolved:false)', async () => {
@@ -373,7 +397,9 @@ describe('runReport', () => {
     expect(report.summary.pass).toBe(true);
     expect(report.summary.errors).toBe(0);
     const vuln = report.sections.find((s) => s.id === 'vuln');
-    expect(vuln.status).toBe('warn');
+    expect(vuln.status).toBe('pass');
+    const unresolved = report.sections.find((s) => s.id === 'unresolved');
+    expect(unresolved.status).toBe('warn');
   });
 
   it('shows allowed/blocked install-script counts for an npm v12 (allowScripts) file', async () => {
@@ -460,6 +486,67 @@ describe('runReport', () => {
     expect(low.summary.warnings).toBeGreaterThan(0);
     expect(low.summary.pass).toBe(false);
   });
+
+  // moonlitlabs/npm-check#35: the vuln summary previously said "4 vulnerable"
+  // (packages) while the section header said "(8)" (advisories) — same report,
+  // two different unlabeled units. Both now spell out the unit, and agree:
+  // 2 vulnerable PACKAGES, one of which carries 2 advisories, for 3 total.
+  it('labels the vuln summary and header in the same unit — packages vs advisories', async () => {
+    const lockfile = cleanLockfile();
+    lockfile.packages['node_modules/second-pkg'] = {
+      version: '2.0.0',
+      resolved: 'https://registry.npmjs.org/second-pkg/-/second-pkg-2.0.0.tgz',
+      integrity: HASH_A
+    };
+    lockfile.packages[''].dependencies['second-pkg'] = '2.0.0';
+    const report = await runReport(
+      { lockfile, packageJson: cleanPackageJson(), filePath: 'package-lock.json' },
+      baseOpts({
+        fetchIntegrity: fakeRegistry({ 'good-pkg': HASH_A, 'second-pkg': HASH_A }),
+        fetchAdvisories: fakeAdvisories({
+          'good-pkg': [advisory('critical', { id: 1 }), advisory('high', { id: 2, title: 'Second issue' })],
+          'second-pkg': [advisory('moderate', { id: 3 })]
+        })
+      })
+    );
+    const vuln = report.sections.find((s) => s.id === 'vuln');
+    expect(vuln.findings).toHaveLength(3); // 3 advisories total
+    expect(vuln.summary).toMatch(/^2 scanned · 2 vulnerable packages \(3 advisories\)/);
+
+    const out = formatReport(report, { format: 'human' });
+    expect(out).toContain('Known vulnerabilities — 3 advisories in 2 packages');
+  });
+
+  // moonlitlabs/npm-check#35: a could-not-scan entry from ANY check (integrity,
+  // vuln, deprecated) is a distinct signal from what that check actually found —
+  // it no longer gets filed under whichever check's section happens to run last
+  // (previously "Deprecated packages"). It's collected in one shared section
+  // instead, tagged with which check couldn't complete.
+  it('collects could-not-scan entries from every check into the shared Unresolved section, not into Deprecated packages', async () => {
+    const report = await runReport(
+      { lockfile: cleanLockfile(), packageJson: cleanPackageJson(), filePath: 'package-lock.json' },
+      baseOpts({
+        fetchAdvisories: () => Promise.reject(new Error('ECONNREFUSED')),
+        fetchManifest: () => Promise.reject(new Error('ETIMEDOUT'))
+      })
+    );
+    const vuln = report.sections.find((s) => s.id === 'vuln');
+    const deprecated = report.sections.find((s) => s.id === 'deprecated');
+    const unresolved = report.sections.find((s) => s.id === 'unresolved');
+
+    expect(vuln.findings).toHaveLength(0);
+    expect(deprecated.findings).toHaveLength(0);
+    expect(unresolved.status).toBe('error'); // failOnUnresolved defaults true
+    expect(unresolved.findings).toHaveLength(2);
+    expect(unresolved.findings.map((f) => f.check).sort()).toEqual(['deprecated', 'vuln']);
+    // Breakdown by originating check, so a reader knows which scan(s) failed
+    // without opening the detail block.
+    expect(unresolved.summary).toBe('1 vuln · 1 deprecated');
+
+    const out = formatReport(report, { format: 'human' });
+    expect(out).toContain('Unresolved (could not check)');
+    expect(out).not.toMatch(/Deprecated packages —/); // no findings → no detail block at all
+  });
 });
 
 describe('formatReport', () => {
@@ -484,6 +571,51 @@ describe('formatReport', () => {
     expect(out).toContain('all checks passed');
   });
 
+  // moonlitlabs/npm-check#35: a fixed status-column vocabulary (ok / N warnings /
+  // N errors / skipped) with one glyph per state (✓ / ⚠ / ✖ / ·), consistent
+  // across every section — instead of each check inventing its own phrasing
+  // (`valid`, `all TLS / trusted`, `skipped (no approved-licenses.csv)`, …) with
+  // an unexplained `·` marker. Check-specific detail still follows in parens.
+  it('renders a fixed status column with a matching glyph per section, detail in a trailing parenthetical', async () => {
+    const lockfile = cleanLockfile();
+    lockfile.packages['node_modules/good-pkg'].hasInstallScript = true; // warn-tier finding
+    const report = await runReport(
+      { lockfile, packageJson: cleanPackageJson(), filePath: 'package-lock.json' },
+      baseOpts({ fetchIntegrity: fakeRegistry({ 'good-pkg': HASH_B }) }) // hash mismatch → error-tier
+    );
+    const out = formatReport(report, { format: 'human' });
+
+    // error state: ✖ glyph, "N errors" label, detail (incl. "mismatched") in parens.
+    expect(out).toMatch(/✖\s+Integrity \(registry\)\s+1 error\s+\(.*mismatched.*\)/);
+    // warn state: ⚠ glyph, "N warnings" label.
+    expect(out).toMatch(/⚠\s+Install scripts\s+1 warning\s+\(/);
+    // pass state: ✓ glyph, fixed "ok" label — the check-specific phrasing
+    // ("valid") is demoted to the trailing detail instead of being the status.
+    expect(out).toMatch(/✓\s+Structure & format\s+ok\s+\(valid\)/);
+    // skip state: · glyph, fixed "skipped" label.
+    expect(out).toMatch(/·\s+Licenses\s+skipped\s+\(no node_modules\)/);
+  });
+
+  it('uses the same status phrasing for the same state across two different runs', async () => {
+    const passOut = formatReport(
+      await runReport({ lockfile: cleanLockfile(), packageJson: cleanPackageJson(), filePath: 'package-lock.json' }, baseOpts()),
+      { format: 'human' }
+    );
+    const lockfile2 = cleanLockfile();
+    lockfile2.packages['node_modules/good-pkg'].hasInstallScript = true;
+    const warnOut = formatReport(
+      await runReport({ lockfile: lockfile2, packageJson: cleanPackageJson(), filePath: 'package-lock.json' }, baseOpts()),
+      { format: 'human' }
+    );
+    // Structure & format is 'ok' in both runs — same fixed phrasing either way.
+    expect(passOut).toMatch(/✓\s+Structure & format\s+ok\s+\(valid\)/);
+    expect(warnOut).toMatch(/✓\s+Structure & format\s+ok\s+\(valid\)/);
+    // Install scripts flips from ok to a warning — the vocabulary for each
+    // state is the same fixed word, not a bespoke phrase per run.
+    expect(passOut).toMatch(/✓\s+Install scripts\s+ok\s+\(none\)/);
+    expect(warnOut).toMatch(/⚠\s+Install scripts\s+1 warning\s+\(/);
+  });
+
   it('emits the shared finding-schema envelope under --format json', async () => {
     const report = await runReport({ lockfile: cleanLockfile(), packageJson: cleanPackageJson(), filePath: 'package-lock.json' }, baseOpts());
     const json = JSON.parse(formatReport(report, { format: 'json' }));
@@ -497,7 +629,7 @@ describe('formatReport', () => {
     expect(json.summary.exitCode).toBe(0); // clean report → exit 0
     expect(json.summary.bySeverity).toEqual({ critical: 0, high: 0, moderate: 0, low: 0, info: 0 });
     // The report's section grouping + gate signal (pass/errors/warnings) live under extra.
-    expect(json.extra.sections).toHaveLength(16);
+    expect(json.extra.sections).toHaveLength(17);
     expect(json.extra.summary.pass).toBe(true);
   });
 
