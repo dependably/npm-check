@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.7.1] - 2026-07-03
+
+### Added
+- **Repo-root `.dependably` config.** npm-check now ships its own `.dependably` file (the shared, cross-tool config this project defines the reference implementation for — see `docs/dependably-config-spec.md`), declaring `dependably.northwardlabs.ca` as a trusted registry host under `common.allowedRegistryHosts`. This is a defensive/documentary addition for suite consistency with the other Dependably tools; this repo's own `package-lock.json` already resolves everything from `registry.npmjs.org`, so no active `secure-resolved`/`no-remote-deps` finding was being suppressed.
+
 ### Fixed
 - **Console-output UX pass (moonlitlabs/npm-check#33).**
   - Progress redraw frames no longer flood piped/CI/`tee`'d logs: when stdout is not a TTY, the CLI's progress reporter degrades from an animated `\r` bar to periodic one-line milestones (0/25/50/75/100%) on stderr, instead of emitting one `\r` frame per percentage change (~35KB of redraw frames on a real run). New `formatCliProgressUpdate()` in `progress-reporter.js`.
