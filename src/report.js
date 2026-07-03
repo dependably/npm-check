@@ -18,7 +18,7 @@ import { buildEnvelope } from './schema.js';
 // pin just like npm's, and the pinned-versions rule is npm+pnpm flavored). The
 // npm-lockfile-shape sections (and license, pending a `.pnpm` store walk) are
 // marked N/A rather than rendered as a misleading pass.
-const PNPM_LIVE_SECTIONS = new Set(['integrity', 'vuln', 'deprecated', 'package-json', 'npmrc', 'pnpm-config', 'pinned']);
+const PNPM_LIVE_SECTIONS = new Set(['integrity', 'vuln', 'deprecated', 'package-json', 'npmrc', 'pnpm-config', 'pinned', 'unresolved']);
 // The pnpm-config section has no meaning for an npm lockfile.
 const NPM_NA_SECTIONS = new Set(['pnpm-config']);
 
@@ -60,6 +60,13 @@ const SECTIONS = [
   { id: 'integrity', title: 'Integrity (registry)' },
   { id: 'vuln', title: 'Known vulnerabilities' },
   { id: 'deprecated', title: 'Deprecated packages' },
+  // moonlitlabs/npm-check#35: entries the integrity/vuln/deprecation scans could
+  // not check at all (registry unreachable, endpoint unsupported, …) are a
+  // distinct signal from what each scan actually FOUND — filing them under
+  // whichever scan happened to run last (previously "Deprecated packages") made
+  // an unrelated check look like it had findings. They're collected here instead,
+  // one shared section, tagged with the check that couldn't complete.
+  { id: 'unresolved', title: 'Unresolved (could not check)' },
   { id: 'resolved', title: 'Resolved URLs' },
   { id: 'licenses', title: 'Licenses' },
   { id: 'install-scripts', title: 'Install scripts' },
@@ -98,20 +105,39 @@ function integrityMismatches(integrityResult) {
   return integrityResult.errors.filter((err) => !unresolvedSet.has(err));
 }
 
-// Bucket integrity findings: one detail line per non-verified package, each
-// prefixed with its category so the "headline tamper signal" (mismatched) is
-// never confused with a package that simply couldn't be checked (unresolved).
-// The detail count here always equals the summary's non-verified sum (see
-// integritySummary()) — both are derived from integrityMismatches() + unresolvedItems.
+// Bucket integrity findings: one detail line per genuinely-mismatched package.
+// The detail count here always equals the summary's "mismatched" bit (see
+// integritySummary()) — both are derived from integrityMismatches(). Entries
+// that couldn't be checked at all go to the shared "Unresolved" section instead
+// (collectUnresolvedFindings) so this section only ever reports what integrity
+// verification actually FOUND.
 function collectIntegrityFindings(buckets, integrityResult, failOnUnresolved) {
   for (const err of integrityMismatches(integrityResult)) {
     const who = err.version ? `${err.package}@${err.version}` : err.package;
     const detail = err.reason || 'lockfile hash differs from registry';
     pushFinding(buckets, 'integrity', { severity: 'error', location: err.packagePath, message: `mismatched: ${who}: ${detail}` });
   }
-  const unresolvedSeverity = failOnUnresolved ? 'error' : 'warn';
-  for (const item of integrityResult.unresolvedItems) {
-    pushFinding(buckets, 'integrity', { severity: unresolvedSeverity, location: item.packagePath, message: `unresolved: ${item.package}@${item.version}: ${item.reason}` });
+  collectUnresolvedFindings(buckets, 'integrity', 'integrity', integrityResult.unresolvedItems, failOnUnresolved);
+}
+
+// moonlitlabs/npm-check#35: shared collector for the "Unresolved (could not
+// check)" section — every registry-backed scan (integrity/vuln/deprecated) uses
+// the same `{ package, version, packagePath, reason }` unresolved-item shape, so
+// one function renders them identically instead of each scan inventing its own
+// "unresolved:" / "could not scan" phrasing. `check` tags which scan couldn't
+// complete (surfaced in the message and carried structurally for JSON/grouping);
+// `category` is the schema category that finding would have carried had it
+// stayed in its own section (see reportFindingToSchema).
+function collectUnresolvedFindings(buckets, check, category, unresolvedItems, failOnUnresolved) {
+  const severity = failOnUnresolved ? 'error' : 'warn';
+  for (const item of unresolvedItems) {
+    pushFinding(buckets, 'unresolved', {
+      severity,
+      location: item.packagePath,
+      message: `[${check}] ${item.package}@${item.version}: ${item.reason}`,
+      check,
+      category
+    });
   }
 }
 
@@ -146,31 +172,30 @@ function advisoryFinding(level, f) {
   };
 }
 
-// Bucket vulnerability findings. Advisory findings are errors. Unresolved entries —
-// packages the scan could not check at all — are errors when failing closed (the
-// default), else warnings; rendered once here (not from `errors`, where they have no advisoryId).
+// Bucket vulnerability findings. Advisory findings (the section's own unit — see
+// SECTION_HEADER_LABEL.vuln) are errors/warnings. Entries the scan could not
+// check at all go to the shared "Unresolved" section (not from `errors`, where
+// they have no advisoryId).
 function collectVulnFindings(buckets, vulnResult, failOnUnresolved) {
   for (const err of vulnResult.errors) {
     // Discriminate on `reason` (like vulnEnvelope), NOT on `advisoryId`: an
-    // unresolved entry carries a `reason` and is rendered from unresolvedItems
-    // below, while a genuine advisory has none — including one that merely lacks
-    // an `id`, which must still fail the run rather than silently vanish.
+    // unresolved entry carries a `reason` and is rendered via the shared
+    // unresolved collector below, while a genuine advisory has none — including
+    // one that merely lacks an `id`, which must still fail the run rather than
+    // silently vanish.
     if (err.reason) continue;
     pushFinding(buckets, 'vuln', advisoryFinding('error', err));
   }
   for (const warn of vulnResult.warnings) {
     pushFinding(buckets, 'vuln', advisoryFinding('warn', warn));
   }
-  const unresolvedSeverity = failOnUnresolved ? 'error' : 'warn';
-  for (const item of vulnResult.unresolvedItems) {
-    pushFinding(buckets, 'vuln', { severity: unresolvedSeverity, location: item.packagePath, message: `could not scan ${item.package}@${item.version}: ${item.reason}` });
-  }
+  collectUnresolvedFindings(buckets, 'vuln', 'vulnerability', vulnResult.unresolvedItems, failOnUnresolved);
 }
 
 // Bucket deprecation findings. A *found* deprecation is an error only under
-// failOnDeprecated (it lands in `errors` with a message), else a warning. Unresolved
-// entries — the scan couldn't complete — are errors when failing closed (the default),
-// else warnings; rendered once here (those in `errors` carry no `message`).
+// failOnDeprecated (it lands in `errors` with a message), else a warning. Entries
+// the scan could not check at all go to the shared "Unresolved" section (those in
+// `errors` for the fail-closed gate carry no `message`).
 function collectDeprecationFindings(buckets, deprecationResult, failOnUnresolved) {
   for (const err of deprecationResult.errors) {
     if (!err.message) continue;
@@ -179,10 +204,7 @@ function collectDeprecationFindings(buckets, deprecationResult, failOnUnresolved
   for (const warn of deprecationResult.warnings) {
     pushFinding(buckets, 'deprecated', { severity: 'warn', location: warn.packagePath, message: `${warn.package}@${warn.version}: ${warn.message}` });
   }
-  const unresolvedSeverity = failOnUnresolved ? 'error' : 'warn';
-  for (const item of deprecationResult.unresolvedItems) {
-    pushFinding(buckets, 'deprecated', { severity: unresolvedSeverity, location: item.packagePath, message: `could not scan ${item.package}@${item.version}: ${item.reason}` });
-  }
+  collectUnresolvedFindings(buckets, 'deprecated', 'deprecated', deprecationResult.unresolvedItems, failOnUnresolved);
 }
 
 // Bucket license findings: rejected licenses are errors, unknown licenses warn.
@@ -195,28 +217,47 @@ function collectLicenseFindings(buckets, licenseResult) {
   }
 }
 
-// One-line summary for the integrity section's count bits. All four bits are
-// derived from ONE shared package total (verified + mismatched + unresolved +
-// skipped) so they always add up. "mismatched" counts only GENUINE failures
-// (integrityMismatches) — not `r.failed`, which also folds in unresolved
-// entries when failing closed and would otherwise double-count the same
-// package as both "mismatched" and "unresolved".
+// One-line summary for the integrity section's count bits. "mismatched" counts
+// only GENUINE failures (integrityMismatches) — not `r.failed`, which also folds
+// in unresolved entries when failing closed and would otherwise double-count the
+// same package as both "mismatched" and "unresolved". Unresolved entries are no
+// longer summarized here — they're counted (and detailed) in the shared
+// "Unresolved (could not check)" section instead (moonlitlabs/npm-check#35).
 function integritySummary(r) {
   const mismatched = integrityMismatches(r).length;
   const bits = [`${r.passed} verified`];
   if (mismatched) bits.push(`${mismatched} mismatched`);
-  if (r.unresolved) bits.push(`${r.unresolved} unresolved`);
   if (r.skipped) bits.push(`${r.skipped} skipped`);
   return bits.join(' · ');
 }
 
 // One-line summary shared by the vuln and deprecation sections (scanned/flagged/…).
-function scanSummary(r, flaggedKey, flaggedLabel) {
+// `flaggedAdjective` + "package(s)" always names the UNIT being counted
+// ("vulnerable packages", "deprecated packages"), pluralized to match the count,
+// so it reads the same as the section header's count (moonlitlabs/npm-check#35)
+// — never a bare adjective a reader has to guess the unit of. `detail`, when
+// given, appends a labeled sub-count in a trailing parenthetical for units that
+// don't map 1:1 to packages (a vulnerable package can carry more than one
+// advisory). Unresolved entries are summarized in the shared "Unresolved (could
+// not check)" section instead.
+function scanSummary(r, flaggedKey, flaggedAdjective, detail = null) {
   const bits = [`${r.scanned} scanned`];
-  if (r[flaggedKey]) bits.push(`${r[flaggedKey]} ${flaggedLabel}`);
-  if (r.unresolved) bits.push(`${r.unresolved} unresolved`);
+  const n = r[flaggedKey];
+  if (n) {
+    const unit = `${flaggedAdjective} package${n === 1 ? '' : 's'}`;
+    bits.push(`${n} ${unit}${detail ? ` (${detail})` : ''}`);
+  }
   if (r.skipped) bits.push(`${r.skipped} skipped`);
   return bits.join(' · ');
+}
+
+// One-line summary for the shared "Unresolved (could not check)" section: a
+// breakdown by originating check (integrity/vuln/deprecated) so a reader knows
+// which scan(s) couldn't complete without opening the detail block below.
+function unresolvedSummary(findings) {
+  const byCheck = new Map();
+  for (const f of findings) byCheck.set(f.check, (byCheck.get(f.check) || 0) + 1);
+  return [...byCheck.entries()].map(([check, n]) => `${n} ${check}`).join(' · ');
 }
 
 // One-line summary for the license section's count bits.
@@ -259,27 +300,45 @@ const SECTION_DESCRIBERS = {
     // bucket is genuinely empty; otherwise surface the offline findings and let their
     // severity drive the status and the rollup. (The `integrity: false` boolean can't
     // distinguish --offline from --no-integrity, so the label stays flag-neutral.)
+    // moonlitlabs/npm-check#35: the bare detail text no longer says "skipped" —
+    // the fixed status column already says that (statusLabel()); the detail is
+    // just the reason, so the rendered row reads "skipped (--offline / …)"
+    // instead of the old "skipped (registry check skipped)".
     if (!state.integrity) {
-      if (findings.length === 0) return { status: 'skip', summary: 'registry check skipped' };
+      if (findings.length === 0) return { status: 'skip', summary: '--offline / --no-integrity' };
       const n = findings.length;
       return liveSection(findings, `registry check skipped · ${n} offline finding${n === 1 ? '' : 's'}`);
     }
     return liveSection(findings, integritySummary(state.integrityResult));
   },
   vuln(findings, state) {
-    if (!state.vuln) return { status: 'skip', summary: 'skipped (--offline)' };
-    return liveSection(findings, scanSummary(state.vulnResult, 'vulnerable', 'vulnerable'));
+    if (!state.vuln) return { status: 'skip', summary: '--offline' };
+    // moonlitlabs/npm-check#35: `findings` here is ONLY advisory findings (the
+    // unresolved entries that used to ride along have moved to the shared
+    // "Unresolved" section — see collectVulnFindings), so its length IS the
+    // advisory count, matching the section header 1:1 (SECTION_HEADER_LABEL.vuln).
+    const n = findings.length;
+    const detail = n ? `${n} advisor${n === 1 ? 'y' : 'ies'}` : null;
+    return liveSection(findings, scanSummary(state.vulnResult, 'vulnerable', 'vulnerable', detail));
   },
   deprecated(findings, state) {
-    if (!state.deprecated) return { status: 'skip', summary: 'skipped (--offline)' };
+    if (!state.deprecated) return { status: 'skip', summary: '--offline' };
     return liveSection(findings, scanSummary(state.deprecationResult, 'deprecated', 'deprecated'));
+  },
+  // moonlitlabs/npm-check#35: the shared "Unresolved (could not check)" section.
+  // Each finding carries `check` (integrity/vuln/deprecated); the summary breaks
+  // the total down by check so a reader can tell WHICH scan(s) couldn't complete
+  // without opening the detail block.
+  unresolved(findings) {
+    if (findings.length === 0) return { status: 'pass', summary: 'none' };
+    return liveSection(findings, unresolvedSummary(findings));
   },
   licenses(findings, state) {
     // An unexpected checkLicenses failure (malformed CSV, fs permission error,
     // internal bug) is recorded as an error-severity finding upstream — NOT swallowed
     // into a passing skip — so the license policy gate trips when the check breaks.
     if (state.licenseError) return liveSection(findings, `check failed (${state.licenseError})`);
-    if (state.licenseSkip) return { status: 'skip', summary: `skipped (${state.licenseSkip})` };
+    if (state.licenseSkip) return { status: 'skip', summary: state.licenseSkip };
     return liveSection(findings, licenseSummary(state.licenseResult));
   },
   'install-scripts'(findings, state) {
@@ -595,11 +654,18 @@ const DEFAULT_PASS_SUMMARY = {
   fund: 'suppressed'
 };
 
-const ICON = { pass: ' ', warn: ' ', error: ' ', skip: '·' };
+// moonlitlabs/npm-check#35: one glyph per fixed status (see statusLabel()
+// below) — consistently applied so a reader can scan the icon column alone
+// and know the state, instead of the icon-and-vocabulary pair drifting per
+// section.
+const STATUS_ICON = { pass: '✓', warn: '⚠', error: '✖', skip: '·' };
 
 // Map each report section to a shared-schema `category`. The lockfile-hygiene
 // audit sections fold into `lint`; policy-ish sections into `policy`; the scan
-// sections keep their first-class categories.
+// sections keep their first-class categories. "unresolved" has no category of
+// its own — every finding in that section carries an explicit `category` (the
+// category it would have had in its own section; see collectUnresolvedFindings)
+// which reportFindingToSchema prefers over this table.
 const SECTION_CATEGORY = {
   structure: 'lint',
   'package-json': 'lint',
@@ -648,10 +714,13 @@ function reportFindingToSchema(sectionId, f) {
   const isAdvisory = f.advisoryId != null || f.advisorySeverity != null;
   const extra = { section: sectionId, reportSeverity: f.severity };
   if (isAdvisory) Object.assign(extra, advisoryExtra(f));
+  if (f.check) extra.check = f.check; // shared "Unresolved" section: which scan couldn't complete
   return {
     severity: ladderSeverity(f),
     ruleId: f.advisoryId != null ? String(f.advisoryId) : (f.ruleId || sectionId),
-    category: SECTION_CATEGORY[sectionId] || 'lint',
+    // A finding carries its own `category` when its section (unresolved) has no
+    // single category of its own; otherwise fall back to the section's category.
+    category: f.category || SECTION_CATEGORY[sectionId] || 'lint',
     message: f.message,
     location: f.location ? { file: f.location, line: null, column: null } : null,
     remediation: f.fixedVersion ? `upgrade to ${f.fixedVersion}` : null,
@@ -720,10 +789,33 @@ export function formatReport(report, options = {}) {
   return lines.join('\n');
 }
 
-// Section summary table: one aligned status line per section.
+// moonlitlabs/npm-check#35: the fixed status-column vocabulary. Every section
+// renders one of these four labels — never a check-invented phrase like
+// "valid" or "all TLS / trusted" (those are still shown, but demoted to the
+// trailing detail parenthetical) — so the state is readable at a glance and
+// phrased identically for a given state across every section and every run.
+// The count in the warn/error labels is the number of findings AT that
+// severity in the section (not the total, which may mix both tiers).
+function statusLabel(s) {
+  if (s.status === 'pass') return 'ok';
+  if (s.status === 'skip') return 'skipped';
+  const n = s.findings.filter((f) => f.severity === s.status).length;
+  const word = s.status === 'error' ? 'error' : 'warning';
+  return `${n} ${word}${n === 1 ? '' : 's'}`;
+}
+
+// Section summary table: one aligned status line per section — glyph, title,
+// the fixed status label, then check-specific detail in a trailing
+// parenthetical (moonlitlabs/npm-check#35).
 function renderSummaryTable(sections) {
   const titleWidth = Math.max(...sections.map((s) => s.title.length));
-  return sections.map((s) => `  ${ICON[s.status]}  ${s.title.padEnd(titleWidth)}   ${s.summary}`);
+  const labels = sections.map(statusLabel);
+  const labelWidth = Math.max(...labels.map((l) => l.length));
+  return sections.map((s, i) => {
+    const label = labels[i].padEnd(labelWidth);
+    const detail = s.summary ? ` (${s.summary})` : '';
+    return `  ${STATUS_ICON[s.status]}  ${s.title.padEnd(titleWidth)}   ${label}${detail}`;
+  });
 }
 
 // Literal severity tag for a detail line — mirrors the standalone `audit`
@@ -734,10 +826,31 @@ function severityTag(severity) {
   return severity === 'error' ? 'error' : 'warn ';
 }
 
+// moonlitlabs/npm-check#35: per-section detail-header overrides — the count
+// next to a section's title in its own unit, matching the summary table row
+// instead of a bare, ambiguous number. "Known vulnerabilities" is the unit
+// mismatch the ticket called out: findings here are one per ADVISORY (a
+// package can carry several), so the header spells out both the advisory
+// count (== findings.length) and the distinct-package count.
+const SECTION_HEADER_LABEL = {
+  vuln(findings) {
+    const advisories = findings.length;
+    const packages = new Set(findings.map((f) => `${f.package}@${f.version}`)).size;
+    return `${advisories} advisor${advisories === 1 ? 'y' : 'ies'} in ${packages} package${packages === 1 ? '' : 's'}`;
+  }
+};
+
+function sectionHeaderLabel(s) {
+  const custom = SECTION_HEADER_LABEL[s.id];
+  if (custom) return custom(s.findings);
+  const n = s.findings.length;
+  return `${n} finding${n === 1 ? '' : 's'}`;
+}
+
 // Detail block for a single section — empty unless it has findings.
 function renderSectionDetail(s) {
   if (s.findings.length === 0) return [];
-  const lines = ['', `${s.title} (${s.findings.length})`];
+  const lines = ['', `${s.title} — ${sectionHeaderLabel(s)}`];
   const shown = s.findings.slice(0, MAX_DETAIL);
   for (const f of shown) {
     const loc = f.location ? `${f.location}  ` : '';
