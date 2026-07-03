@@ -1,6 +1,7 @@
 // src/audit-config.js
 import fs from 'fs';
 import path from 'path';
+import { parseExceptions } from './exceptions.js';
 
 export class AuditConfigError extends Error {
   constructor(message, code, context = {}) {
@@ -14,9 +15,30 @@ export class AuditConfigError extends Error {
 export const CONFIG_FILENAMES = ['.npm-checkrc.json', 'npm-check.config.json'];
 
 // Shared, cross-tool config file (JSON, no extension) discovered by walking up
-// from the working directory. Its `common`/`npm` `allowedRegistryHosts` extend
-// the secure-resolved trusted-host allowlist additively (public npm stays trusted).
-export const SHARED_CONFIG_FILENAME = '.dependably-check';
+// from the working directory. `.dependably` is canonical; `.dependably-check` is
+// a deprecated alias kept for the migration window (docs/dependably-config-spec.md §7).
+export const SHARED_CONFIG_FILENAME = '.dependably';
+export const DEPRECATED_SHARED_CONFIG_FILENAME = '.dependably-check';
+// Checked in this order at each directory level (canonical wins).
+export const SHARED_CONFIG_FILENAMES = [SHARED_CONFIG_FILENAME, DEPRECATED_SHARED_CONFIG_FILENAME];
+
+// Canonical section key for npm-check, plus the deprecated ecosystem alias.
+export const SECTION_KEY = 'npm-check';
+export const DEPRECATED_SECTION_KEY = 'npm';
+
+// Highest .dependably format version this build understands.
+export const SUPPORTED_CONFIG_VERSION = 1;
+
+// Exception selectors an npm-check finding can carry (spec §6.7). `path`/`symbol`
+// are code-location selectors used by the C# tools; they are errors in npm-check's
+// own section but tolerated (ignored) in `common`.
+export const APPLICABLE_SELECTORS = ['package', 'id'];
+
+// Keys npm-check recognizes inside `common` / its own section. Unknown keys warn.
+const KNOWN_SECTION_KEYS = new Set([
+  'rules', 'exceptions', 'exclude', 'failOn',
+  'allowedRegistryHosts', 'allowedLocalFeeds', 'maxWarnings'
+]);
 
 export const SEVERITIES = ['error', 'warn', 'off'];
 
@@ -92,18 +114,10 @@ export function normalizeRuleEntry(entry) {
 }
 
 /**
- * Resolve the effective audit config: built-in defaults overlaid by a
- * discovered or explicitly-given JSON config file.
- * Rule options merge over the defaults for that rule; severity replaces.
- *
- * @param {string} cwd - Directory to search for config files
- * @param {string|null} explicitPath - Path passed via --config (wins over discovery)
- * @returns {{maxWarnings, rules: {[id]: {severity, options}}, configPath}}
- */
-/**
- * Walk up from `cwd` to the filesystem root looking for the shared
- * `.dependably-check` config file. Stops at the first hit, at a directory
- * containing a `.git` entry (the repo root), or at the filesystem root.
+ * Walk up from `cwd` to the filesystem root looking for a shared config file.
+ * At each level `.dependably` is preferred over the deprecated `.dependably-check`.
+ * Stops at the first hit, at a directory containing a `.git` entry (the repo
+ * root), or at the filesystem root.
  *
  * @param {string} cwd - Directory to start the search from
  * @returns {string|null} Absolute path to the shared config, or null when absent
@@ -111,8 +125,10 @@ export function normalizeRuleEntry(entry) {
 export function findSharedConfig(cwd = process.cwd()) {
   let dir = path.resolve(cwd);
   for (;;) {
-    const candidate = path.join(dir, SHARED_CONFIG_FILENAME);
-    if (fs.existsSync(candidate)) return candidate;
+    for (const name of SHARED_CONFIG_FILENAMES) {
+      const candidate = path.join(dir, name);
+      if (fs.existsSync(candidate)) return candidate;
+    }
 
     // Stop at the repo root: a directory containing `.git`.
     if (fs.existsSync(path.join(dir, '.git'))) return null;
@@ -123,38 +139,132 @@ export function findSharedConfig(cwd = process.cwd()) {
   }
 }
 
-// Union of `common.allowedRegistryHosts` and `npm.allowedRegistryHosts` from a
-// parsed shared config (deduped, common first). Other sections are ignored.
-function collectSharedHosts(parsed) {
-  const collect = (section) => {
-    const hosts = section && section.allowedRegistryHosts;
-    return Array.isArray(hosts) ? hosts.filter((h) => typeof h === 'string') : [];
-  };
-  return [...new Set([...collect(parsed.common), ...collect(parsed.npm)])];
-}
-
-// Pull npm-check's audit settings (`rules`, `maxWarnings`) out of a shared
-// `.dependably-check` object: the `common` section is the base, the `npm`
-// section overrides it. Mirrors how the other suite tools read their section.
-function extractSharedAuditSettings(parsed) {
-  const pick = (section) => {
-    const out = {};
-    if (section && typeof section === 'object') {
-      if (section.rules !== undefined) out.rules = section.rules;
-      if (section.maxWarnings !== undefined) out.maxWarnings = section.maxWarnings;
+// Deprecation warnings for the selected shared-config file (§2.2/§2.3).
+function filenameWarnings(sharedPath) {
+  if (!sharedPath) return [];
+  const dir = path.dirname(sharedPath);
+  const base = path.basename(sharedPath);
+  const warnings = [];
+  if (base === DEPRECATED_SHARED_CONFIG_FILENAME) {
+    if (fs.existsSync(path.join(dir, SHARED_CONFIG_FILENAME))) {
+      // Both present but findSharedConfig preferred canonical — should not reach
+      // here; keep the guard for direct callers.
+      warnings.push({ code: 'BOTH_FILES_PRESENT', message: `both ${SHARED_CONFIG_FILENAME} and ${DEPRECATED_SHARED_CONFIG_FILENAME} found in ${dir}; using ${SHARED_CONFIG_FILENAME}` });
+    } else {
+      warnings.push({ code: 'DEPRECATED_FILENAME', message: `${DEPRECATED_SHARED_CONFIG_FILENAME} is deprecated; rename it to ${SHARED_CONFIG_FILENAME}` });
     }
-    return out;
-  };
-  return { ...pick(parsed && parsed.common), ...pick(parsed && parsed.npm) };
+  } else if (fs.existsSync(path.join(dir, DEPRECATED_SHARED_CONFIG_FILENAME))) {
+    warnings.push({ code: 'BOTH_FILES_PRESENT', message: `both ${SHARED_CONFIG_FILENAME} and ${DEPRECATED_SHARED_CONFIG_FILENAME} found in ${dir}; using ${SHARED_CONFIG_FILENAME} (${DEPRECATED_SHARED_CONFIG_FILENAME} is ignored — delete it)` });
+  }
+  return warnings;
 }
 
-// True when a parsed config is the shared `.dependably-check` shape (sectioned
-// by tool) rather than the legacy flat tool-config shape (top-level rules/maxWarnings).
+// Bare hostnames from a section's allowedRegistryHosts (lowercased, filtered).
+function sectionHosts(section) {
+  const hosts = section && section.allowedRegistryHosts;
+  if (!Array.isArray(hosts)) return [];
+  return hosts.filter((h) => typeof h === 'string').map((h) => h.trim().toLowerCase()).filter(Boolean);
+}
+
+// Union of `common` and the npm-check section's allowedRegistryHosts (deduped,
+// case-insensitive, common first). The canonical section is preferred; the `npm`
+// alias is read only when the canonical section is absent.
+function collectSharedHosts(parsed) {
+  const tool = parsed[SECTION_KEY] !== undefined ? parsed[SECTION_KEY] : parsed[DEPRECATED_SECTION_KEY];
+  return [...new Set([...sectionHosts(parsed && parsed.common), ...sectionHosts(tool)])];
+}
+
+// Union two arrays (ordinal dedupe), tolerating non-arrays.
+function unionList(a, b) {
+  const out = [];
+  const seen = new Set();
+  for (const v of [...(Array.isArray(a) ? a : []), ...(Array.isArray(b) ? b : [])]) {
+    if (!seen.has(v)) { seen.add(v); out.push(v); }
+  }
+  return out;
+}
+
+// Merge the `rules` maps of two sections per rule-id: the tool entry for a given
+// id replaces common's wholesale (no cross-section option deep-merge, §B.3).
+function mergeRuleMaps(commonRules, toolRules) {
+  if (!commonRules && !toolRules) return undefined;
+  return { ...(commonRules && typeof commonRules === 'object' ? commonRules : {}),
+    ...(toolRules && typeof toolRules === 'object' ? toolRules : {}) };
+}
+
+// Warn about keys npm-check does not recognize inside a read section (§8).
+function unknownKeyWarnings(section, label, warnings) {
+  if (!section || typeof section !== 'object') return;
+  for (const key of Object.keys(section)) {
+    if (!KNOWN_SECTION_KEYS.has(key)) {
+      warnings.push({ code: 'UNKNOWN_KEY', message: `unknown key "${label}.${key}" in shared config — ignoring` });
+    }
+  }
+}
+
+/**
+ * Resolve npm-check's settings from a parsed shared-config object: merge `common`
+ * under the npm-check section per the single merge rule (§5). Returns the audit
+ * settings plus parsed exceptions and any warnings.
+ */
+function resolveToolSection(parsed, warnings) {
+  const common = parsed && parsed.common;
+  const canonical = parsed && parsed[SECTION_KEY];
+  const alias = parsed && parsed[DEPRECATED_SECTION_KEY];
+  const tool = canonical !== undefined ? canonical : alias;
+  if (canonical === undefined && alias !== undefined) {
+    warnings.push({ code: 'DEPRECATED_ALIAS_SECTION', message: `section "${DEPRECATED_SECTION_KEY}" is deprecated; rename it to "${SECTION_KEY}"` });
+  } else if (canonical !== undefined && alias !== undefined) {
+    warnings.push({ code: 'DEPRECATED_ALIAS_SECTION', message: `both "${SECTION_KEY}" and "${DEPRECATED_SECTION_KEY}" sections present; using "${SECTION_KEY}"` });
+  }
+
+  unknownKeyWarnings(common, 'common', warnings);
+  unknownKeyWarnings(tool, SECTION_KEY, warnings);
+
+  const settings = {};
+  const rules = mergeRuleMaps(common && common.rules, tool && tool.rules);
+  if (rules) settings.rules = rules;
+
+  // Scalars: tool overrides common. failOn merges per key.
+  const failOn = pickFailOn(common && common.failOn, tool && tool.failOn);
+  if (failOn) settings.failOn = failOn;
+
+  const pickMax = (s) => (s && s.maxWarnings !== undefined ? s.maxWarnings : undefined);
+  const toolMax = pickMax(tool);
+  const commonMax = pickMax(common);
+  if (toolMax !== undefined) settings.maxWarnings = toolMax;
+  else if (commonMax !== undefined) settings.maxWarnings = commonMax;
+
+  settings.exclude = unionList(common && common.exclude, tool && tool.exclude);
+
+  // Exceptions: common (tolerant) + own section (strict selector/rule checks).
+  const commonEx = parseExceptions(common && common.exceptions, {
+    source: 'common', applicableSelectors: APPLICABLE_SELECTORS
+  });
+  const ownEx = parseExceptions(tool && tool.exceptions, {
+    source: 'own', applicableSelectors: APPLICABLE_SELECTORS, knownRules: KNOWN_RULES
+  });
+  settings.exceptions = [...commonEx, ...ownEx];
+
+  return settings;
+}
+
+// Merge two failOn objects per key (tool wins). Returns undefined if neither set.
+function pickFailOn(commonFailOn, toolFailOn) {
+  const c = commonFailOn && typeof commonFailOn === 'object' ? commonFailOn : {};
+  const t = toolFailOn && typeof toolFailOn === 'object' ? toolFailOn : {};
+  const merged = { ...c, ...t };
+  if (merged.severity === undefined && merged.count === undefined) return undefined;
+  return merged;
+}
+
+// True when a parsed config is the shared (sectioned) shape rather than the
+// legacy flat tool-config shape (top-level rules/maxWarnings).
 function isSharedShape(configPath, parsed) {
-  if (path.basename(configPath) === SHARED_CONFIG_FILENAME) return true;
+  if (SHARED_CONFIG_FILENAMES.includes(path.basename(configPath))) return true;
   if (!parsed || typeof parsed !== 'object') return false;
   const hasToolKeys = 'rules' in parsed || 'maxWarnings' in parsed;
-  const hasSharedSections = 'common' in parsed || 'npm' in parsed;
+  const hasSharedSections = 'common' in parsed || SECTION_KEY in parsed || DEPRECATED_SECTION_KEY in parsed;
   return !hasToolKeys && hasSharedSections;
 }
 
@@ -173,17 +283,35 @@ function readJsonConfig(configPath) {
   }
 }
 
+// Validate the top-level shape + version of a shared-config object (§3, §8).
+function validateSharedShape(parsed, sharedPath) {
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new AuditConfigError(`Shared config must be a JSON object: ${sharedPath}`, 'CONFIG_SHAPE', { sharedPath });
+  }
+  if (parsed.version !== undefined) {
+    if (typeof parsed.version !== 'number' || !Number.isInteger(parsed.version) || parsed.version > SUPPORTED_CONFIG_VERSION) {
+      throw new AuditConfigError(
+        `Unsupported .dependably version ${JSON.stringify(parsed.version)} (this build supports up to ${SUPPORTED_CONFIG_VERSION})`,
+        'CONFIG_VERSION',
+        { sharedPath }
+      );
+    }
+  }
+}
+
 /**
- * Read and parse the shared `.dependably-check` file, returning its registry-host
- * allowlist and npm-check audit settings (`rules`/`maxWarnings`). Other tool
- * sections and unknown keys are ignored.
+ * Read and parse the shared config file, returning npm-check's registry-host
+ * allowlist, audit settings (`rules`/`maxWarnings`/`failOn`/`exclude`),
+ * parsed exceptions, and any deprecation/unknown-key warnings.
  *
  * @param {string} cwd - Directory to start discovery from
- * @returns {{ allowedRegistryHosts: string[], sharedPath: string|null, auditSettings: object }}
+ * @returns {{ allowedRegistryHosts, sharedPath, auditSettings, exceptions, exclude, failOn, warnings }}
  */
 export function loadSharedConfig(cwd = process.cwd()) {
   const sharedPath = findSharedConfig(cwd);
-  if (!sharedPath) return { allowedRegistryHosts: [], sharedPath: null, auditSettings: {} };
+  if (!sharedPath) {
+    return { allowedRegistryHosts: [], sharedPath: null, auditSettings: {}, exceptions: [], exclude: [], failOn: null, warnings: [] };
+  }
 
   let raw;
   try {
@@ -199,23 +327,31 @@ export function loadSharedConfig(cwd = process.cwd()) {
     throw new AuditConfigError(`Invalid JSON in ${sharedPath}: ${e.message}`, 'SHARED_CONFIG_PARSE', { sharedPath });
   }
 
+  validateSharedShape(parsed, sharedPath);
+  const warnings = filenameWarnings(sharedPath);
+  const settings = resolveToolSection(parsed, warnings);
+
   return {
     allowedRegistryHosts: collectSharedHosts(parsed),
     sharedPath,
-    auditSettings: extractSharedAuditSettings(parsed)
+    auditSettings: { ...(settings.rules ? { rules: settings.rules } : {}), ...(settings.maxWarnings !== undefined ? { maxWarnings: settings.maxWarnings } : {}) },
+    exceptions: settings.exceptions,
+    exclude: settings.exclude,
+    failOn: settings.failOn || null,
+    warnings
   };
 }
 
 export function loadAuditConfig(cwd = process.cwd(), explicitPath = null) {
-  // The shared `.dependably-check` (discovered by walking up to the repo root)
-  // is the PRIMARY config source — its `common`/`npm` sections supply the base
-  // audit settings and the registry-host allowlist. A tool-specific
-  // `.npm-checkrc.json` (or an explicit `--config`) overrides it.
+  // The shared `.dependably` (discovered by walking up to the repo root) is the
+  // PRIMARY config source. A tool-specific `.npm-checkrc.json` (or an explicit
+  // `--config`) overrides it.
   const shared = loadSharedConfig(cwd);
 
   let toolConfig = {};
   let configPath = null;
   let explicitSharedHosts = [];
+  let explicitExtras = null; // { exceptions, exclude, failOn } from an explicit shared-shape file
 
   if (explicitPath) {
     configPath = path.resolve(explicitPath);
@@ -224,17 +360,20 @@ export function loadAuditConfig(cwd = process.cwd(), explicitPath = null) {
     }
     const parsed = readJsonConfig(configPath);
     if (isSharedShape(configPath, parsed)) {
-      // `--config` points at a `.dependably-check`: read npm-check's settings
-      // from its common/npm sections and take its registry-host allowlist too.
-      toolConfig = extractSharedAuditSettings(parsed);
+      validateSharedShape(parsed, configPath);
+      const warnings = [];
+      const settings = resolveToolSection(parsed, warnings);
+      shared.warnings.push(...warnings);
+      toolConfig = { ...(settings.rules ? { rules: settings.rules } : {}), ...(settings.maxWarnings !== undefined ? { maxWarnings: settings.maxWarnings } : {}) };
       explicitSharedHosts = collectSharedHosts(parsed);
+      explicitExtras = { exceptions: settings.exceptions, exclude: settings.exclude, failOn: settings.failOn || null };
     } else {
       // Legacy flat tool-config (.npm-checkrc.json shape) given explicitly.
       toolConfig = parsed;
     }
   } else {
     // Discover a tool-specific config in the working directory (fallback for
-    // back-compat; the shared `.dependably-check` above is the primary source).
+    // back-compat; the shared `.dependably` above is the primary source).
     for (const name of CONFIG_FILENAMES) {
       const candidate = path.join(cwd, name);
       if (fs.existsSync(candidate)) {
@@ -249,13 +388,29 @@ export function loadAuditConfig(cwd = process.cwd(), explicitPath = null) {
   const userConfig = { ...shared.auditSettings, ...toolConfig };
   const config = mergeConfig(userConfig, configPath || shared.sharedPath);
 
-  // Layer the shared `.dependably-check` hosts ADDITIVELY onto whatever
-  // secure-resolved.allowedHosts resolved to (built-in default or a
-  // tool-config replacement) — public npm always stays trusted.
+  // Layer the shared allowlist ADDITIVELY onto secure-resolved / no-remote-deps
+  // (public npm always stays trusted).
   const hosts = [...new Set([...shared.allowedRegistryHosts, ...explicitSharedHosts])];
   if (hosts.length > 0) {
     extendAllowedHosts(config, hosts);
   }
+
+  // failOn.count is the standard form of maxWarnings; a legacy maxWarnings in a
+  // tool-config still wins if it was set (it flowed through mergeConfig above).
+  const failOn = explicitExtras ? explicitExtras.failOn : shared.failOn;
+  if (failOn) {
+    if (failOn.count !== undefined && toolConfig.maxWarnings === undefined && shared.auditSettings.maxWarnings === undefined) {
+      if (typeof failOn.count !== 'number' || !Number.isInteger(failOn.count) || failOn.count < 0) {
+        throw new AuditConfigError(`failOn.count must be a non-negative integer, got: ${JSON.stringify(failOn.count)}`, 'INVALID_FAIL_ON');
+      }
+      config.maxWarnings = failOn.count;
+    }
+    config.failOnSeverity = failOn.severity || null;
+  }
+
+  config.exceptions = explicitExtras ? explicitExtras.exceptions : shared.exceptions;
+  config.exclude = explicitExtras ? explicitExtras.exclude : shared.exclude;
+  config.warnings = shared.warnings;
   config.sharedConfigPath = shared.sharedPath;
 
   return config;
@@ -265,11 +420,9 @@ export function loadAuditConfig(cwd = process.cwd(), explicitPath = null) {
  * Add the given hosts to every host-based rule's `allowedHosts`, deduplicated,
  * without replacing the existing entries. No-op for rules that are absent.
  *
- * BOTH `secure-resolved` (which registries are trusted for HTTPS resolution) and
- * `no-remote-deps` (which registry hosts count as a registry rather than a
- * remote/git dep) consult `allowedHosts`. The shared `.dependably-check`
- * allowlist must reach both — otherwise a private-registry project silences one
- * rule but still trips the other, breaking the documented `--fail-on` CI gate.
+ * BOTH `secure-resolved` and `no-remote-deps` consult `allowedHosts`; the shared
+ * allowlist must reach both or a private-registry project silences one rule but
+ * still trips the other.
  *
  * @param {object} config - A merged audit config (from mergeConfig)
  * @param {string[]} hosts - Bare hostnames to add to the allowlist

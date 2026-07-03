@@ -12,6 +12,7 @@ import { walkOverrides } from './overrides.js';
 import { findOrphanedPackages } from './pruner.js';
 import { findUnusedDependencies } from './usage-scanner.js';
 import { mergeConfig } from './audit-config.js';
+import { matchException, isExpired } from './exceptions.js';
 
 export class AuditError extends Error {
   constructor(message, code, context = {}) {
@@ -723,6 +724,43 @@ function summarizeByRule(findings) {
   return byRule;
 }
 
+// The package name an npm-check finding is about, from its lockfile path (the
+// segment after the last `node_modules/`). Used to match `package` exceptions.
+function deriveFindingPackage(packagePath) {
+  if (!packagePath) return undefined;
+  const marker = 'node_modules/';
+  const idx = packagePath.lastIndexOf(marker);
+  const tail = idx >= 0 ? packagePath.slice(idx + marker.length) : packagePath;
+  return tail || undefined;
+}
+
+// Partition audit findings by the resolved `.dependably` exceptions. Kept
+// findings are returned untouched (same object refs); suppressed ones are copies
+// stamped with `suppressed`/`suppressedBy`. Expired entries never suppress.
+function applyAuditExceptions(findings, exceptions) {
+  if (!Array.isArray(exceptions) || exceptions.length === 0) {
+    return { kept: findings, suppressed: [], unused: [], expired: [] };
+  }
+  const live = [];
+  const expired = [];
+  for (const ex of exceptions) (isExpired(ex) ? expired : live).push(ex);
+
+  const used = new Set();
+  const kept = [];
+  const suppressed = [];
+  for (const finding of findings) {
+    const probe = { ruleId: finding.ruleId, package: deriveFindingPackage(finding.packagePath) };
+    const hit = live.find((ex) => matchException(ex, probe));
+    if (hit) {
+      used.add(hit);
+      suppressed.push({ ...finding, suppressed: true, suppressedBy: hit.reason });
+    } else {
+      kept.push(finding);
+    }
+  }
+  return { kept, suppressed, unused: live.filter((ex) => !used.has(ex)), expired };
+}
+
 export function runAudit(target, config = {}) {
   const { lockfile, packageJson = null, filePath = 'package-lock.json' } = target;
   if (!lockfile || typeof lockfile !== 'object') {
@@ -732,7 +770,7 @@ export function runAudit(target, config = {}) {
   const resolved = resolveAuditConfig(config);
   const flavor = detectLockfileFlavor(lockfile);
 
-  const findings = [];
+  const raw = [];
   for (const rule of rules) {
     // Flavor gating: a rule only runs against the lockfile flavors it supports
     // (npm-shape rules no-op on pnpm-lock.yaml; pnpm rules no-op on npm).
@@ -742,8 +780,12 @@ export function runAudit(target, config = {}) {
     if (!ruleConfig || ruleConfig.severity === 'off') continue;
 
     const context = { lockfile, packageJson, options: ruleConfig.options || {}, filePath, flavor };
-    findings.push(...collectRuleFindings(rule, ruleConfig, context));
+    raw.push(...collectRuleFindings(rule, ruleConfig, context));
   }
+
+  // Suppress findings named by `.dependably` exceptions: they no longer gate but
+  // are reported separately (spec §6). Kept findings drive errors/warnings/pass.
+  const { kept: findings, suppressed, unused, expired } = applyAuditExceptions(raw, config.exceptions);
 
   const errors = findings.filter((f) => f.severity === 'error').length;
   const warnings = findings.filter((f) => f.severity === 'warn').length;
@@ -754,9 +796,11 @@ export function runAudit(target, config = {}) {
 
   return {
     findings,
-    summary: { errors, warnings, total: findings.length, byRule },
+    suppressed,
+    summary: { errors, warnings, total: findings.length, byRule, suppressed: suppressed.length },
     pass,
-    filePath
+    filePath,
+    exceptionsMeta: { unused, expired }
   };
 }
 
@@ -767,14 +811,20 @@ export function runAudit(target, config = {}) {
  * @returns {string}
  */
 export function formatAuditReport(report, options = {}) {
-  const { format = 'stylish' } = options;
+  const { format = 'stylish', showSuppressed = false } = options;
+  const suppressed = report.suppressed || [];
 
   if (format === 'json') {
     return JSON.stringify({
       filePath: report.filePath,
       pass: report.pass,
       summary: report.summary,
-      findings: report.findings
+      findings: report.findings,
+      suppressed,
+      exceptionsMeta: {
+        unused: (report.exceptionsMeta && report.exceptionsMeta.unused || []).map((e) => e._raw),
+        expired: (report.exceptionsMeta && report.exceptionsMeta.expired || []).map((e) => e._raw)
+      }
     }, null, 2);
   }
 
@@ -786,7 +836,8 @@ export function formatAuditReport(report, options = {}) {
   lines.push(report.filePath);
 
   if (report.findings.length === 0) {
-    lines.push('  no problems found');
+    lines.push(suppressed.length > 0 ? `  no problems found (${suppressed.length} suppressed by .dependably)` : '  no problems found');
+    appendSuppressed(lines, suppressed, showSuppressed);
     return lines.join('\n');
   }
 
@@ -799,7 +850,21 @@ export function formatAuditReport(report, options = {}) {
 
   const { errors, warnings, total } = report.summary;
   const problemWord = total === 1 ? 'problem' : 'problems';
+  const suffix = suppressed.length > 0 ? ` — ${suppressed.length} suppressed by .dependably` : '';
   lines.push('');
-  lines.push(`${total} ${problemWord} (${errors} error${errors === 1 ? '' : 's'}, ${warnings} warning${warnings === 1 ? '' : 's'})`);
+  lines.push(`${total} ${problemWord} (${errors} error${errors === 1 ? '' : 's'}, ${warnings} warning${warnings === 1 ? '' : 's'})${suffix}`);
+  appendSuppressed(lines, suppressed, showSuppressed);
   return lines.join('\n');
+}
+
+// Optionally list the suppressed findings (with their exception reason) below the
+// summary, so `--show-suppressed` keeps the audit trail visible.
+function appendSuppressed(lines, suppressed, showSuppressed) {
+  if (!showSuppressed || suppressed.length === 0) return;
+  lines.push('');
+  lines.push('suppressed by .dependably:');
+  for (const f of suppressed) {
+    const loc = f.packagePath ? `${f.packagePath}   ` : '';
+    lines.push(`  ${f.ruleId}  ${loc}${f.message}  (${f.suppressedBy})`);
+  }
 }

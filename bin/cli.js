@@ -82,8 +82,9 @@ Report Options:
   --no-vuln                  Skip the known-vulnerability scan
   --no-deprecated            Skip the deprecation scan
   --no-license               Skip the license check
-  --config <file>            Suite config (.dependably-check), discovered by walking
-                             up to the repo root; .npm-checkrc.json is a fallback
+  --config <file>            Suite config (.dependably; .dependably-check is a
+                             deprecated alias), discovered by walking up to the
+                             repo root; .npm-checkrc.json is a fallback
   --format human|json        Output format (default: human; json emits the shared finding schema)
   --allow-unresolved         Don't fail when a registry-backed scan can't complete
                              (registry down / endpoint unsupported). Default: FAIL CLOSED
@@ -147,11 +148,13 @@ Unused Options:
   --format human|json        Output format (default: human; json is machine-readable)
 
 Audit Options:
-  --config <file>            Suite config (.dependably-check), discovered by walking
-                             up to the repo root; .npm-checkrc.json is a fallback
+  --config <file>            Suite config (.dependably; .dependably-check is a
+                             deprecated alias), discovered by walking up to the
+                             repo root; .npm-checkrc.json is a fallback
   --rule <id>:<severity>     Override a rule severity (error|warn|off); repeatable
   --fail-on count=<N>        Fail when the warning count exceeds N (count=0 fails on
                              any warning; --max-warnings / --strict are deprecated aliases)
+  --show-suppressed          List findings suppressed by .dependably exceptions
   --format stylish|json      Report format (default: stylish)
 
 General Options:
@@ -329,6 +332,7 @@ const BOOLEAN_OPTIONS = new Set([
   '--offline', '--allow-unresolved',
   '--no-integrity', '--no-vuln', '--no-deprecated', '--no-license',
   '--include-dev', '--include-peer', '--write', '--local-fallback', '--verbose',
+  '--show-suppressed',
   '--version', '--help', '-h',
   // deprecated boolean aliases (still parsed)
   '--strict', '--fail-on-deprecated'
@@ -989,6 +993,24 @@ function runUnusedCommand() {
   }
 }
 
+// Print .dependably config notices (deprecated filename/section, unknown keys)
+// to stderr. Never affects exit codes or the JSON payload on stdout.
+function emitConfigWarnings(warnings, format) {
+  if (format === 'json' || !Array.isArray(warnings)) return;
+  for (const w of warnings) console.error(`.dependably: ${w.message}`);
+}
+
+// Print unused / expired exception notices to stderr (spec §6.4/§6.5).
+function emitExceptionWarnings(meta, format) {
+  if (format === 'json' || !meta) return;
+  for (const ex of meta.expired || []) {
+    console.error(`.dependably: exception expired ${ex.expires} for rule "${ex.rule}" — ${ex.reason}`);
+  }
+  for (const ex of meta.unused || []) {
+    console.error(`.dependably: unused exception for rule "${ex.rule}" — ${ex.reason}`);
+  }
+}
+
 function runAuditCommand() {
   const filePath = getFilePath(positionals()[0]);
   // The audit command gates on warning/finding count, not severity level.
@@ -1007,13 +1029,18 @@ function runAuditCommand() {
     applyRuleOverrides(config);
     applyMaxWarnings(config);
     const format = parseFormatFlag(['stylish', 'json'], 'stylish');
+    const showSuppressed = argv.includes('--show-suppressed');
+
+    // Surface .dependably deprecation / unknown-key notices (never gating).
+    emitConfigWarnings(config.warnings, format);
 
     const lockfile = parseLockfile(filePath);
     // package.json is optional; the pinned-versions rule degrades gracefully
     const packageJson = loadSiblingPackageJson(filePath);
 
     report = runAudit({ lockfile, packageJson, filePath: path.relative(process.cwd(), filePath) || filePath }, config);
-    console.log('\n' + formatAuditReport(report, { format }));
+    emitExceptionWarnings(report.exceptionsMeta, format);
+    console.log('\n' + formatAuditReport(report, { format, showSuppressed }));
   } catch (error) {
     console.error(`\nAudit error: ${error.message}`);
     process.exit(2);
