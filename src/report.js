@@ -85,17 +85,33 @@ function pushFinding(buckets, id, finding) {
   list.push(finding);
 }
 
-// Bucket integrity findings: real hash mismatches are errors. Unresolved entries
-// (could-not-verify) are errors when failing closed (the default), else warnings.
+// `checkIntegrity()` fails closed by default (failOnUnresolved): an unresolved
+// entry (registry unreachable / no published sha512) is folded into BOTH
+// `unresolvedItems` AND `errors`/`failed`, so the same package would otherwise
+// be counted — and rendered — as "mismatched" as well as "unresolved". Since
+// `errors` pushes the very same object reference for that case, a Set keyed on
+// `unresolvedItems` reliably tells a GENUINE failure (a real hash mismatch, or
+// an untrusted-host rejection) apart from an unresolved entry just riding along
+// in `errors` for the fail-closed gate.
+function integrityMismatches(integrityResult) {
+  const unresolvedSet = new Set(integrityResult.unresolvedItems);
+  return integrityResult.errors.filter((err) => !unresolvedSet.has(err));
+}
+
+// Bucket integrity findings: one detail line per non-verified package, each
+// prefixed with its category so the "headline tamper signal" (mismatched) is
+// never confused with a package that simply couldn't be checked (unresolved).
+// The detail count here always equals the summary's non-verified sum (see
+// integritySummary()) — both are derived from integrityMismatches() + unresolvedItems.
 function collectIntegrityFindings(buckets, integrityResult, failOnUnresolved) {
-  for (const err of integrityResult.errors) {
-    if (err.expected && err.actual) {
-      pushFinding(buckets, 'integrity', { severity: 'error', location: err.packagePath, message: `lockfile hash differs from registry for ${err.package}` });
-    }
+  for (const err of integrityMismatches(integrityResult)) {
+    const who = err.version ? `${err.package}@${err.version}` : err.package;
+    const detail = err.reason || 'lockfile hash differs from registry';
+    pushFinding(buckets, 'integrity', { severity: 'error', location: err.packagePath, message: `mismatched: ${who}: ${detail}` });
   }
   const unresolvedSeverity = failOnUnresolved ? 'error' : 'warn';
   for (const item of integrityResult.unresolvedItems) {
-    pushFinding(buckets, 'integrity', { severity: unresolvedSeverity, location: item.packagePath, message: `${item.package}@${item.version}: ${item.reason}` });
+    pushFinding(buckets, 'integrity', { severity: unresolvedSeverity, location: item.packagePath, message: `unresolved: ${item.package}@${item.version}: ${item.reason}` });
   }
 }
 
@@ -179,10 +195,16 @@ function collectLicenseFindings(buckets, licenseResult) {
   }
 }
 
-// One-line summary for the integrity section's count bits.
+// One-line summary for the integrity section's count bits. All four bits are
+// derived from ONE shared package total (verified + mismatched + unresolved +
+// skipped) so they always add up. "mismatched" counts only GENUINE failures
+// (integrityMismatches) — not `r.failed`, which also folds in unresolved
+// entries when failing closed and would otherwise double-count the same
+// package as both "mismatched" and "unresolved".
 function integritySummary(r) {
+  const mismatched = integrityMismatches(r).length;
   const bits = [`${r.passed} verified`];
-  if (r.failed) bits.push(`${r.failed} mismatched`);
+  if (mismatched) bits.push(`${mismatched} mismatched`);
   if (r.unresolved) bits.push(`${r.unresolved} unresolved`);
   if (r.skipped) bits.push(`${r.skipped} skipped`);
   return bits.join(' · ');
@@ -320,8 +342,68 @@ function resolveRunOptions(options, dir) {
     fetchAdvisories: null,
     fetchManifest: null,
     onProgress: null,
+    // The `secure-resolved` and `no-remote-deps` audit rules independently flag
+    // a package resolved from an untrusted/unrecognized host — for a private
+    // registry mirror EVERY package resolved from it trips both rules, so
+    // "Resolved URLs" and "Remote-URL deps" end up reporting the same packages
+    // twice (one root cause, two lines). By default the report cross-references
+    // and collapses those duplicates (dedupeRemoteFindings); `verbose: true`
+    // (CLI `--verbose`) opts back into the full per-package listing.
+    verbose: false,
     ...options
   };
+}
+
+// Pull a hostname out of a "no-remote-deps" finding's message, which always
+// embeds the offending URL in parentheses (`${name} resolves from a remote
+// URL (${resolved}) — …`). Returns null when the URL can't be parsed.
+function extractRemoteHost(message) {
+  const match = message.match(/\(([^()]*:\/\/[^()]+)\)/);
+  if (!match) return null;
+  try {
+    return new URL(match[1]).hostname;
+  } catch {
+    return null;
+  }
+}
+
+// Cross-reference "Remote-URL deps" (remote) against "Resolved URLs" (resolved):
+// a `remote` finding whose package is ALREADY flagged in `resolved` is the same
+// root cause (an untrusted/unrecognized host) reported twice, not two distinct
+// problems. Collapse those into one grouped-by-host finding per host instead of
+// one line per duplicated package — counting root causes, not duplicated lines.
+// Findings for packages `remote` flags that `resolved` did NOT (e.g. a host
+// trusted by one rule's config but not the other's) are left untouched.
+function dedupeRemoteFindings(buckets) {
+  const resolved = buckets.resolved;
+  const remote = buckets.remote;
+  if (!resolved || !remote || resolved.length === 0 || remote.length === 0) return;
+
+  const resolvedPaths = new Set(resolved.map((f) => f.location));
+  const distinct = [];
+  const duplicatesByHost = new Map(); // host -> { count, severity }
+
+  for (const f of remote) {
+    if (!resolvedPaths.has(f.location)) {
+      distinct.push(f);
+      continue;
+    }
+    const host = extractRemoteHost(f.message) || 'an unrecognized host';
+    const group = duplicatesByHost.get(host) || { count: 0, severity: f.severity };
+    group.count++;
+    if (f.severity === 'error') group.severity = 'error'; // keep the worst severity seen
+    duplicatesByHost.set(host, group);
+  }
+
+  for (const [host, { count, severity }] of duplicatesByHost) {
+    distinct.push({
+      severity,
+      location: null,
+      message: `${count} package${count === 1 ? '' : 's'} resolved from "${host}" — already reported under Resolved URLs (npm v12 needs --allow-remote; pass --verbose to list each package)`
+    });
+  }
+
+  buckets.remote = distinct;
 }
 
 // Install-script tally (allowed vs blocked), reconciled against npm v12's
@@ -457,6 +539,10 @@ export async function runReport(target, options = {}) {
   //    tally is npm-only (pnpm gates builds via onlyBuiltDependencies).
   const audit = runAudit({ lockfile, packageJson, filePath }, opts.auditConfig);
   bucketAuditFindings(buckets, audit);
+  // Cross-reference "Remote-URL deps" against "Resolved URLs" so one untrusted
+  // host doesn't get reported once per package in each section (opt out with
+  // `verbose: true` / CLI `--verbose` for the full per-package listing).
+  if (!opts.verbose) dedupeRemoteFindings(buckets);
   let scriptTally = { total: 0, allowed: [], blocked: [], v12Aware: false };
   if (!isPnpm) {
     scriptTally = tallyInstallScripts(lockfile, packageJson, opts.auditConfig);
@@ -640,6 +726,14 @@ function renderSummaryTable(sections) {
   return sections.map((s) => `  ${ICON[s.status]}  ${s.title.padEnd(titleWidth)}   ${s.summary}`);
 }
 
+// Literal severity tag for a detail line — mirrors the standalone `audit`
+// command's own stylish vocabulary (formatAuditReport's `error`/`warn `), so a
+// reader can tell at a glance which lines actually drive the exit code instead
+// of a "problems" count that doesn't visibly correlate with any one line.
+function severityTag(severity) {
+  return severity === 'error' ? 'error' : 'warn ';
+}
+
 // Detail block for a single section — empty unless it has findings.
 function renderSectionDetail(s) {
   if (s.findings.length === 0) return [];
@@ -647,7 +741,7 @@ function renderSectionDetail(s) {
   const shown = s.findings.slice(0, MAX_DETAIL);
   for (const f of shown) {
     const loc = f.location ? `${f.location}  ` : '';
-    lines.push(`  ${ICON[f.severity] || ' '}  ${loc}${f.message}`);
+    lines.push(`  ${severityTag(f.severity)}  ${loc}${f.message}`);
   }
   if (s.findings.length > shown.length) {
     lines.push(`  …and ${s.findings.length - shown.length} more`);
@@ -655,9 +749,15 @@ function renderSectionDetail(s) {
   return lines;
 }
 
-// Closing totals line: an all-clear, or an error/warning count.
-function renderFooter({ errors, warnings, total }) {
+// Closing totals line: an all-clear, or an error/warning count plus a next-step
+// hint when warnings alone did not fail the run (so "N warnings" doesn't read
+// as ambiguous next to an exit code of 0).
+function renderFooter({ errors, warnings, total, pass }) {
   if (total === 0) return 'all checks passed';
   const word = total === 1 ? 'problem' : 'problems';
-  return `${total} ${word} (${errors} error${errors === 1 ? '' : 's'}, ${warnings} warning${warnings === 1 ? '' : 's'})`;
+  const line = `${total} ${word} (${errors} error${errors === 1 ? '' : 's'}, ${warnings} warning${warnings === 1 ? '' : 's'})`;
+  if (pass && warnings > 0) {
+    return `${line}\nwarnings above don't affect exit status; use \`npm-check report --fail-on count=0\` (or a severity gate) to fail CI on them`;
+  }
+  return line;
 }

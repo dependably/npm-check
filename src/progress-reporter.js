@@ -237,9 +237,41 @@ export function createProgressBar(progress, width = 40) {
   return `[${bar}] ${percentage}%`;
 }
 
+/**
+ * Decide what (if anything) a CLI progress reporter should write to the
+ * terminal for this update, given whether stdout is attached to a real TTY.
+ *
+ * On a TTY, redrawing an animated `\r` bar in place is fine — the terminal
+ * overwrites the previous frame. When stdout is NOT a TTY (piped, redirected,
+ * `tee`'d, CI logs) there is nowhere for `\r` to redraw: every frame lands as
+ * its own line and floods the log (a real run emitted ~35KB of redraw frames
+ * this way). So the non-TTY case degrades to periodic one-line milestones
+ * (0/25/50/75/100%) instead of an animated bar — callers should still write
+ * this to stderr so stdout stays report-only either way.
+ *
+ * @param {ProgressInfo} progress
+ * @param {object} state - Caller-owned, mutated in place across calls:
+ *   `{ lastPercentage, lastMilestone }` (both start at -1/null).
+ * @param {boolean} isTTY - Whether the target stream is a real TTY.
+ * @returns {string|null} The line to write, or null to write nothing this update.
+ */
+export function formatCliProgressUpdate(progress, state, isTTY) {
+  if (!isTTY) {
+    const milestone = Math.floor(progress.percentage / 25) * 25;
+    if (milestone === state.lastMilestone) return null;
+    state.lastMilestone = milestone;
+    return `${progress.stage}: ${progress.percentage}%\n`;
+  }
+
+  if (state.lastPercentage === progress.percentage) return null;
+  state.lastPercentage = progress.percentage;
+  return `\r${createProgressBar(progress)} ${progress.stage}`;
+}
+
 export default {
   ProgressReporter,
   createProgressReporter,
   formatProgress,
-  createProgressBar
+  createProgressBar,
+  formatCliProgressUpdate
 };

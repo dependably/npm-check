@@ -11,7 +11,7 @@ import { migrateToVersion } from '../src/migrator.js';
 import { upgradeIntegrityHashes, deduplicatePackages } from '../src/updater.js';
 import { fixPackageLock } from '../src/fixer.js';
 import { createBackup, listBackups, restoreFromLatestBackup, cleanOldBackups, BackupError } from '../src/backup.js';
-import { createProgressBar } from '../src/progress-reporter.js';
+import { formatCliProgressUpdate } from '../src/progress-reporter.js';
 import { checkIntegrity, checkLicenses } from '../src/checker.js';
 import { checkVulnerabilities, vulnEnvelope } from '../src/vuln.js';
 import { checkDeprecations, deprecationEnvelope } from '../src/deprecation.js';
@@ -87,6 +87,8 @@ Report Options:
   --format human|json        Output format (default: human; json emits the shared finding schema)
   --allow-unresolved         Don't fail when a registry-backed scan can't complete
                              (registry down / endpoint unsupported). Default: FAIL CLOSED
+  --verbose                  List every "Remote-URL deps" package individually instead of
+                             the default grouped-by-host cross-reference against "Resolved URLs"
   --concurrency / --timeout / --registry / --licenses-csv   (as in Check Options)
 
 Check Options:
@@ -266,15 +268,16 @@ function handleError(error, context = '') {
   process.exit(2);
 }
 
-// Build a progress callback that redraws the bar only when the percentage
-// changes, to avoid flicker. Each caller keeps its own `lastProgress` state.
+// Build a progress callback that writes to stderr (stdout stays report-only).
+// On a real TTY it redraws an animated `\r` bar in place; when stdout is NOT a
+// TTY (piped, redirected, `tee`, CI logs) it degrades to periodic one-line
+// milestones instead — see formatCliProgressUpdate() for why.
 function makeProgressReporter() {
-  let lastProgress = null;
+  const isTTY = Boolean(process.stdout.isTTY);
+  const state = { lastPercentage: -1, lastMilestone: -1 };
   return (progress) => {
-    if (!lastProgress || progress.percentage !== lastProgress.percentage) {
-      process.stderr.write(`\r${createProgressBar(progress)} ${progress.stage}`);
-      lastProgress = progress;
-    }
+    const line = formatCliProgressUpdate(progress, state, isTTY);
+    if (line) process.stderr.write(line);
   };
 }
 
@@ -325,7 +328,7 @@ const VALUED_OPTIONS = new Set([
 const BOOLEAN_OPTIONS = new Set([
   '--offline', '--allow-unresolved',
   '--no-integrity', '--no-vuln', '--no-deprecated', '--no-license',
-  '--include-dev', '--include-peer', '--write', '--local-fallback',
+  '--include-dev', '--include-peer', '--write', '--local-fallback', '--verbose',
   '--version', '--help', '-h',
   // deprecated boolean aliases (still parsed)
   '--strict', '--fail-on-deprecated'
@@ -496,8 +499,11 @@ function registryOption(defaultRegistry) {
   return defaultRegistry ? { defaultRegistry } : {};
 }
 
-// Clear the in-progress progress bar line.
+// Clear the in-progress progress bar line. Only meaningful on a real TTY —
+// the non-TTY reporter never draws an in-place line to begin with, so this
+// would otherwise just emit a stray blank-ish line into piped/CI output.
 function clearProgressLine() {
+  if (!process.stdout.isTTY) return;
   process.stderr.write('\r' + ' '.repeat(80) + '\r');
 }
 
@@ -610,6 +616,9 @@ function parseReportOptions() {
     strict,
     maxWarnings,
     format: parseFormatFlag(['human', 'json'], 'human'),
+    // List every duplicated "Remote-URL deps" package individually instead of
+    // the default grouped-by-host cross-reference against "Resolved URLs".
+    verbose: argv.includes('--verbose'),
     // Network/integrity + license toggles.
     integrity: !argv.includes('--offline') && !argv.includes('--no-integrity'),
     license: !argv.includes('--no-license'),
@@ -650,7 +659,7 @@ async function runReportCommand() {
         auditConfig: opts.config, integrity: opts.integrity, license: opts.license, vuln: opts.vuln,
         deprecated: opts.deprecated, failOnDeprecated: opts.failOnDeprecated, minSeverity: opts.minSeverity,
         strict: opts.strict, maxWarnings: opts.maxWarnings, concurrency: opts.concurrency,
-        timeoutMs: opts.timeoutMs, failOnUnresolved: opts.failOnUnresolved, onProgress,
+        timeoutMs: opts.timeoutMs, failOnUnresolved: opts.failOnUnresolved, verbose: opts.verbose, onProgress,
         ...registryOption(opts.defaultRegistry),
         ...(opts.licensesCsv ? { licensesCsv: opts.licensesCsv } : {})
       }
