@@ -82,8 +82,9 @@ Report Options:
   --no-vuln                  Skip the known-vulnerability scan
   --no-deprecated            Skip the deprecation scan
   --no-license               Skip the license check
-  --config <file>            Suite config (.dependably-check), discovered by walking
-                             up to the repo root; .npm-checkrc.json is a fallback
+  --config <file>            Suite config (.dependably; .dependably-check is a
+                             deprecated alias), discovered by walking up to the
+                             repo root; .npm-checkrc.json is a fallback
   --format human|json        Output format (default: human; json emits the shared finding schema)
   --allow-unresolved         Don't fail when a registry-backed scan can't complete
                              (registry down / endpoint unsupported). Default: FAIL CLOSED
@@ -147,11 +148,13 @@ Unused Options:
   --format human|json        Output format (default: human; json is machine-readable)
 
 Audit Options:
-  --config <file>            Suite config (.dependably-check), discovered by walking
-                             up to the repo root; .npm-checkrc.json is a fallback
+  --config <file>            Suite config (.dependably; .dependably-check is a
+                             deprecated alias), discovered by walking up to the
+                             repo root; .npm-checkrc.json is a fallback
   --rule <id>:<severity>     Override a rule severity (error|warn|off); repeatable
   --fail-on count=<N>        Fail when the warning count exceeds N (count=0 fails on
                              any warning; --max-warnings / --strict are deprecated aliases)
+  --show-suppressed          List findings suppressed by .dependably exceptions
   --format stylish|json      Report format (default: stylish)
 
 General Options:

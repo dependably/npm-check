@@ -170,7 +170,8 @@ npm-check audit                          # Lint ./package-lock.json with default
 npm-check audit --fail-on count=0        # Treat any warning as failure
 npm-check audit --format json            # Machine-readable output
 npm-check audit --rule pinned-versions:error --rule secure-resolved:off
-npm-check audit --config ./.dependably-check
+npm-check audit --config ./.dependably
+npm-check audit --show-suppressed         # List findings silenced by .dependably exceptions
 ```
 
 **Default rules:**
@@ -193,7 +194,7 @@ Additional rules validate the manifest and config files (`valid-package-json`, `
 
 **Configuration file:**
 
-Config resolution follows the suite-wide convention: `--config <file>` (or, when omitted, a `.dependably-check` discovered by walking up to the repo root) is the **primary** source — npm-check reads its `common` then `npm` sections for `rules`/`maxWarnings`. A tool-local `.npm-checkrc.json` (then `npm-check.config.json`) in the current directory is a **fallback** that overrides the shared settings. CLI flags override file settings. Rule entries are `"error"`, `"warn"`, `"off"`, or `[severity, options]`:
+Config resolution follows the suite-wide convention: `--config <file>` (or, when omitted, a **`.dependably`** discovered by walking up to the repo root — `.dependably-check` is a deprecated alias, and `.dependably` wins when both exist) is the **primary** source — npm-check reads its `common` then **`npm-check`** section (`npm` is a deprecated section alias). Sections merge by the unified rule: `rules` merge per id, the list keys (`exclude`, `exceptions`, `allowedRegistryHosts`) union, and scalars/`failOn` override. A tool-local `.npm-checkrc.json` (then `npm-check.config.json`) in the current directory is a **fallback** that overrides the shared settings. CLI flags override file settings. Rule entries are `"error"`, `"warn"`, `"off"`, or `[severity, options]`:
 
 ```json
 {
@@ -207,6 +208,22 @@ Config resolution follows the suite-wide convention: `--config <file>` (or, when
   }
 }
 ```
+
+**Exceptions and `failOn`** (unified `.dependably` format — see [`dependably-config-spec.md`](./dependably-config-spec.md)): use the standard `failOn` gate and `exceptions` to suppress specific findings so the run doesn't fail wholesale, without turning a rule off or excluding a whole file:
+
+```json
+{
+  "npm-check": {
+    "failOn": { "count": 0 },
+    "exceptions": [
+      { "rule": "install-scripts", "package": "esbuild", "reason": "vendored build tool; reviewed", "expires": "2027-01-01" },
+      { "rule": "unused-dependencies", "package": "tslib", "reason": "injected by tsc importHelpers" }
+    ]
+  }
+}
+```
+
+Each exception needs a `rule`, at least one selector (npm-check matches `package` and `id`), and a non-empty `reason`; `expires` (`YYYY-MM-DD`) makes it inert afterward. Suppressed findings don't gate but are still counted (`--show-suppressed` lists them); unused/expired exceptions warn on stderr. `failOn: {count}` is the standard form of `maxWarnings`; `failOn: {severity}` gates on a finding-severity level.
 
 Exit codes follow the [shared convention](#exit-codes) (`1` also covers warnings exceeding `maxWarnings` / `--fail-on count=`).
 
