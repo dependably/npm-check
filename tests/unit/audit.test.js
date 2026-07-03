@@ -57,7 +57,7 @@ describe('runAudit', () => {
     });
     expect(report.findings).toEqual([]);
     expect(report.pass).toBe(true);
-    expect(report.summary).toEqual({ errors: 0, warnings: 0, total: 0, byRule: {} });
+    expect(report.summary).toEqual({ errors: 0, warnings: 0, total: 0, byRule: {}, suppressed: 0 });
   });
 
   it('throws without a lockfile', () => {
