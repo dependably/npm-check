@@ -1,17 +1,23 @@
 # CI/CD pipeline for npm-check
 #
 # Flow:  test  →  build  →  sbom  →  sbom-publish  →  publish (manual)  →  mirror (manual)
-#        (manual jobs are default-branch only)
+#
+#   Releases are TAG-DRIVEN: push a `vX.Y.Z` tag on main and the two release jobs
+#   (publish, publish-github) appear as manual gates on that tag's pipeline. They
+#   do NOT run on the default-branch pipeline — that's what guarantees the release
+#   tag exists when the GitHub mirror pushes `--tags`, and prevents a main pipeline
+#   and its tag pipeline from both publishing the same version.
 #
 #   test           lint + unit tests on every push/MR
 #   build          `npm pack` the publishable tarball, kept as a job artifact
 #   sbom           generate a CycloneDX SBOM (every pipeline), kept as an artifact
 #   sbom-publish   upload the SBOM to Dependency-Track on the default branch (its own
 #                  stage so it never races the `sbom` job in the shared build dir)
-#   publish        manual gate that pushes the built tarball to the private registry
-#   publish-github manual gate (last stage) that mirrors the default branch + tags
-#                  to the public GitHub repo — reachable only after every earlier
-#                  stage has passed
+#   publish        manual gate on a vX.Y.Z tag — pushes the built tarball to the
+#                  private registry
+#   publish-github manual gate (last stage) on a vX.Y.Z tag — mirrors the default
+#                  branch + tags to the public GitHub repo, reachable only after
+#                  every earlier stage has passed
 #
 # Required CI/CD variables (Settings → CI/CD → Variables), set as "Protected"
 # and "Masked" so they're only exposed to protected branches:
@@ -296,10 +302,13 @@ publish:
   # full suite). The `test` stage above is the authoritative quality gate.
   dependencies:
     - build
-  # Manual approval, default branch only. Serialize so two publishes can't race.
+  # Manual approval on a version tag. Serialize so two publishes can't race.
+  # Tag-driven: the release is cut by pushing a `vX.Y.Z` tag, so publish fires on
+  # the tag pipeline (never the default-branch pipeline) — one publish per release,
+  # no double-publish race between a main pipeline and its tag pipeline.
   resource_group: publish
   rules:
-    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+    - if: '$CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+$/'
       when: manual
       allow_failure: false
   script:
@@ -354,11 +363,14 @@ publish:
 # makes the public mirror reflect a released state.
 #
 # Gating: it lives in the LAST stage and uses no `needs:`, so it only becomes
-# reachable once every earlier stage (test → build → sbom → sbom-publish →
-# publish) has succeeded on the default branch — i.e. "only when main passes all
-# jobs". Even then it's `when: manual`, so a human clicks to mirror. Default
-# branch only; serialized via resource_group; interruptible:false so an in-flight
-# push is never auto-cancelled.
+# reachable once every earlier stage (test → build → sbom → publish) has
+# succeeded — and it fires only on a `vX.Y.Z` tag pipeline, so the release tag
+# is guaranteed to exist when `git push github --tags` runs (that's the whole
+# point of tag-driving it: main's mirror can never leave a fresh tag behind).
+# Even then it's `when: manual`, so a human clicks to mirror. Version-tag only;
+# serialized via resource_group; interruptible:false so an in-flight push is
+# never auto-cancelled. On a tag pipeline HEAD is the tagged commit (= main's
+# tip at release time), so `HEAD:refs/heads/<default>` keeps GitHub's main current.
 #
 # GIT_DEPTH: 0 turns the shallow CI clone into a full clone so the whole history
 # and all tags can be pushed. Auth uses an http.extraheader carrying a base64
@@ -374,7 +386,7 @@ publish-github:
     GIT_DEPTH: "0"
   resource_group: publish-github
   rules:
-    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+    - if: '$CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+$/'
       when: manual
       allow_failure: false
   script:
