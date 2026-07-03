@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Console-output UX pass (moonlitlabs/npm-check#33).**
+  - Progress redraw frames no longer flood piped/CI/`tee`'d logs: when stdout is not a TTY, the CLI's progress reporter degrades from an animated `\r` bar to periodic one-line milestones (0/25/50/75/100%) on stderr, instead of emitting one `\r` frame per percentage change (~35KB of redraw frames on a real run). New `formatCliProgressUpdate()` in `progress-reporter.js`.
+  - The `report` command's "Integrity (registry)" summary no longer double-counts an unresolved (couldn't-check) entry as both "mismatched" and "unresolved" — `checkIntegrity()`'s fail-closed bookkeeping folds it into both `unresolved` and `failed`, which previously inflated the "mismatched" bit and orphaned the detail line from either count. The summary's "mismatched" bit and the detail section now derive from the same set; each detail line is prefixed `mismatched:` or `unresolved:`.
+  - "Resolved URLs" and "Remote-URL deps" no longer report the same package twice for one root cause (an untrusted/unrecognized registry host trips both the `secure-resolved` and `no-remote-deps` audit rules independently). The report now cross-references the two sections and collapses "Remote-URL deps" duplicates into one grouped-by-host finding (`--verbose` restores the full per-package listing).
+  - Each report detail line is now prefixed with its severity (`error`/`warn`, matching the standalone `audit` command's vocabulary), and the closing totals line adds a next-step hint when warnings alone didn't fail the run.
+
 ## [1.7.0] - 2026-07-02
 
 ### Added

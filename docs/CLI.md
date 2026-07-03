@@ -16,6 +16,8 @@ npm-check                       # ./package-lock.json
 npm-check report web/package-lock.json
 npm-check --offline             # skip the registry integrity check
 npm-check --format json         # machine-readable, for CI
+npm-check --verbose             # list every "Remote-URL deps" package individually instead of
+                                 # the default grouped-by-host cross-reference against "Resolved URLs"
 
 # Validate a lockfile (+ sibling package.json + .npmrc)
 npm-check validate
@@ -99,6 +101,10 @@ The registry-backed scans — `check --check hash` (integrity), `vuln`, `depreca
 - `--offline` (`vuln`, `deprecated`, `report`) — skip the network entirely; everything is *skipped* and the run exits 0.
 
 The programmatic API matches: `checkIntegrity`, `checkVulnerabilities`, and `checkDeprecations` default `failOnUnresolved: true`; pass `false` for lenient behavior.
+
+## Progress output
+
+Registry-backed commands (`check --check hash`, `vuln`, `deprecated`, `report`) write progress to **stderr**, never stdout — stdout stays report-only. On a real terminal this is an animated redraw-in-place bar; when stdout is not a TTY (piped, redirected, `tee`'d, CI logs) it degrades to periodic one-line milestones (0/25/50/75/100%) instead, so a piped/CI run's log isn't flooded with redraw frames.
 
 ## Machine-readable output (`--format json`)
 

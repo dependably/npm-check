@@ -2,7 +2,8 @@ import {
   ProgressReporter,
   createProgressReporter,
   formatProgress,
-  createProgressBar
+  createProgressBar,
+  formatCliProgressUpdate
 } from '../../src/progress-reporter.js';
 
 describe('Progress Reporter', () => {
@@ -196,6 +197,62 @@ describe('Progress Reporter', () => {
       const bar = createProgressBar(progress, 20);
       // Check approximate length (accounting for brackets and percentage)
       expect(bar.length).toBeLessThan(30);
+    });
+  });
+
+  describe('formatCliProgressUpdate (non-TTY progress suppression)', () => {
+    const progressAt = (percentage, stage = 'Verifying integrity against registry') => ({
+      current: percentage, total: 100, percentage, elapsed: 100, estimated: 0, stage
+    });
+
+    it('on a TTY, redraws an animated \\r bar for every percentage change', () => {
+      const state = { lastPercentage: -1, lastMilestone: -1 };
+      const first = formatCliProgressUpdate(progressAt(0), state, true);
+      expect(first).toMatch(/^\r/);
+      expect(first).toContain('0%');
+
+      const second = formatCliProgressUpdate(progressAt(37), state, true);
+      expect(second).toMatch(/^\r/);
+      expect(second).toContain('37%');
+    });
+
+    it('on a TTY, suppresses a redraw when the percentage has not changed', () => {
+      const state = { lastPercentage: -1, lastMilestone: -1 };
+      formatCliProgressUpdate(progressAt(50), state, true);
+      const repeat = formatCliProgressUpdate(progressAt(50), state, true);
+      expect(repeat).toBeNull();
+    });
+
+    it('on a non-TTY, never emits a \\r-redrawn frame (would flood a piped/CI log)', () => {
+      const state = { lastPercentage: -1, lastMilestone: -1 };
+      for (const pct of [0, 5, 12, 24, 25, 33, 49, 50, 51, 74, 75, 99, 100]) {
+        const line = formatCliProgressUpdate(progressAt(pct), state, false);
+        if (line !== null) expect(line).not.toMatch(/\r/);
+      }
+    });
+
+    it('on a non-TTY, collapses to periodic one-line milestones instead of one line per % change', () => {
+      const state = { lastPercentage: -1, lastMilestone: -1 };
+      const lines = [];
+      // Simulate a real run: percentage advances 1-by-1 across 100 updates —
+      // on a TTY this would be up to 101 separate frame writes.
+      for (let pct = 0; pct <= 100; pct++) {
+        const line = formatCliProgressUpdate(progressAt(pct), state, false);
+        if (line !== null) lines.push(line);
+      }
+      // Milestones only: 0, 25, 50, 75, 100 — never one line per percentage point.
+      expect(lines.length).toBe(5);
+      lines.forEach((line) => expect(line.endsWith('\n')).toBe(true));
+      expect(lines[0]).toContain('0%');
+      expect(lines[lines.length - 1]).toContain('100%');
+    });
+
+    it('on a non-TTY, still reports the final 100% milestone even off a 25% cadence', () => {
+      const state = { lastPercentage: -1, lastMilestone: -1 };
+      formatCliProgressUpdate(progressAt(0), state, false);
+      formatCliProgressUpdate(progressAt(83), state, false);
+      const last = formatCliProgressUpdate(progressAt(100), state, false);
+      expect(last).toContain('100%');
     });
   });
 });

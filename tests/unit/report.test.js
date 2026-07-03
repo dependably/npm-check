@@ -89,6 +89,88 @@ describe('runReport', () => {
     expect(integrity.findings.some((f) => /differs from registry/.test(f.message))).toBe(true);
   });
 
+  // moonlitlabs/npm-check#33: a genuine hash mismatch must be labeled distinctly
+  // from a package that merely couldn't be checked (unresolved), both in the
+  // summary bit and in the detail line's category prefix.
+  it('prefixes a genuine hash mismatch detail line with "mismatched:"', async () => {
+    const report = await runReport(
+      { lockfile: cleanLockfile(), packageJson: cleanPackageJson(), filePath: 'package-lock.json' },
+      baseOpts({ fetchIntegrity: fakeRegistry({ 'good-pkg': HASH_B }) })
+    );
+    const integrity = report.sections.find((s) => s.id === 'integrity');
+    expect(integrity.summary).toMatch(/1 mismatched/);
+    expect(integrity.summary).not.toMatch(/unresolved/);
+    expect(integrity.findings).toHaveLength(1);
+    expect(integrity.findings[0].message).toMatch(/^mismatched: good-pkg: /);
+  });
+
+  // moonlitlabs/npm-check#33: `checkIntegrity` fails closed by folding an
+  // unresolved entry into BOTH `unresolvedItems` and `errors`/`failed` — the
+  // OLD summary read this as "1 mismatched · 1 unresolved" (implying two
+  // distinct problem packages, and a detail count of 2) for what is really
+  // ONE package that simply could not be checked. The summary must not claim a
+  // "mismatched" (tamper) package here, and the single detail line must be
+  // categorized "unresolved:", not "mismatched:".
+  it('reconciles the Integrity summary with its detail section for an unresolved (not mismatched) entry', async () => {
+    const report = await runReport(
+      { lockfile: cleanLockfile(), packageJson: cleanPackageJson(), filePath: 'package-lock.json' },
+      baseOpts({ fetchIntegrity: fakeRegistry({}) }) // registry has no sha512 for good-pkg → unresolved
+    );
+    const integrity = report.sections.find((s) => s.id === 'integrity');
+    expect(integrity.summary).not.toMatch(/mismatched/);
+    expect(integrity.summary).toMatch(/1 unresolved/);
+    // Detail count equals the summary's non-verified sum (1 unresolved, 0 mismatched).
+    expect(integrity.findings).toHaveLength(1);
+    expect(integrity.findings[0].message).toMatch(/^unresolved: good-pkg@1\.0\.0: /);
+  });
+
+  // moonlitlabs/npm-check#33: `secure-resolved` and `no-remote-deps` both flag a
+  // package resolved from a host neither rule's default allowlist trusts — one
+  // root cause (the mirror host), reported twice (once per rule/section). The
+  // report cross-references and collapses the "Remote-URL deps" duplicate into
+  // one grouped-by-host finding instead of one line per duplicated package.
+  it('cross-references Resolved URLs and Remote-URL deps instead of double-reporting the same untrusted host', async () => {
+    const lockfile = cleanLockfile();
+    lockfile.packages['node_modules/mirror-pkg'] = {
+      name: 'mirror-pkg', version: '1.0.0',
+      resolved: 'https://mirror.example.ca/mirror-pkg/-/mirror-pkg-1.0.0.tgz',
+      integrity: HASH_A
+    };
+    const report = await runReport(
+      { lockfile, packageJson: cleanPackageJson(), filePath: 'package-lock.json' },
+      baseOpts({ fetchIntegrity: fakeRegistry({ 'good-pkg': HASH_A, 'mirror-pkg': HASH_A }) })
+    );
+
+    const resolved = report.sections.find((s) => s.id === 'resolved');
+    const remote = report.sections.find((s) => s.id === 'remote');
+
+    // "Resolved URLs" still reports the untrusted host per package (unchanged —
+    // it's the primary, more specific finding).
+    expect(resolved.findings.some((f) => f.location === 'node_modules/mirror-pkg')).toBe(true);
+
+    // "Remote-URL deps" collapses into ONE grouped-by-host finding — the root
+    // cause counted once, not the duplicated package line again.
+    expect(remote.findings).toHaveLength(1);
+    expect(remote.findings[0].location).toBeNull();
+    expect(remote.findings[0].message).toMatch(/1 package resolved from "mirror\.example\.ca"/);
+    expect(remote.findings[0].message).toMatch(/already reported under Resolved URLs/);
+  });
+
+  it('lists every duplicated Remote-URL deps package individually under verbose:true (--verbose)', async () => {
+    const lockfile = cleanLockfile();
+    lockfile.packages['node_modules/mirror-pkg'] = {
+      name: 'mirror-pkg', version: '1.0.0',
+      resolved: 'https://mirror.example.ca/mirror-pkg/-/mirror-pkg-1.0.0.tgz',
+      integrity: HASH_A
+    };
+    const report = await runReport(
+      { lockfile, packageJson: cleanPackageJson(), filePath: 'package-lock.json' },
+      baseOpts({ verbose: true, fetchIntegrity: fakeRegistry({ 'good-pkg': HASH_A, 'mirror-pkg': HASH_A }) })
+    );
+    const remote = report.sections.find((s) => s.id === 'remote');
+    expect(remote.findings.some((f) => f.location === 'node_modules/mirror-pkg')).toBe(true);
+  });
+
   it('routes audit findings into install-scripts and pinned sections (warnings only → pass)', async () => {
     const lockfile = cleanLockfile();
     lockfile.packages['node_modules/good-pkg'].hasInstallScript = true;
