@@ -15,7 +15,8 @@ npm install -g @dependably/npm-check
 npx @dependably/npm-check
 ```
 
-Requires Node.js ≥ 22.
+Requires Node.js ≥ 22. Building from source: see
+[CONTRIBUTING.md](https://github.com/dependably/npm-check/blob/main/CONTRIBUTING.md).
 
 ## Quick start
 
