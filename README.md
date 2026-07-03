@@ -15,8 +15,7 @@ npm install -g @dependably/npm-check
 npx @dependably/npm-check
 ```
 
-Requires Node.js ≥ 22. Building from source: see
-[CONTRIBUTING.md](https://github.com/dependably/npm-check/blob/main/CONTRIBUTING.md).
+Requires Node.js ≥ 22.
 
 ## Quick start
 
@@ -60,11 +59,7 @@ for every command, flag, and exit code.
 
 - **[CLI reference](https://github.com/dependably/npm-check/blob/main/docs/CLI.md)** — all commands, flags, exit codes, JSON output
 - **[API guide](https://github.com/dependably/npm-check/blob/main/docs/API.md)** — using it as a library
-- [Performance](https://github.com/dependably/npm-check/blob/main/docs/PERFORMANCE.md) ·
-  [Testing](https://github.com/dependably/npm-check/blob/main/docs/TESTING.md)
-- [Changelog](https://github.com/dependably/npm-check/blob/main/CHANGELOG.md) ·
-  [Contributing](https://github.com/dependably/npm-check/blob/main/CONTRIBUTING.md) ·
-  [Security](https://github.com/dependably/npm-check/blob/main/SECURITY.md)
+- [Changelog](https://github.com/dependably/npm-check/blob/main/CHANGELOG.md)
 
 ## License
 
