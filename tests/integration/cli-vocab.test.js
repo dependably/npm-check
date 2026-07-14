@@ -38,7 +38,13 @@ describe('Integration: CLI vocabulary (--fail-on gate)', () => {
   test('--fail-on count=99 passes when warnings are within budget', async () => {
     const ws = await createTestWorkspace('unpinned-v3');
     try {
-      const r = await runCli(['audit', ws.lockfilePath, '--fail-on', 'count=99'], { cwd: ws.dir });
+      // pinned-versions defaults to error (which always fails regardless of a
+      // count budget); override it back to warn so this exercises the count
+      // budget against an actual warning, per the test's intent.
+      const r = await runCli(
+        ['audit', ws.lockfilePath, '--rule', 'pinned-versions:warn', '--fail-on', 'count=99'],
+        { cwd: ws.dir }
+      );
       expect(r.code).toBe(0);
     } finally {
       await ws.cleanup();

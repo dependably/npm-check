@@ -47,7 +47,7 @@ describe('mergeConfig', () => {
     const config = mergeConfig({});
     expect(config.maxWarnings).toBe(-1);
     expect(config.rules['lockfile-version']).toEqual({ severity: 'error', options: { minVersion: 3 } });
-    expect(config.rules['pinned-versions'].severity).toBe('warn');
+    expect(config.rules['pinned-versions'].severity).toBe('error');
   });
 
   it('merges user options over rule defaults', () => {

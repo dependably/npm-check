@@ -280,7 +280,7 @@ describe('runAudit', () => {
   });
 
   describe('pinned-versions rule', () => {
-    it('warns on caret/tilde ranges with resolved versions', () => {
+    it('errors on caret/tilde ranges with resolved versions', () => {
       const packageJson = cleanPackageJson();
       packageJson.dependencies['good-pkg'] = '^1.0.0';
       packageJson.devDependencies = { 'tilde-pkg': '~2.0.0' };
@@ -288,7 +288,7 @@ describe('runAudit', () => {
       const report = runAudit({ lockfile: cleanLockfile(), packageJson });
       const pinned = report.findings.filter((f) => f.ruleId === 'pinned-versions');
       expect(pinned).toHaveLength(2);
-      expect(pinned[0].severity).toBe('warn');
+      expect(pinned[0].severity).toBe('error');
       expect(pinned.find((f) => f.packagePath === 'package.json#dependencies/good-pkg').message)
         .toMatch(/range "\^1\.0\.0" is not pinned \(resolved: 1\.0\.0\)/);
     });

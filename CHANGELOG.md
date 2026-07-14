@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.8.0] - 2026-07-14
+
+### Changed
+- **`pinned-versions` now defaults to `error` (was `warn`).** A warn-severity finding never fails `npm-check audit` (warnings alone pass by default), so unpinned `^`/`~` ranges in `package.json` were never actually gated by a default `audit` run or a pre-commit hook/CI job built on it — only `--strict`/`--fail-on count=0` caught them. Restore the previous behavior for a repo via `.dependably`'s `npm-check.rules.pinned-versions: "warn"` (or `"off"`), `.npm-checkrc.json`, or `--rule pinned-versions:warn`.
+
 ## [1.7.1] - 2026-07-03
 
 ### Added

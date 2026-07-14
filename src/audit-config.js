@@ -58,7 +58,7 @@ export const DEFAULT_CONFIG = {
     'install-scripts': ['warn', { allow: [] }],
     'no-git-deps': 'warn',
     'no-remote-deps': ['warn', { allowedHosts: ['registry.npmjs.org', 'npm.pkg.github.com'] }],
-    'pinned-versions': ['warn', {
+    'pinned-versions': ['error', {
       sections: ['dependencies', 'devDependencies', 'optionalDependencies'],
       ignore: []
     }],

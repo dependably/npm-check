@@ -22,12 +22,26 @@ async function runCli(args, options = {}) {
 }
 
 describe('Integration: npm-check audit', () => {
-  test('exits 0 on a clean lockfile', async () => {
+  test('exits 1 by default on unpinned ranges (pinned-versions defaults to error)', async () => {
     const workspace = await createTestWorkspace('unpinned-v3');
     try {
-      // unpinned-v3 has caret/tilde ranges → pinned-versions warnings, but
-      // warnings alone pass by default
       const result = await runCli(['audit', workspace.lockfilePath], { cwd: workspace.dir });
+      expect(result.code).toBe(1);
+      expect(result.stdout).toMatch(/error\s+pinned-versions/);
+    } finally {
+      await workspace.cleanup();
+    }
+  }, 30000);
+
+  test('exits 0 when pinned-versions is overridden back to warn', async () => {
+    const workspace = await createTestWorkspace('unpinned-v3');
+    try {
+      // unpinned-v3 has caret/tilde ranges → pinned-versions findings, but an
+      // explicit override back to warn should still pass by default
+      const result = await runCli(
+        ['audit', workspace.lockfilePath, '--rule', 'pinned-versions:warn'],
+        { cwd: workspace.dir }
+      );
       expect(result.code).toBe(0);
       expect(result.stdout).toMatch(/warn\s+pinned-versions/);
     } finally {
@@ -51,10 +65,13 @@ describe('Integration: npm-check audit', () => {
     }
   }, 30000);
 
-  test('--strict turns pinned-versions warnings into failure', async () => {
+  test('--strict turns overridden-to-warn pinned-versions findings into failure', async () => {
     const workspace = await createTestWorkspace('unpinned-v3');
     try {
-      const result = await runCli(['audit', workspace.lockfilePath, '--strict'], { cwd: workspace.dir });
+      const result = await runCli(
+        ['audit', workspace.lockfilePath, '--rule', 'pinned-versions:warn', '--strict'],
+        { cwd: workspace.dir }
+      );
       expect(result.code).toBe(1);
     } finally {
       await workspace.cleanup();
@@ -70,7 +87,8 @@ describe('Integration: npm-check audit', () => {
         '--rule', 'integrity-hygiene:off',
         '--rule', 'secure-resolved:off',
         '--rule', 'valid-structure:off',
-        '--rule', 'lockfile-sync:off'
+        '--rule', 'lockfile-sync:off',
+        '--rule', 'pinned-versions:off'
       ], { cwd: workspace.dir });
       expect(result.code).toBe(0);
     } finally {
