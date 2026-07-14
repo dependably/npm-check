@@ -185,7 +185,7 @@ npm-check audit --show-suppressed         # List findings silenced by .dependabl
 | `install-scripts` | warn | No dependency declares a lifecycle install script (`hasInstallScript`) unless approved — via the rule's `allow` option **or** npm v12's package.json `allowScripts` map. Flags pending/denied scripts that npm v12 won't run |
 | `no-git-deps` | warn | No git dependencies — npm v12 won't install them without `--allow-git` |
 | `no-remote-deps` | warn | No remote-URL (non-registry) tarball dependencies — npm v12 won't install them without `--allow-remote` |
-| `pinned-versions` | warn | No `^`/`~` ranges in package.json dependency sections or `overrides` |
+| `pinned-versions` | error | No `^`/`~` ranges in package.json dependency sections or `overrides` |
 | `lockfile-sync` | error | package.json and the lockfile agree (name/version, every declared dep present with matching range, no lockfile-only leftovers) |
 | `no-orphan-packages` | warn | No lockfile entries unreachable from the dependency graph (fix with `npm-check prune`) |
 | `unused-dependencies` | warn | Every declared dependency is imported by the application source (heuristic; `includeDev`/`ignore` options) |
@@ -203,7 +203,7 @@ Config resolution follows the suite-wide convention: `--config <file>` (or, when
     "lockfile-version":  ["error", { "minVersion": 3 }],
     "integrity-hygiene": ["error", { "allowSha1": false }],
     "secure-resolved":   ["error", { "allowedHosts": ["registry.npmjs.org", "npm.mycorp.example.com"] }],
-    "pinned-versions":   ["warn", { "sections": ["dependencies", "devDependencies"], "ignore": [] }],
+    "pinned-versions":   ["error", { "sections": ["dependencies", "devDependencies"], "ignore": [] }],
     "unused-dependencies": ["warn", { "includeDev": false, "ignore": [] }]
   }
 }

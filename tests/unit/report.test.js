@@ -189,7 +189,9 @@ describe('runReport', () => {
 
     const report = await runReport(
       { lockfile, packageJson, filePath: 'package-lock.json' },
-      baseOpts()
+      // pinned-versions defaults to error; override back to warn so this test
+      // can exercise "warnings only → pass" routing across two rule sections.
+      baseOpts({ auditConfig: { rules: { 'pinned-versions': 'warn' } } })
     );
     expect(report.summary.errors).toBe(0);
     expect(report.summary.warnings).toBeGreaterThanOrEqual(2);
