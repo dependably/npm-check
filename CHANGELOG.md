@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **The `.dependably` spec, its JSON Schema, and the conformance corpus now live in the [dependably-spec](https://gitlab.northwardlabs.ca/moonlitlabs/dependably-spec) repository.** They governed six tools while living in this one, so a contract change had to be filed against a peer implementation and drift between vendored copies was invisible. `docs/dependably-config-spec.md`, `docs/dependably-config-unification-plan.md`, and `schema/dependably-v1.json` are removed here; `conformance/dependably/` is now a vendored copy pinned to an upstream commit recorded in `conformance/VENDOR.md`, and changes to it belong upstream. No runtime behavior changes — nothing under `src/` ever read these files.
+
 ## [1.8.0] - 2026-07-14
 
 ### Changed
@@ -15,7 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [1.7.1] - 2026-07-03
 
 ### Added
-- **Repo-root `.dependably` config.** npm-check now ships its own `.dependably` file (the shared, cross-tool config this project defines the reference implementation for — see `docs/dependably-config-spec.md`), declaring `dependably.northwardlabs.ca` as a trusted registry host under `common.allowedRegistryHosts`. This is a defensive/documentary addition for suite consistency with the other Dependably tools; this repo's own `package-lock.json` already resolves everything from `registry.npmjs.org`, so no active `secure-resolved`/`no-remote-deps` finding was being suppressed.
+- **Repo-root `.dependably` config.** npm-check now ships its own `.dependably` file (the shared, cross-tool config this project provides the reference implementation of — see the [config spec](https://gitlab.northwardlabs.ca/moonlitlabs/dependably-spec/-/blob/main/docs/dependably-config-spec.md)), declaring `dependably.northwardlabs.ca` as a trusted registry host under `common.allowedRegistryHosts`. This is a defensive/documentary addition for suite consistency with the other Dependably tools; this repo's own `package-lock.json` already resolves everything from `registry.npmjs.org`, so no active `secure-resolved`/`no-remote-deps` finding was being suppressed.
 
 ### Fixed
 - **Console-output UX pass (moonlitlabs/npm-check#33).**

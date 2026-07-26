@@ -209,7 +209,7 @@ Config resolution follows the suite-wide convention: `--config <file>` (or, when
 }
 ```
 
-**Exceptions and `failOn`** (unified `.dependably` format — see [`dependably-config-spec.md`](./dependably-config-spec.md)): use the standard `failOn` gate and `exceptions` to suppress specific findings so the run doesn't fail wholesale, without turning a rule off or excluding a whole file:
+**Exceptions and `failOn`** (unified `.dependably` format — see the [config spec](https://gitlab.northwardlabs.ca/moonlitlabs/dependably-spec/-/blob/main/docs/dependably-config-spec.md)): use the standard `failOn` gate and `exceptions` to suppress specific findings so the run doesn't fail wholesale, without turning a rule off or excluding a whole file:
 
 ```json
 {

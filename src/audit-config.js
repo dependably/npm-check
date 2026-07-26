@@ -16,7 +16,8 @@ export const CONFIG_FILENAMES = ['.npm-checkrc.json', 'npm-check.config.json'];
 
 // Shared, cross-tool config file (JSON, no extension) discovered by walking up
 // from the working directory. `.dependably` is canonical; `.dependably-check` is
-// a deprecated alias kept for the migration window (docs/dependably-config-spec.md §7).
+// a deprecated alias kept for the migration window (config spec §7, at
+// https://gitlab.northwardlabs.ca/moonlitlabs/dependably-spec).
 export const SHARED_CONFIG_FILENAME = '.dependably';
 export const DEPRECATED_SHARED_CONFIG_FILENAME = '.dependably-check';
 // Checked in this order at each directory level (canonical wins).
