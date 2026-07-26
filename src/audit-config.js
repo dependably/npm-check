@@ -190,8 +190,20 @@ function unionList(a, b) {
 // id replaces common's wholesale (no cross-section option deep-merge, §B.3).
 function mergeRuleMaps(commonRules, toolRules) {
   if (!commonRules && !toolRules) return undefined;
-  return { ...(commonRules && typeof commonRules === 'object' ? commonRules : {}),
-    ...(toolRules && typeof toolRules === 'object' ? toolRules : {}) };
+
+  // A rule id in `common` that npm-check does not know belongs to a sibling tool, so it is
+  // dropped rather than merged (§8). Without this it reached mergeConfig's registry check and
+  // raised UNKNOWN_RULE, which made a shared config unusable the moment any sibling configured
+  // one of its own rules. Ids from the tool's own section are passed through untouched, so an
+  // unknown id there still errors — that one is a typo, not a sibling's.
+  const fromCommon = {};
+  if (commonRules && typeof commonRules === 'object') {
+    for (const [ruleId, value] of Object.entries(commonRules)) {
+      if (KNOWN_RULES.includes(ruleId)) fromCommon[ruleId] = value;
+    }
+  }
+
+  return { ...fromCommon, ...(toolRules && typeof toolRules === 'object' ? toolRules : {}) };
 }
 
 // Warn about keys npm-check does not recognize inside its own section (§8). `common`

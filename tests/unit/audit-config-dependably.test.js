@@ -79,6 +79,30 @@ describe('section aliasing', () => {
 });
 
 describe('single merge rule (common <-> tool)', () => {
+  it('drops a sibling tool\'s rule id from common rather than erroring on it', () => {
+    // `common` is shared, so a rule id npm-check does not know there belongs to another tool.
+    // Before this was handled, common.rules was merged into the tool map and then validated
+    // against npm-check's registry, so any sibling configuring one of its own rules made the
+    // shared config unloadable for npm-check.
+    write(SHARED_CONFIG_FILENAME, {
+      common: { rules: { cyclomatic: ['error', { max: 25 }] } },
+      'npm-check': { rules: { 'no-git-deps': 'error' } }
+    });
+
+    const config = loadAuditConfig(tmpDir);
+
+    expect(config.rules['no-git-deps'].severity).toBe('error');
+    expect(config.rules.cyclomatic).toBeUndefined();
+  });
+
+  it('still rejects an unknown rule id in npm-check\'s own section', () => {
+    // The other half of the rule: an id npm-check does not know in its OWN section is a typo,
+    // not a sibling's, and must keep erroring. Without this the fix above could overshoot.
+    write(SHARED_CONFIG_FILENAME, { 'npm-check': { rules: { 'no-such-rule': 'error' } } });
+
+    expect(() => loadAuditConfig(tmpDir)).toThrow(/no-such-rule/);
+  });
+
   it('merges rules per id: distinct ids union, shared id replaced by tool', () => {
     git();
     write(SHARED_CONFIG_FILENAME, {

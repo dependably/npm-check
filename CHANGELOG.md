@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **A sibling tool's rule id in `.dependably`'s `common` section no longer fails the load.** `common.rules` was merged into npm-check's rule map before the ids were validated against its own registry, so any sibling configuring one of its own rules there made the shared config unloadable with `UNKNOWN_RULE`. The spec makes an unknown rule id in `common` legal — it belongs to another tool — and an error only in the tool's own section, which is how npm-check already treated unknown ids in `exceptions`. Ids from `common` that npm-check does not know are now dropped; a typo in the `npm-check` section still errors as before. Found by replaying the shared conformance corpus, which had recorded it as a known divergence.
 - **An unrecognized key inside `.dependably`'s `common` section no longer warns.** `common` is shared with the rest of the Dependably suite, so npm-check was emitting `UNKNOWN_KEY` for every sibling tool's legitimate key there — nucheck's registry keys, pdbcheck's `terms`, and so on — noise the reader cannot act on. The spec (§8) makes an unknown key a warning only inside the tool's *own* section and ignores it in `common`. npm-check already tolerated unknown *rule ids* in `common` for exactly that reason, so this also removes an internal inconsistency. A typo in the `npm-check` section still warns as before.
 
 ### Added

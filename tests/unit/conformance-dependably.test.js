@@ -53,14 +53,10 @@ const WAIVED = {
 // Cases npm-check genuinely fails. Each is a bug, not a waiver: the case is
 // replayed and asserted to STILL FAIL, so fixing the bug trips this suite and
 // forces the entry to be deleted. Never add one without a reason a reader can act on.
-const KNOWN_DIVERGENCES = {
-  'validation-unknown-rule-in-common-ignored':
-    'npm-check throws UNKNOWN_RULE for a sibling tool\'s rule id in `common`. The spec ' +
-    'makes an unknown rule id legal there (it belongs to another tool) and an error only ' +
-    'in the tool\'s own section, which is how npm-check already treats unknown rule ids in ' +
-    '`exceptions` — the `rules` map is the inconsistent path: common.rules is merged into ' +
-    'the tool rule map before mergeConfig validates rule ids.'
-};
+// Cases npm-check replays but does not yet satisfy. Empty is the goal: an entry here is a
+// known bug with a test already written for it, and the suite fails once one starts passing
+// so the entry cannot outlive the defect.
+const KNOWN_DIVERGENCES = {};
 
 const CASES = fs
   .readdirSync(CASES_DIR)
@@ -230,7 +226,7 @@ describe('.dependably conformance corpus', () => {
 });
 
 describe('.dependably conformance corpus — known divergences', () => {
-  it.each(DIVERGENT.map((c) => [c.name, c]))('%s still fails', (name, caseDef) => {
+  (DIVERGENT.length ? it.each(DIVERGENT.map((c) => [c.name, c])) : it.skip.each([[null, null]]))('%s still fails', (name, caseDef) => {
     let conforms = true;
     try {
       replay(caseDef);
@@ -267,7 +263,8 @@ describe('.dependably conformance corpus — coverage', () => {
     expect(reason.length).toBeGreaterThan(20);
   });
 
-  it.each(Object.entries(KNOWN_DIVERGENCES))('records %s as a divergence for a stated reason', (name, reason) => {
+  const DIV_ENTRIES = Object.entries(KNOWN_DIVERGENCES);
+  (DIV_ENTRIES.length ? it.each(DIV_ENTRIES) : it.skip.each([[null, null]]))('records %s as a divergence for a stated reason', (name, reason) => {
     expect(byName.get(name)).toBeDefined();
     expect(reason.length).toBeGreaterThan(20);
   });
