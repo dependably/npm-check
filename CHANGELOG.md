@@ -7,7 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **An unrecognized key inside `.dependably`'s `common` section no longer warns.** `common` is shared with the rest of the Dependably suite, so npm-check was emitting `UNKNOWN_KEY` for every sibling tool's legitimate key there — nucheck's registry keys, pdbcheck's `terms`, and so on — noise the reader cannot act on. The spec (§8) makes an unknown key a warning only inside the tool's *own* section and ignores it in `common`. npm-check already tolerated unknown *rule ids* in `common` for exactly that reason, so this also removes an internal inconsistency. A typo in the `npm-check` section still warns as before.
+
 ### Changed
+- **Vendored conformance corpus re-pinned to spec commit `4bffaf66`** (from `aa878298`). The delta is the new `validation-unknown-key-in-common-ignored` case, which pins the behavior fixed above, and a repair to the corpus README's link to the spec, which was relative and therefore dead in every vendored copy. `conformance/VENDOR.md` keeps the clone-and-run re-sync instructions: the upstream sync script rewrites that block assuming it is itself checked in here, which it is not.
 - **The `.dependably` spec, its JSON Schema, and the conformance corpus now live in the [dependably-spec](https://gitlab.northwardlabs.ca/moonlitlabs/dependably-spec) repository.** They governed six tools while living in this one, so a contract change had to be filed against a peer implementation and drift between vendored copies was invisible. `docs/dependably-config-spec.md`, `docs/dependably-config-unification-plan.md`, and `schema/dependably-v1.json` are removed here; `conformance/dependably/` is now a vendored copy pinned to an upstream commit recorded in `conformance/VENDOR.md`, and changes to it belong upstream. No runtime behavior changes — nothing under `src/` ever read these files.
 
 ## [1.8.0] - 2026-07-14

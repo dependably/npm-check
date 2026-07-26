@@ -193,12 +193,35 @@ describe('exceptions', () => {
 });
 
 describe('unknown keys', () => {
-  it('warns UNKNOWN_KEY for an unrecognized key in a read section', () => {
+  it('warns UNKNOWN_KEY for an unrecognized key in the own section', () => {
     git();
     write(SHARED_CONFIG_FILENAME, { 'npm-check': { exclde: ['typo/**'], maxWarnings: 1 } });
     const config = loadAuditConfig(tmpDir);
     expect(codes(config)).toContain('UNKNOWN_KEY');
     expect(config.maxWarnings).toBe(1);
+  });
+
+  it('ignores an unrecognized key in common (belongs to a sibling tool)', () => {
+    git();
+    write(SHARED_CONFIG_FILENAME, {
+      common: { allowedRegistryHosts: ['registry.example.com'], ignoreUnusedPackages: ['some-sibling-tool-key'] },
+      'npm-check': { failOn: { count: 1 } }
+    });
+    const config = loadAuditConfig(tmpDir);
+    expect(codes(config)).not.toContain('UNKNOWN_KEY');
+    expect(config.maxWarnings).toBe(1);
+  });
+
+  it('still warns for the own section when common also carries a sibling key', () => {
+    git();
+    write(SHARED_CONFIG_FILENAME, {
+      common: { terms: ['sibling-owned'] },
+      'npm-check': { exclde: ['typo/**'] }
+    });
+    const messages = (loadAuditConfig(tmpDir).warnings || [])
+      .filter((w) => w.code === 'UNKNOWN_KEY').map((w) => w.message);
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toContain('npm-check.exclde');
   });
 });
 
