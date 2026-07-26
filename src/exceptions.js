@@ -1,9 +1,10 @@
 // src/exceptions.js
 //
-// Reference implementation of the `.dependably` exception grammar
-// (docs/dependably-config-spec.md §6). This is the module the C# and Python
-// ports mirror; keep it behavior-compatible with the conformance fixtures under
-// conformance/dependably/.
+// Reference implementation of the `.dependably` exception grammar, specified in
+// §6 of the config spec at
+// https://gitlab.northwardlabs.ca/moonlitlabs/dependably-spec. This is the module
+// the C# and Python ports mirror; keep it behavior-compatible with the vendored
+// conformance fixtures under conformance/dependably/.
 //
 // An exception suppresses SPECIFIC findings so a run does not fail on them,
 // without excluding whole files (`exclude`) or disabling a rule globally
