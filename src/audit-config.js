@@ -35,7 +35,8 @@ export const SUPPORTED_CONFIG_VERSION = 1;
 // own section but tolerated (ignored) in `common`.
 export const APPLICABLE_SELECTORS = ['package', 'id'];
 
-// Keys npm-check recognizes inside `common` / its own section. Unknown keys warn.
+// Keys npm-check recognizes inside its own section. An unrecognized key there warns;
+// the same key in `common` is ignored, since it may belong to a sibling tool.
 const KNOWN_SECTION_KEYS = new Set([
   'rules', 'exceptions', 'exclude', 'failOn',
   'allowedRegistryHosts', 'allowedLocalFeeds', 'maxWarnings'
@@ -193,7 +194,10 @@ function mergeRuleMaps(commonRules, toolRules) {
     ...(toolRules && typeof toolRules === 'object' ? toolRules : {}) };
 }
 
-// Warn about keys npm-check does not recognize inside a read section (§8).
+// Warn about keys npm-check does not recognize inside its own section (§8). `common`
+// is deliberately not checked: it is shared with the sibling tools, so a key npm-check
+// does not know there belongs to one of them, not to a typo. This matches how unknown
+// rule ids are already treated — tolerated in `common`, an error in the own section.
 function unknownKeyWarnings(section, label, warnings) {
   if (!section || typeof section !== 'object') return;
   for (const key of Object.keys(section)) {
@@ -219,7 +223,6 @@ function resolveToolSection(parsed, warnings) {
     warnings.push({ code: 'DEPRECATED_ALIAS_SECTION', message: `both "${SECTION_KEY}" and "${DEPRECATED_SECTION_KEY}" sections present; using "${SECTION_KEY}"` });
   }
 
-  unknownKeyWarnings(common, 'common', warnings);
   unknownKeyWarnings(tool, SECTION_KEY, warnings);
 
   const settings = {};
