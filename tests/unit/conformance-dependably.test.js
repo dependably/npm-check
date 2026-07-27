@@ -168,9 +168,6 @@ function bind(caseDef) {
 // A waiver may only cover a case authored in another tool's vocabulary — the
 // coverage tests below enforce that, so an npm-check case can never be waived.
 const WAIVED = {
-  'discovery-explicit-config':
-    'codemetrics case: the explicit file carries only a `codemetrics` section, so the ' +
-    'sole assertion (resolved.rules.cyclomatic) is a rule id npm-check does not define.',
   'exceptions-common-and-tool-union':
     'cslint case: the tool half of the union lives in the `cslint` section, which ' +
     'npm-check never reads, and the common half selects on `path`, which npm-check findings never carry.',
@@ -182,10 +179,7 @@ const WAIVED = {
     'carry no version, so an @version pin has nothing to pin against.',
   'exceptions-path-and-symbol-and':
     'codemetrics case: the exception lives in the `codemetrics` section and ANDs ' +
-    '`path` with `symbol`, selectors npm-check rejects in its own section by design.',
-  'merge-scalar-failon-override':
-    'cslint case: the overriding half of the failOn merge lives in the `cslint` section, ' +
-    'so replaying it under npm-check would only exercise `common` and could not observe the override.'
+    '`path` with `symbol`, selectors npm-check rejects in its own section by design.'
 };
 
 // Cases npm-check genuinely fails. Each is a bug, not a waiver: the case is
