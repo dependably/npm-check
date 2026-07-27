@@ -37,7 +37,7 @@ export const APPLICABLE_SELECTORS = ['package', 'id'];
 
 // Keys npm-check recognizes inside its own section. An unrecognized key there warns;
 // the same key in `common` is ignored, since it may belong to a sibling tool.
-const KNOWN_SECTION_KEYS = new Set([
+export const KNOWN_SECTION_KEYS = new Set([
   'rules', 'exceptions', 'exclude', 'failOn',
   'allowedRegistryHosts', 'allowedLocalFeeds', 'maxWarnings'
 ]);
