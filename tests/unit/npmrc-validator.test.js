@@ -131,6 +131,18 @@ describe('validateNpmrc', () => {
       // sibling key still recognized
       expect(codes(validateNpmrc('prefer-offline=true'))).not.toContain('NPMRC_UNKNOWN_KEY');
     });
+    it('does not warn on update-notifier, a real npm config key', () => {
+      const result = validateNpmrc('update-notifier=false');
+      expect(codes(result)).not.toContain('NPMRC_UNKNOWN_KEY');
+      expect(result.valid).toBe(true);
+    });
+    it('does not warn on the noise-suppression keys set together', () => {
+      const result = validateNpmrc(
+        'fund=false\naudit=false\nprogress=false\nupdate-notifier=false\nloglevel=warn'
+      );
+      expect(codes(result)).not.toContain('NPMRC_UNKNOWN_KEY');
+      expect(result.valid).toBe(true);
+    });
   });
 
   describe('bare boolean keys (#7)', () => {
