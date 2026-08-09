@@ -605,7 +605,7 @@ describe('formatAuditReport', () => {
 });
 
 describe('rules registry', () => {
-  it('exposes all sixteen rules with ids and check functions', () => {
+  it('exposes all seventeen rules with ids and check functions', () => {
     expect(rules.map((r) => r.id)).toEqual([
       'lockfile-version',
       'valid-structure',
@@ -615,6 +615,7 @@ describe('rules registry', () => {
       'install-scripts',
       'no-git-deps',
       'no-remote-deps',
+      'resolved-registry-pin',
       'pinned-versions',
       'lockfile-sync',
       'no-orphan-packages',
@@ -821,5 +822,63 @@ describe('no-git-deps and no-remote-deps rules (npm v12 opt-ins)', () => {
       { rules: { 'no-remote-deps': ['warn', { allowedHosts: ['registry.npmjs.org', 'registry.corp.example.com'] }] } }
     );
     expect(reportCustom.findings.filter((f) => f.ruleId === 'no-remote-deps')).toEqual([]);
+  });
+});
+
+describe('resolved-registry-pin rule (lockfile portability)', () => {
+  const pin = (hosts) => ({ rules: { 'resolved-registry-pin': ['error', { hosts }] } });
+  const withPrivate = () => {
+    const lockfile = cleanLockfile();
+    lockfile.packages['node_modules/mirrored'] = {
+      name: 'mirrored',
+      version: '1.0.0',
+      resolved: 'https://mirror.example.com/npm/tarballs/mirrored/-/mirrored-1.0.0.tgz',
+      integrity: GOOD_HASH
+    };
+    return lockfile;
+  };
+
+  it('is a no-op when no hosts are pinned, so private-registry projects are unaffected', () => {
+    const report = runAudit({ lockfile: withPrivate(), packageJson: cleanPackageJson() });
+    expect(report.findings.filter((f) => f.ruleId === 'resolved-registry-pin')).toEqual([]);
+  });
+
+  it('flags a resolved URL pointing outside the pinned hosts', () => {
+    const report = runAudit({ lockfile: withPrivate(), packageJson: cleanPackageJson() }, pin(['registry.npmjs.org']));
+    const found = report.findings.filter((f) => f.ruleId === 'resolved-registry-pin');
+    expect(found).toHaveLength(1);
+    expect(found[0].packagePath).toBe('node_modules/mirrored');
+    expect(found[0].message).toMatch(/mirror\.example\.com/);
+    expect(found[0].severity).toBe('error');
+  });
+
+  it('accepts URLs on a pinned host', () => {
+    const report = runAudit({ lockfile: cleanLockfile(), packageJson: cleanPackageJson() }, pin(['registry.npmjs.org']));
+    expect(report.findings.filter((f) => f.ruleId === 'resolved-registry-pin')).toEqual([]);
+  });
+
+  // The whole point of the rule: a host can be fully trusted and still make the
+  // lockfile unusable off-network. Trust (allowedRegistryHosts, a union key that
+  // only ever widens) must not silence the portability pin.
+  it('still flags a host that secure-resolved/no-remote-deps trust', () => {
+    const config = {
+      rules: {
+        'secure-resolved': ['error', { allowedHosts: ['registry.npmjs.org', 'mirror.example.com'] }],
+        'no-remote-deps': ['warn', { allowedHosts: ['registry.npmjs.org', 'mirror.example.com'] }],
+        'resolved-registry-pin': ['error', { hosts: ['registry.npmjs.org'] }]
+      }
+    };
+    const report = runAudit({ lockfile: withPrivate(), packageJson: cleanPackageJson() }, config);
+    expect(report.findings.filter((f) => f.ruleId === 'secure-resolved')).toEqual([]);
+    expect(report.findings.filter((f) => f.ruleId === 'no-remote-deps')).toEqual([]);
+    expect(report.findings.filter((f) => f.ruleId === 'resolved-registry-pin')).toHaveLength(1);
+  });
+
+  it('ignores git and file deps, which resolve outside any registry by definition', () => {
+    const lockfile = cleanLockfile();
+    lockfile.packages['node_modules/fromgit'] = { name: 'fromgit', version: '1.0.0', resolved: 'git+https://github.com/a/b.git#abc' };
+    lockfile.packages['node_modules/local'] = { name: 'local', version: '1.0.0', resolved: 'file:../local' };
+    const report = runAudit({ lockfile, packageJson: cleanPackageJson() }, pin(['registry.npmjs.org']));
+    expect(report.findings.filter((f) => f.ruleId === 'resolved-registry-pin')).toEqual([]);
   });
 });

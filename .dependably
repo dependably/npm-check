@@ -1,5 +1,10 @@
 {
   "common": {
     "allowedRegistryHosts": ["dependably.northwardlabs.ca"]
+  },
+  "npm-check": {
+    "rules": {
+      "resolved-registry-pin": ["error", { "hosts": ["registry.npmjs.org"] }]
+    }
   }
 }

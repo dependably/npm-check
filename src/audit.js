@@ -666,6 +666,65 @@ const validPnpmFieldRule = {
   }
 };
 
+/**
+ * Lockfile portability: every `resolved` URL must point at a host this project
+ * pins to.
+ *
+ * This is deliberately NOT the same question as `secure-resolved` /
+ * `no-remote-deps`, which both consult `allowedRegistryHosts` to ask "is this
+ * host a legitimate, trusted registry?". Trust and portability are orthogonal:
+ * an org's own private mirror is entirely trusted, yet a lockfile resolving
+ * from it cannot be installed by anyone outside that network (a public CI
+ * runner, an external contributor, a GitHub build). A shared
+ * `allowedRegistryHosts` also unions across config levels, so it can only ever
+ * grow more permissive — correct for a trust allowlist, but useless as a pin,
+ * which must be able to narrow.
+ *
+ * Opt-in: with no `hosts` configured the rule is a no-op, so projects that
+ * genuinely install from a private registry are unaffected.
+ */
+const resolvedRegistryPinRule = {
+  id: 'resolved-registry-pin',
+  description: 'Resolved URLs must point only at the registry hosts this project pins to',
+  defaultSeverity: 'error',
+  // pnpm lockfiles carry no `resolved` URLs (the registry is implied by config),
+  // so there is nothing to pin.
+  flavors: ['npm'],
+  check({ lockfile, options }) {
+    const { hosts = [] } = options;
+    const findings = [];
+    // Unconfigured == off. Pinning is a per-project decision, not a default.
+    if (!Array.isArray(hosts) || hosts.length === 0) return findings;
+    if (!lockfile.packages) return findings;
+
+    const pinned = hosts
+      .filter((h) => typeof h === 'string' && h.trim())
+      .map((h) => h.trim().toLowerCase());
+    if (pinned.length === 0) return findings;
+
+    forEachPackageEntry(lockfile, ({ key, entry, name, isRoot, isWorkspaceSource, isLink, isGitDep, isFileDep }) => {
+      // Git/file/link/workspace entries resolve outside the registry by
+      // definition — no-git-deps / secure-resolved own those.
+      if (isRoot || isWorkspaceSource || isLink || isGitDep || isFileDep) return;
+      const resolved = entry && entry.resolved;
+      if (!resolved || !/^https?:/i.test(resolved)) return;
+      let hostname;
+      try {
+        hostname = new URL(resolved).hostname.toLowerCase();
+      } catch {
+        // Unparseable URL — secure-resolved flags it; not this rule's job.
+        return;
+      }
+      if (pinned.includes(hostname)) return;
+      findings.push({
+        packagePath: key,
+        message: `${name || key} resolves from "${hostname}", which is not a pinned registry host (${pinned.join(', ')}) — the lockfile will not install where that host is unreachable`
+      });
+    });
+    return findings;
+  }
+};
+
 export const rules = [
   lockfileVersionRule,
   validStructureRule,
@@ -675,6 +734,7 @@ export const rules = [
   installScriptsRule,
   noGitDepsRule,
   noRemoteDepsRule,
+  resolvedRegistryPinRule,
   pinnedVersionsRule,
   lockfileSyncRule,
   noOrphanPackagesRule,

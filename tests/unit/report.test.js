@@ -59,7 +59,7 @@ describe('runReport', () => {
     );
     expect(report.sections.map((s) => s.id)).toEqual([
       'structure', 'package-json', 'npmrc', 'pnpm-config', 'integrity', 'vuln', 'deprecated', 'unresolved', 'resolved',
-      'licenses', 'install-scripts', 'git', 'remote', 'pinned', 'orphans', 'unused', 'fund'
+      'licenses', 'install-scripts', 'git', 'remote', 'registry-pin', 'pinned', 'orphans', 'unused', 'fund'
     ]);
 
     const vuln = report.sections.find((s) => s.id === 'vuln');
@@ -631,7 +631,7 @@ describe('formatReport', () => {
     expect(json.summary.exitCode).toBe(0); // clean report → exit 0
     expect(json.summary.bySeverity).toEqual({ critical: 0, high: 0, moderate: 0, low: 0, info: 0 });
     // The report's section grouping + gate signal (pass/errors/warnings) live under extra.
-    expect(json.extra.sections).toHaveLength(17);
+    expect(json.extra.sections).toHaveLength(18);
     expect(json.extra.summary.pass).toBe(true);
   });
 

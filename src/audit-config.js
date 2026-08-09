@@ -60,6 +60,12 @@ export const DEFAULT_CONFIG = {
     'install-scripts': ['warn', { allow: [] }],
     'no-git-deps': 'warn',
     'no-remote-deps': ['warn', { allowedHosts: ['registry.npmjs.org', 'npm.pkg.github.com'] }],
+    // Lockfile portability, distinct from the trust question the two rules above
+    // ask. Empty `hosts` == off: pinning is a per-project decision (a project
+    // that genuinely installs from a private registry must not be flagged), and
+    // unlike `allowedRegistryHosts` this list is NOT unioned from shared config —
+    // a pin that only ever widens would not be a pin.
+    'resolved-registry-pin': ['error', { hosts: [] }],
     'pinned-versions': ['error', {
       sections: ['dependencies', 'devDependencies', 'optionalDependencies'],
       ignore: []
