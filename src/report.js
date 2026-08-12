@@ -18,7 +18,7 @@ import { buildEnvelope } from './schema.js';
 // pin just like npm's, and the pinned-versions rule is npm+pnpm flavored). The
 // npm-lockfile-shape sections (and license, pending a `.pnpm` store walk) are
 // marked N/A rather than rendered as a misleading pass.
-const PNPM_LIVE_SECTIONS = new Set(['integrity', 'vuln', 'deprecated', 'package-json', 'npmrc', 'pnpm-config', 'pinned', 'unresolved']);
+const PNPM_LIVE_SECTIONS = new Set(['integrity', 'vuln', 'deprecated', 'package-json', 'npmrc', 'pnpm-config', 'pinned', 'unresolved', 'release-age']);
 // The pnpm-config section has no meaning for an npm lockfile.
 const NPM_NA_SECTIONS = new Set(['pnpm-config']);
 
@@ -48,6 +48,7 @@ const RULE_SECTION = {
   'no-orphan-packages': 'orphans',
   'unused-dependencies': 'unused',
   'no-fund': 'fund',
+  'min-release-age': 'release-age',
   'valid-pnpm-workspace': 'pnpm-config',
   'valid-pnpm-field': 'pnpm-config'
 };
@@ -77,7 +78,8 @@ const SECTIONS = [
   { id: 'pinned', title: 'Pinned versions' },
   { id: 'orphans', title: 'Orphaned packages' },
   { id: 'unused', title: 'Unused dependencies' },
-  { id: 'fund', title: 'Funding solicitations' }
+  { id: 'fund', title: 'Funding solicitations' },
+  { id: 'release-age', title: 'Release-age cooldown' }
 ];
 
 const MAX_DETAIL = 50; // cap per-section detail lines so the report stays readable
@@ -655,7 +657,8 @@ const DEFAULT_PASS_SUMMARY = {
   pinned: 'all pinned',
   orphans: 'none',
   unused: 'none',
-  fund: 'suppressed'
+  fund: 'suppressed',
+  'release-age': 'configured'
 };
 
 // moonlitlabs/npm-check#35: one glyph per fixed status (see statusLabel()
@@ -686,7 +689,8 @@ const SECTION_CATEGORY = {
   pinned: 'policy',
   orphans: 'lint',
   unused: 'unused',
-  fund: 'lint'
+  fund: 'lint',
+  'release-age': 'policy'
 };
 
 // The report tier is error|warn; the shared ladder needs one of five strings.

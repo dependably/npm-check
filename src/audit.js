@@ -4,8 +4,8 @@ import path from 'path';
 import { forEachPackageEntry, detectLockfileFlavor } from './format-library.js';
 import { validatePackageLock } from './validator.js';
 import { validatePackageJson } from './package-json-validator.js';
-import { validateNpmrc, NPMRC_SECURITY_CODES } from './npmrc-validator.js';
-import { validatePnpmWorkspace } from './pnpm-workspace-validator.js';
+import { validateNpmrc, parseNpmrc, NPMRC_SECURITY_CODES } from './npmrc-validator.js';
+import { validatePnpmWorkspace, parsePnpmWorkspace } from './pnpm-workspace-validator.js';
 import { isPlaceholder } from './integrity.js';
 import { classifyRange } from './pinner.js';
 import { walkOverrides } from './overrides.js';
@@ -735,6 +735,117 @@ const resolvedRegistryPinRule = {
   }
 };
 
+// Supply-chain "cooldown": refuse to install versions published less than N ago.
+// A compromised maintainer account's malicious release is typically detected and
+// unpublished within hours, so a cooldown means you simply never resolve it.
+//
+// The two package managers disagree on BOTH key name and unit, which is the whole
+// reason this normalizes to days before comparing:
+//   npm  >= 11.10 : `.npmrc`              min-release-age    (DAYS)
+//   pnpm >= 10.16 : `pnpm-workspace.yaml` minimumReleaseAge  (MINUTES)
+// pnpm reads only auth/registry settings from .npmrc, so its cooldown is never
+// there; npm has no equivalent yaml, so its cooldown is never in the workspace file.
+const MINUTES_PER_DAY = 1440;
+
+// Configured cooldown in DAYS for an npm project, or null when unset/unparseable.
+function npmCooldownDays(npmrcPath) {
+  let content;
+  try {
+    content = fs.readFileSync(npmrcPath, 'utf8');
+  } catch {
+    return null; // no committed .npmrc → no committed policy
+  }
+  // parseNpmrc yields an entry list, keys lowercased; last assignment wins (ini).
+  const entry = parseNpmrc(content).filter((e) => e.key === 'min-release-age').pop();
+  if (!entry) return null;
+  const days = Number(entry.value);
+  return Number.isFinite(days) ? days : null;
+}
+
+// Configured cooldown in DAYS for a pnpm project, or null when unset/unparseable.
+function pnpmCooldownDays(workspacePath) {
+  let content;
+  try {
+    content = fs.readFileSync(workspacePath, 'utf8');
+  } catch {
+    return null;
+  }
+  let doc;
+  try {
+    doc = parsePnpmWorkspace(content);
+  } catch {
+    return null; // malformed YAML — valid-pnpm-workspace owns that finding
+  }
+  const raw = doc && doc.minimumReleaseAge;
+  if (raw === undefined) return null;
+  const minutes = Number(raw);
+  return Number.isFinite(minutes) ? minutes / MINUTES_PER_DAY : null;
+}
+
+// A blanket exclusion silently voids the policy, so it is worth its own finding.
+function blanketExclusions(workspacePath) {
+  let doc;
+  try {
+    doc = parsePnpmWorkspace(fs.readFileSync(workspacePath, 'utf8'));
+  } catch {
+    return [];
+  }
+  const list = doc && doc.minimumReleaseAgeExclude;
+  if (!Array.isArray(list)) return [];
+  return list.filter((p) => typeof p === 'string' && (p === '*' || p === '**'));
+}
+
+const minReleaseAgeRule = {
+  id: 'min-release-age',
+  description: 'A minimum release-age cooldown must be configured, so a freshly published (possibly compromised) version is never installed',
+  defaultSeverity: 'warn',
+  flavors: ['npm', 'pnpm'],
+  check({ filePath, options, flavor }) {
+    const { minDays = 3 } = options;
+    const dir = path.dirname(path.resolve(filePath));
+    const isPnpm = flavor === 'pnpm';
+    const configFile = isPnpm ? 'pnpm-workspace.yaml' : '.npmrc';
+    const configPath = isPnpm
+      ? path.join(dir, 'pnpm-workspace.yaml')
+      : (options.npmrcPath ? path.resolve(options.npmrcPath) : path.join(dir, '.npmrc'));
+
+    const configured = isPnpm ? pnpmCooldownDays(configPath) : npmCooldownDays(configPath);
+    const setting = isPnpm ? 'minimumReleaseAge' : 'min-release-age';
+    const findings = [];
+
+    if (configured === null) {
+      const unit = isPnpm ? `${minDays * MINUTES_PER_DAY} (minutes)` : `${minDays} (days)`;
+      findings.push({
+        packagePath: configFile,
+        message: `no release-age cooldown configured — set "${setting}" to at least ${unit} in ${configFile} so a version published moments ago is never installed`
+      });
+    } else if (configured < minDays) {
+      findings.push({
+        packagePath: configFile,
+        message: `release-age cooldown is ${formatDays(configured)}, below the required minimum of ${formatDays(minDays)} ("${setting}" in ${configFile})`
+      });
+    }
+
+    if (isPnpm) {
+      for (const pattern of blanketExclusions(configPath)) {
+        findings.push({
+          packagePath: configFile,
+          message: `"minimumReleaseAgeExclude" contains the blanket pattern "${pattern}", which exempts every package and voids the cooldown`
+        });
+      }
+    }
+    return findings;
+  }
+};
+
+// Render a day count the way a reader configures it: whole days, or minutes when
+// the value is under a day (which is how a pnpm `minimumReleaseAge` will land here).
+function formatDays(days) {
+  if (days >= 1) return `${Number.isInteger(days) ? days : days.toFixed(2)} day${days === 1 ? '' : 's'}`;
+  const minutes = Math.round(days * MINUTES_PER_DAY);
+  return `${minutes} minute${minutes === 1 ? '' : 's'}`;
+}
+
 export const rules = [
   lockfileVersionRule,
   validStructureRule,
@@ -752,7 +863,8 @@ export const rules = [
   noFundRule,
   validNpmrcRule,
   validPnpmWorkspaceRule,
-  validPnpmFieldRule
+  validPnpmFieldRule,
+  minReleaseAgeRule
 ];
 
 /**

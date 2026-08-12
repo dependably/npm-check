@@ -44,6 +44,10 @@ const baseOpts = (extra = {}) => ({
   fetchIntegrity: fakeRegistry({ 'good-pkg': HASH_A }),
   fetchAdvisories: fakeAdvisories({}), // no vulns by default; no network
   fetchManifest: () => Promise.resolve({}), // not deprecated by default; no network
+  // These fixtures use a bare `package-lock.json` path, so the min-release-age
+  // rule would resolve `.npmrc` against the CWD and make the result depend on the
+  // developer's own (gitignored) file. Pin it off; the rule has its own tests.
+  auditConfig: { rules: { 'min-release-age': 'off' } },
   ...extra
 });
 
@@ -59,7 +63,7 @@ describe('runReport', () => {
     );
     expect(report.sections.map((s) => s.id)).toEqual([
       'structure', 'package-json', 'npmrc', 'pnpm-config', 'integrity', 'vuln', 'deprecated', 'unresolved', 'resolved',
-      'licenses', 'install-scripts', 'git', 'remote', 'registry-pin', 'pinned', 'orphans', 'unused', 'fund'
+      'licenses', 'install-scripts', 'git', 'remote', 'registry-pin', 'pinned', 'orphans', 'unused', 'fund', 'release-age'
     ]);
 
     const vuln = report.sections.find((s) => s.id === 'vuln');
@@ -631,7 +635,7 @@ describe('formatReport', () => {
     expect(json.summary.exitCode).toBe(0); // clean report → exit 0
     expect(json.summary.bySeverity).toEqual({ critical: 0, high: 0, moderate: 0, low: 0, info: 0 });
     // The report's section grouping + gate signal (pass/errors/warnings) live under extra.
-    expect(json.extra.sections).toHaveLength(18);
+    expect(json.extra.sections).toHaveLength(19);
     expect(json.extra.summary.pass).toBe(true);
   });
 
