@@ -247,7 +247,8 @@ function scanSummary(r, flaggedKey, flaggedAdjective, detail = null) {
   const n = r[flaggedKey];
   if (n) {
     const unit = `${flaggedAdjective} package${n === 1 ? '' : 's'}`;
-    bits.push(`${n} ${unit}${detail ? ` (${detail})` : ''}`);
+    const suffix = detail ? ` (${detail})` : '';
+    bits.push(`${n} ${unit}${suffix}`);
   }
   if (r.skipped) bits.push(`${r.skipped} skipped`);
   return bits.join(' · ');
@@ -320,7 +321,8 @@ const SECTION_DESCRIBERS = {
     // "Unresolved" section — see collectVulnFindings), so its length IS the
     // advisory count, matching the section header 1:1 (SECTION_HEADER_LABEL.vuln).
     const n = findings.length;
-    const detail = n ? `${n} advisor${n === 1 ? 'y' : 'ies'}` : null;
+    const advisoryWord = n === 1 ? 'advisory' : 'advisories';
+    const detail = n ? `${n} ${advisoryWord}` : null;
     return liveSection(findings, scanSummary(state.vulnResult, 'vulnerable', 'vulnerable', detail));
   },
   deprecated(findings, state) {

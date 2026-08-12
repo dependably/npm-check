@@ -230,16 +230,41 @@ function unknownKeyWarnings(section, label, warnings) {
  * under the npm-check section per the single merge rule (§5). Returns the audit
  * settings plus parsed exceptions and any warnings.
  */
-function resolveToolSection(parsed, warnings) {
-  const common = parsed && parsed.common;
+// Pick the tool's own section, preferring the canonical key over the deprecated
+// alias and warning about a deprecated or duplicated section.
+function pickToolSection(parsed, warnings) {
   const canonical = parsed && parsed[SECTION_KEY];
   const alias = parsed && parsed[DEPRECATED_SECTION_KEY];
-  const tool = canonical !== undefined ? canonical : alias;
-  if (canonical === undefined && alias !== undefined) {
-    warnings.push({ code: 'DEPRECATED_ALIAS_SECTION', message: `section "${DEPRECATED_SECTION_KEY}" is deprecated; rename it to "${SECTION_KEY}"` });
-  } else if (canonical !== undefined && alias !== undefined) {
-    warnings.push({ code: 'DEPRECATED_ALIAS_SECTION', message: `both "${SECTION_KEY}" and "${DEPRECATED_SECTION_KEY}" sections present; using "${SECTION_KEY}"` });
+  if (alias !== undefined) {
+    const message = canonical === undefined
+      ? `section "${DEPRECATED_SECTION_KEY}" is deprecated; rename it to "${SECTION_KEY}"`
+      : `both "${SECTION_KEY}" and "${DEPRECATED_SECTION_KEY}" sections present; using "${SECTION_KEY}"`;
+    warnings.push({ code: 'DEPRECATED_ALIAS_SECTION', message });
   }
+  return canonical !== undefined ? canonical : alias;
+}
+
+// maxWarnings is a scalar: the tool section overrides common.
+function pickMaxWarnings(common, tool) {
+  const of = (s) => (s && s.maxWarnings !== undefined ? s.maxWarnings : undefined);
+  const toolMax = of(tool);
+  return toolMax !== undefined ? toolMax : of(common);
+}
+
+// Exceptions: common (tolerant) + own section (strict selector/rule checks).
+function mergeExceptions(common, tool) {
+  const commonEx = parseExceptions(common && common.exceptions, {
+    source: 'common', applicableSelectors: APPLICABLE_SELECTORS
+  });
+  const ownEx = parseExceptions(tool && tool.exceptions, {
+    source: 'own', applicableSelectors: APPLICABLE_SELECTORS, knownRules: KNOWN_RULES
+  });
+  return [...commonEx, ...ownEx];
+}
+
+function resolveToolSection(parsed, warnings) {
+  const common = parsed && parsed.common;
+  const tool = pickToolSection(parsed, warnings);
 
   unknownKeyWarnings(tool, SECTION_KEY, warnings);
 
@@ -251,22 +276,11 @@ function resolveToolSection(parsed, warnings) {
   const failOn = pickFailOn(common && common.failOn, tool && tool.failOn);
   if (failOn) settings.failOn = failOn;
 
-  const pickMax = (s) => (s && s.maxWarnings !== undefined ? s.maxWarnings : undefined);
-  const toolMax = pickMax(tool);
-  const commonMax = pickMax(common);
-  if (toolMax !== undefined) settings.maxWarnings = toolMax;
-  else if (commonMax !== undefined) settings.maxWarnings = commonMax;
+  const maxWarnings = pickMaxWarnings(common, tool);
+  if (maxWarnings !== undefined) settings.maxWarnings = maxWarnings;
 
   settings.exclude = unionList(common && common.exclude, tool && tool.exclude);
-
-  // Exceptions: common (tolerant) + own section (strict selector/rule checks).
-  const commonEx = parseExceptions(common && common.exceptions, {
-    source: 'common', applicableSelectors: APPLICABLE_SELECTORS
-  });
-  const ownEx = parseExceptions(tool && tool.exceptions, {
-    source: 'own', applicableSelectors: APPLICABLE_SELECTORS, knownRules: KNOWN_RULES
-  });
-  settings.exceptions = [...commonEx, ...ownEx];
+  settings.exceptions = mergeExceptions(common, tool);
 
   return settings;
 }
@@ -364,47 +378,68 @@ export function loadSharedConfig(cwd = process.cwd()) {
   };
 }
 
+// An explicit `--config` file: either the shared (sectioned) shape or a legacy
+// flat tool-config. Fills the same slots the discovery path does.
+function loadExplicitConfig(explicitPath, shared) {
+  const configPath = path.resolve(explicitPath);
+  if (!fs.existsSync(configPath)) {
+    throw new AuditConfigError(`Config file not found: ${configPath}`, 'CONFIG_NOT_FOUND');
+  }
+  const parsed = readJsonConfig(configPath);
+  if (!isSharedShape(configPath, parsed)) {
+    // Legacy flat tool-config (.npm-checkrc.json shape) given explicitly.
+    return { configPath, toolConfig: parsed };
+  }
+
+  validateSharedShape(parsed, configPath);
+  const warnings = [];
+  const settings = resolveToolSection(parsed, warnings);
+  shared.warnings.push(...warnings);
+  return {
+    configPath,
+    toolConfig: {
+      ...(settings.rules ? { rules: settings.rules } : {}),
+      ...(settings.maxWarnings !== undefined ? { maxWarnings: settings.maxWarnings } : {})
+    },
+    explicitSharedHosts: collectSharedHosts(parsed),
+    // { exceptions, exclude, failOn } from an explicit shared-shape file
+    explicitExtras: { exceptions: settings.exceptions, exclude: settings.exclude, failOn: settings.failOn || null }
+  };
+}
+
+// Discover a tool-specific config in the working directory (fallback for
+// back-compat; the shared `.dependably` is the primary source).
+function discoverToolConfig(cwd) {
+  for (const name of CONFIG_FILENAMES) {
+    const candidate = path.join(cwd, name);
+    if (fs.existsSync(candidate)) {
+      return { configPath: candidate, toolConfig: readJsonConfig(candidate) };
+    }
+  }
+  return { configPath: null, toolConfig: {} };
+}
+
+// failOn.count is the standard form of maxWarnings; a legacy maxWarnings in a
+// tool-config still wins if it was set (it flowed through mergeConfig).
+function applyFailOn(config, failOn, maxWarningsAlreadySet) {
+  if (!failOn) return;
+  if (failOn.count !== undefined && !maxWarningsAlreadySet) {
+    if (typeof failOn.count !== 'number' || !Number.isInteger(failOn.count) || failOn.count < 0) {
+      throw new AuditConfigError(`failOn.count must be a non-negative integer, got: ${JSON.stringify(failOn.count)}`, 'INVALID_FAIL_ON');
+    }
+    config.maxWarnings = failOn.count;
+  }
+  config.failOnSeverity = failOn.severity || null;
+}
+
 export function loadAuditConfig(cwd = process.cwd(), explicitPath = null) {
   // The shared `.dependably` (discovered by walking up to the repo root) is the
   // PRIMARY config source. A tool-specific `.npm-checkrc.json` (or an explicit
   // `--config`) overrides it.
   const shared = loadSharedConfig(cwd);
 
-  let toolConfig = {};
-  let configPath = null;
-  let explicitSharedHosts = [];
-  let explicitExtras = null; // { exceptions, exclude, failOn } from an explicit shared-shape file
-
-  if (explicitPath) {
-    configPath = path.resolve(explicitPath);
-    if (!fs.existsSync(configPath)) {
-      throw new AuditConfigError(`Config file not found: ${configPath}`, 'CONFIG_NOT_FOUND');
-    }
-    const parsed = readJsonConfig(configPath);
-    if (isSharedShape(configPath, parsed)) {
-      validateSharedShape(parsed, configPath);
-      const warnings = [];
-      const settings = resolveToolSection(parsed, warnings);
-      shared.warnings.push(...warnings);
-      toolConfig = { ...(settings.rules ? { rules: settings.rules } : {}), ...(settings.maxWarnings !== undefined ? { maxWarnings: settings.maxWarnings } : {}) };
-      explicitSharedHosts = collectSharedHosts(parsed);
-      explicitExtras = { exceptions: settings.exceptions, exclude: settings.exclude, failOn: settings.failOn || null };
-    } else {
-      // Legacy flat tool-config (.npm-checkrc.json shape) given explicitly.
-      toolConfig = parsed;
-    }
-  } else {
-    // Discover a tool-specific config in the working directory (fallback for
-    // back-compat; the shared `.dependably` above is the primary source).
-    for (const name of CONFIG_FILENAMES) {
-      const candidate = path.join(cwd, name);
-      if (fs.existsSync(candidate)) {
-        configPath = candidate;
-        toolConfig = readJsonConfig(candidate);
-        break;
-      }
-    }
-  }
+  const { configPath, toolConfig, explicitSharedHosts = [], explicitExtras = null } =
+    explicitPath ? loadExplicitConfig(explicitPath, shared) : discoverToolConfig(cwd);
 
   // Shared audit settings are the base; the tool-specific config overrides them.
   const userConfig = { ...shared.auditSettings, ...toolConfig };
@@ -417,18 +452,9 @@ export function loadAuditConfig(cwd = process.cwd(), explicitPath = null) {
     extendAllowedHosts(config, hosts);
   }
 
-  // failOn.count is the standard form of maxWarnings; a legacy maxWarnings in a
-  // tool-config still wins if it was set (it flowed through mergeConfig above).
-  const failOn = explicitExtras ? explicitExtras.failOn : shared.failOn;
-  if (failOn) {
-    if (failOn.count !== undefined && toolConfig.maxWarnings === undefined && shared.auditSettings.maxWarnings === undefined) {
-      if (typeof failOn.count !== 'number' || !Number.isInteger(failOn.count) || failOn.count < 0) {
-        throw new AuditConfigError(`failOn.count must be a non-negative integer, got: ${JSON.stringify(failOn.count)}`, 'INVALID_FAIL_ON');
-      }
-      config.maxWarnings = failOn.count;
-    }
-    config.failOnSeverity = failOn.severity || null;
-  }
+  const maxWarningsAlreadySet =
+    toolConfig.maxWarnings !== undefined || shared.auditSettings.maxWarnings !== undefined;
+  applyFailOn(config, explicitExtras ? explicitExtras.failOn : shared.failOn, maxWarningsAlreadySet);
 
   config.exceptions = explicitExtras ? explicitExtras.exceptions : shared.exceptions;
   config.exclude = explicitExtras ? explicitExtras.exclude : shared.exclude;
