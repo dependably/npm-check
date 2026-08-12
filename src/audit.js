@@ -683,6 +683,31 @@ const validPnpmFieldRule = {
  * Opt-in: with no `hosts` configured the rule is a no-op, so projects that
  * genuinely install from a private registry are unaffected.
  */
+// Trim/lowercase the configured pin list, dropping non-string and blank entries.
+// An empty result means the rule is unconfigured, i.e. off.
+function normalizePinnedHosts(hosts) {
+  if (!Array.isArray(hosts)) return [];
+  return hosts.filter((h) => typeof h === 'string' && h.trim()).map((h) => h.trim().toLowerCase());
+}
+
+// Git/file/link/workspace entries resolve outside the registry by definition —
+// no-git-deps / secure-resolved own those.
+function resolvesOutsideRegistry({ isRoot, isWorkspaceSource, isLink, isGitDep, isFileDep }) {
+  return Boolean(isRoot || isWorkspaceSource || isLink || isGitDep || isFileDep);
+}
+
+// Hostname of an entry's http(s) `resolved` URL, or null when it has none or the
+// URL is unparseable (secure-resolved flags that; not this rule's job).
+function resolvedHostname(entry) {
+  const resolved = entry && entry.resolved;
+  if (!resolved || !/^https?:/i.test(resolved)) return null;
+  try {
+    return new URL(resolved).hostname.toLowerCase();
+  } catch {
+    return null;
+  }
+}
+
 const resolvedRegistryPinRule = {
   id: 'resolved-registry-pin',
   description: 'Resolved URLs must point only at the registry hosts this project pins to',
@@ -691,31 +716,16 @@ const resolvedRegistryPinRule = {
   // so there is nothing to pin.
   flavors: ['npm'],
   check({ lockfile, options }) {
-    const { hosts = [] } = options;
     const findings = [];
     // Unconfigured == off. Pinning is a per-project decision, not a default.
-    if (!Array.isArray(hosts) || hosts.length === 0) return findings;
-    if (!lockfile.packages) return findings;
+    const pinned = normalizePinnedHosts(options.hosts);
+    if (pinned.length === 0 || !lockfile.packages) return findings;
 
-    const pinned = hosts
-      .filter((h) => typeof h === 'string' && h.trim())
-      .map((h) => h.trim().toLowerCase());
-    if (pinned.length === 0) return findings;
-
-    forEachPackageEntry(lockfile, ({ key, entry, name, isRoot, isWorkspaceSource, isLink, isGitDep, isFileDep }) => {
-      // Git/file/link/workspace entries resolve outside the registry by
-      // definition — no-git-deps / secure-resolved own those.
-      if (isRoot || isWorkspaceSource || isLink || isGitDep || isFileDep) return;
-      const resolved = entry && entry.resolved;
-      if (!resolved || !/^https?:/i.test(resolved)) return;
-      let hostname;
-      try {
-        hostname = new URL(resolved).hostname.toLowerCase();
-      } catch {
-        // Unparseable URL — secure-resolved flags it; not this rule's job.
-        return;
-      }
-      if (pinned.includes(hostname)) return;
+    forEachPackageEntry(lockfile, (packageEntry) => {
+      if (resolvesOutsideRegistry(packageEntry)) return;
+      const hostname = resolvedHostname(packageEntry.entry);
+      if (hostname === null || pinned.includes(hostname)) return;
+      const { key, name } = packageEntry;
       findings.push({
         packagePath: key,
         message: `${name || key} resolves from "${hostname}", which is not a pinned registry host (${pinned.join(', ')}) — the lockfile will not install where that host is unreachable`
@@ -870,30 +880,45 @@ export function runAudit(target, config = {}) {
  * @param {object} options - { format: 'stylish' | 'json' }
  * @returns {string}
  */
-export function formatAuditReport(report, options = {}) {
-  const { format = 'stylish', showSuppressed = false } = options;
-  const suppressed = report.suppressed || [];
+// Machine-readable half of formatAuditReport.
+function formatAuditJson(report, suppressed) {
+  const meta = report.exceptionsMeta || {};
+  return JSON.stringify({
+    filePath: report.filePath,
+    pass: report.pass,
+    summary: report.summary,
+    findings: report.findings,
+    suppressed,
+    exceptionsMeta: {
+      unused: (meta.unused || []).map((e) => e._raw),
+      expired: (meta.expired || []).map((e) => e._raw)
+    }
+  }, null, 2);
+}
 
-  if (format === 'json') {
-    return JSON.stringify({
-      filePath: report.filePath,
-      pass: report.pass,
-      summary: report.summary,
-      findings: report.findings,
-      suppressed,
-      exceptionsMeta: {
-        unused: (report.exceptionsMeta && report.exceptionsMeta.unused || []).map((e) => e._raw),
-        expired: (report.exceptionsMeta && report.exceptionsMeta.expired || []).map((e) => e._raw)
-      }
-    }, null, 2);
-  }
+// One aligned `severity  rule  path  message` line per finding.
+function findingLines(findings) {
+  const ruleWidth = Math.max(...findings.map((f) => f.ruleId.length));
+  return findings.map((finding) => {
+    const sev = finding.severity === 'error' ? 'error' : 'warn ';
+    const loc = finding.packagePath ? `${finding.packagePath}   ` : '';
+    return `  ${sev}  ${finding.ruleId.padEnd(ruleWidth)}  ${loc}${finding.message}`;
+  });
+}
 
-  if (format !== 'stylish') {
-    throw new AuditError(`Unknown report format: ${format}`, 'UNKNOWN_FORMAT');
-  }
+// The closing `N problems (E errors, W warnings)` tally.
+function totalsLine(summary, suppressedCount) {
+  const { errors, warnings, total } = summary;
+  const problemWord = total === 1 ? 'problem' : 'problems';
+  const errorWord = errors === 1 ? 'error' : 'errors';
+  const warningWord = warnings === 1 ? 'warning' : 'warnings';
+  const suffix = suppressedCount > 0 ? ` — ${suppressedCount} suppressed by .dependably` : '';
+  return `${total} ${problemWord} (${errors} ${errorWord}, ${warnings} ${warningWord})${suffix}`;
+}
 
-  const lines = [];
-  lines.push(report.filePath);
+// Human-readable (ESLint-like) half of formatAuditReport.
+function formatAuditStylish(report, suppressed, showSuppressed) {
+  const lines = [report.filePath];
 
   if (report.findings.length === 0) {
     lines.push(suppressed.length > 0 ? `  no problems found (${suppressed.length} suppressed by .dependably)` : '  no problems found');
@@ -901,20 +926,22 @@ export function formatAuditReport(report, options = {}) {
     return lines.join('\n');
   }
 
-  const ruleWidth = Math.max(...report.findings.map((f) => f.ruleId.length));
-  for (const finding of report.findings) {
-    const sev = finding.severity === 'error' ? 'error' : 'warn ';
-    const loc = finding.packagePath ? `${finding.packagePath}   ` : '';
-    lines.push(`  ${sev}  ${finding.ruleId.padEnd(ruleWidth)}  ${loc}${finding.message}`);
-  }
-
-  const { errors, warnings, total } = report.summary;
-  const problemWord = total === 1 ? 'problem' : 'problems';
-  const suffix = suppressed.length > 0 ? ` — ${suppressed.length} suppressed by .dependably` : '';
+  lines.push(...findingLines(report.findings));
   lines.push('');
-  lines.push(`${total} ${problemWord} (${errors} error${errors === 1 ? '' : 's'}, ${warnings} warning${warnings === 1 ? '' : 's'})${suffix}`);
+  lines.push(totalsLine(report.summary, suppressed.length));
   appendSuppressed(lines, suppressed, showSuppressed);
   return lines.join('\n');
+}
+
+export function formatAuditReport(report, options = {}) {
+  const { format = 'stylish', showSuppressed = false } = options;
+  const suppressed = report.suppressed || [];
+
+  if (format === 'json') return formatAuditJson(report, suppressed);
+  if (format !== 'stylish') {
+    throw new AuditError(`Unknown report format: ${format}`, 'UNKNOWN_FORMAT');
+  }
+  return formatAuditStylish(report, suppressed, showSuppressed);
 }
 
 // Optionally list the suppressed findings (with their exception reason) below the

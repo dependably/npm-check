@@ -110,89 +110,106 @@ function splitPackageSelector(pkg) {
  * @param {string} [opts.configPath]
  * @returns {Array<{rule, reason, expires, source, selectors, _raw}>}
  */
+// An exception entry must be an object carrying non-empty `rule` and `reason`.
+function validateExceptionShape(entry, index, at) {
+  if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+    throw new ExceptionConfigError(`exception #${index} must be an object`, 'INVALID_EXCEPTIONS', at);
+  }
+  if (typeof entry.rule !== 'string' || entry.rule.trim() === '') {
+    throw new ExceptionConfigError(`exception #${index} is missing "rule"`, 'EXCEPTION_MISSING_RULE', at);
+  }
+  if (typeof entry.reason !== 'string' || entry.reason.trim() === '') {
+    throw new ExceptionConfigError(
+      `exception for rule "${entry.rule}" is missing a non-empty "reason"`,
+      'EXCEPTION_MISSING_REASON',
+      at
+    );
+  }
+}
+
+// At least one selector, each a non-empty string. A selector this tool's findings
+// never carry is an error in the tool's OWN section but is tolerated in `common`
+// (it simply never matches).
+function validateExceptionSelectors(entry, source, applicableSelectors, at) {
+  const present = SELECTORS.filter((s) => entry[s] !== undefined);
+  if (present.length === 0) {
+    throw new ExceptionConfigError(
+      `exception for rule "${entry.rule}" needs at least one selector (${SELECTORS.join(', ')})`,
+      'EXCEPTION_NO_SELECTOR',
+      at
+    );
+  }
+  for (const sel of present) {
+    if (typeof entry[sel] !== 'string' || entry[sel].trim() === '') {
+      throw new ExceptionConfigError(
+        `exception selector "${sel}" for rule "${entry.rule}" must be a non-empty string`,
+        'EXCEPTION_BAD_SELECTOR',
+        at
+      );
+    }
+    if (source === 'own' && !applicableSelectors.includes(sel)) {
+      throw new ExceptionConfigError(
+        `exception selector "${sel}" is not applicable to this tool (applicable: ${applicableSelectors.join(', ')})`,
+        'EXCEPTION_BAD_SELECTOR',
+        at
+      );
+    }
+  }
+}
+
+// `expires`, when present, must be a valid YYYY-MM-DD date.
+function validateExceptionExpires(entry, at) {
+  if (entry.expires === undefined) return;
+  if (typeof entry.expires !== 'string' || !EXPIRES_RE.test(entry.expires) || Number.isNaN(Date.parse(entry.expires))) {
+    throw new ExceptionConfigError(
+      `exception "expires" for rule "${entry.rule}" must be a valid YYYY-MM-DD date`,
+      'EXCEPTION_BAD_EXPIRES',
+      at
+    );
+  }
+}
+
+// An unknown rule id is an error in the tool's own section (spec §8); in `common`
+// it belongs to a sibling tool and is tolerated.
+function validateExceptionRule(entry, source, knownRules, at) {
+  if (source === 'own' && knownRules && !knownRules.includes(entry.rule)) {
+    throw new ExceptionConfigError(
+      `Unknown rule "${entry.rule}" in exception (known rules: ${knownRules.join(', ')})`,
+      'UNKNOWN_RULE',
+      at
+    );
+  }
+}
+
+function buildExceptionSelectors(entry) {
+  const selectors = { rule: entry.rule };
+  if (entry.package !== undefined) selectors.package = splitPackageSelector(entry.package);
+  if (entry.path !== undefined) selectors.path = entry.path;
+  if (entry.symbol !== undefined) selectors.symbol = entry.symbol;
+  if (entry.id !== undefined) selectors.id = entry.id;
+  return selectors;
+}
+
 export function parseExceptions(raw, opts = {}) {
   const { source = 'own', applicableSelectors = SELECTORS, knownRules = null, configPath = null } = opts;
   const entries = ensureArray(raw, { configPath });
-  const out = [];
 
-  entries.forEach((entry, index) => {
+  return entries.map((entry, index) => {
     const at = { configPath, source, index };
-    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
-      throw new ExceptionConfigError(`exception #${index} must be an object`, 'INVALID_EXCEPTIONS', at);
-    }
-    if (typeof entry.rule !== 'string' || entry.rule.trim() === '') {
-      throw new ExceptionConfigError(`exception #${index} is missing "rule"`, 'EXCEPTION_MISSING_RULE', at);
-    }
-    if (typeof entry.reason !== 'string' || entry.reason.trim() === '') {
-      throw new ExceptionConfigError(
-        `exception for rule "${entry.rule}" is missing a non-empty "reason"`,
-        'EXCEPTION_MISSING_REASON',
-        at
-      );
-    }
+    validateExceptionShape(entry, index, at);
+    validateExceptionSelectors(entry, source, applicableSelectors, at);
+    validateExceptionExpires(entry, at);
+    validateExceptionRule(entry, source, knownRules, at);
 
-    const present = SELECTORS.filter((s) => entry[s] !== undefined);
-    if (present.length === 0) {
-      throw new ExceptionConfigError(
-        `exception for rule "${entry.rule}" needs at least one selector (${SELECTORS.join(', ')})`,
-        'EXCEPTION_NO_SELECTOR',
-        at
-      );
-    }
-    for (const sel of present) {
-      if (typeof entry[sel] !== 'string' || entry[sel].trim() === '') {
-        throw new ExceptionConfigError(
-          `exception selector "${sel}" for rule "${entry.rule}" must be a non-empty string`,
-          'EXCEPTION_BAD_SELECTOR',
-          at
-        );
-      }
-      // A selector this tool's findings never carry is an error in the tool's
-      // OWN section but is tolerated in `common` (it simply never matches).
-      if (source === 'own' && !applicableSelectors.includes(sel)) {
-        throw new ExceptionConfigError(
-          `exception selector "${sel}" is not applicable to this tool (applicable: ${applicableSelectors.join(', ')})`,
-          'EXCEPTION_BAD_SELECTOR',
-          at
-        );
-      }
-    }
-
-    if (entry.expires !== undefined) {
-      if (typeof entry.expires !== 'string' || !EXPIRES_RE.test(entry.expires) || Number.isNaN(Date.parse(entry.expires))) {
-        throw new ExceptionConfigError(
-          `exception "expires" for rule "${entry.rule}" must be a valid YYYY-MM-DD date`,
-          'EXCEPTION_BAD_EXPIRES',
-          at
-        );
-      }
-    }
-
-    if (source === 'own' && knownRules && !knownRules.includes(entry.rule)) {
-      throw new ExceptionConfigError(
-        `Unknown rule "${entry.rule}" in exception (known rules: ${knownRules.join(', ')})`,
-        'UNKNOWN_RULE',
-        at
-      );
-    }
-
-    const selectors = { rule: entry.rule };
-    if (entry.package !== undefined) selectors.package = splitPackageSelector(entry.package);
-    if (entry.path !== undefined) selectors.path = entry.path;
-    if (entry.symbol !== undefined) selectors.symbol = entry.symbol;
-    if (entry.id !== undefined) selectors.id = entry.id;
-
-    out.push({
+    return {
       rule: entry.rule,
       reason: entry.reason,
       expires: entry.expires || null,
       source,
-      selectors,
+      selectors: buildExceptionSelectors(entry),
       _raw: entry
-    });
+    };
   });
-
-  return out;
 }
 
 // --- matching ---
@@ -236,8 +253,7 @@ export function matchException(exception, finding) {
   if (s.package !== undefined && !matchPackage(s.package, finding)) return false;
   if (s.path !== undefined && !matchGlob(s.path, finding.path)) return false;
   if (s.symbol !== undefined && !matchSymbol(s.symbol, finding.symbol)) return false;
-  if (s.id !== undefined && s.id !== finding.id) return false;
-  return true;
+  return !(s.id !== undefined && s.id !== finding.id);
 }
 
 /**
