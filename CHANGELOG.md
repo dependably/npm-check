@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **New `min-release-age` audit rule — a supply-chain "cooldown" check.** When a maintainer account is compromised, the malicious release is typically detected and unpublished within hours, so refusing to install versions published less than N days ago means you simply never resolve one. Both package managers now support this, and npm-check had no opinion on it.
+  - **The two disagree on key name AND unit**, which is the whole reason the rule normalizes to days before comparing: npm reads `min-release-age` from `.npmrc` in **days** (npm ≥ 11.10); pnpm reads `minimumReleaseAge` from `pnpm-workspace.yaml` in **minutes** (pnpm ≥ 10.16). `minimumReleaseAge: 3` is three *minutes*, not three days — the rule says so in as many words rather than silently passing it.
+  - Defaults to `warn` with `minDays: 3`. That is deliberately stricter than the ecosystem (the pnpm v11 default and the common recommendation are both 1 day) because this tool is prescriptive; lower it per project with `["warn", { "minDays": 1 }]`.
+  - **Presence-only was considered and rejected**: `min-release-age=0` is "configured" and worthless, so a rule that only checked for the key's presence would certify a stub as a defense. The rule emits two distinct findings — no cooldown at all, versus a cooldown below the minimum — and never a bare "it's set".
+  - Also flags a blanket `minimumReleaseAgeExclude` of `*`/`**`, which exempts every package and voids the policy.
+  - Note this is a check on *committed policy*, which is the point: a cooldown living only in a developer's `~/.npmrc` does not travel to CI, so CI installs without it. A project with no committed cooldown is genuinely unprotected, not a false positive.
+
+### Fixed
+- **`min-release-age` and `minimumReleaseAge` no longer warn as unrecognized config keys.** They were absent from `valid-npmrc`'s and `valid-pnpm-workspace`'s known-key sets, so npm-check emitted a spurious `NPMRC_UNKNOWN_KEY` / `PNPM_WS_UNKNOWN_KEY` at anyone who adopted the cooldown — i.e. the tool actively discouraged the hardening it should be recommending. `minimumReleaseAgeExclude` is recognized too. Same defect class as the `update-notifier` fix in 1.9.0.
+
 ## [1.9.0] - 2026-08-11
 
 ### Added

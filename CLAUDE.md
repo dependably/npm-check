@@ -273,7 +273,7 @@ Removes `^`/`~` from package.json, locking versions down:
 
 Opinionated, configurable lockfile linter for CI (non-zero exit on failure):
 
-- Rules: `lockfile-version`, `valid-structure`, `valid-package-json`, `integrity-hygiene`, `secure-resolved`, `install-scripts`, `no-git-deps`, `no-remote-deps`, `pinned-versions`, `lockfile-sync`, `no-orphan-packages`, `unused-dependencies`, `resolved-registry-pin`, `no-fund` (flags packages emitting npm funding solicitations unless a project `.npmrc` sets `fund=false`), `valid-npmrc`, `valid-pnpm-workspace`, `valid-pnpm-field`
+- Rules: `lockfile-version`, `valid-structure`, `valid-package-json`, `integrity-hygiene`, `secure-resolved`, `install-scripts`, `no-git-deps`, `no-remote-deps`, `pinned-versions`, `lockfile-sync`, `no-orphan-packages`, `unused-dependencies`, `resolved-registry-pin`, `min-release-age`, `no-fund` (flags packages emitting npm funding solicitations unless a project `.npmrc` sets `fund=false`), `valid-npmrc`, `valid-pnpm-workspace`, `valid-pnpm-field`
 - **Flavor gating:** each rule carries a `flavors` list (default `['npm']`); `runAudit` derives the lockfile flavor (`detectLockfileFlavor`) and skips rules that don't apply — the npm-lockfile-shape rules no-op on a `pnpm-lock.yaml`, and the pnpm-only rules (`valid-pnpm-workspace`, `valid-pnpm-field`) no-op on npm. The flavor-agnostic config rules (`valid-package-json`, `valid-npmrc`) run for both (and `valid-npmrc` gets the flavor threaded through so it can flag pnpm-ignored keys). See the pnpm support section.
 - **Config-file validation** (`valid-package-json`, `valid-npmrc`): npm-check validates all three files that govern an install, not just the lockfile. `valid-package-json` (default `error`) delegates to `validatePackageJson()` — name/version validity, dependency-range syntax across all four sections, **override-range syntax in both `overrides` and `pnpm.overrides`** (nested form, `$`-refs skipped), **the range-carrying pnpm sub-fields** (`packageExtensions` inner `dependencies`/`peerDependencies`, `peerDependencyRules.allowedVersions`, `allowedDeprecatedVersions` — validated but never flagged/pinned, since these ranges are loose by design), **`bundleDependencies`/`bundledDependencies`** (array of valid names, warn when a bundled name isn't declared in dependencies), scripts/bin/main/exports/workspaces types, license presence (warn), and the `pnpm` field's types (`overrides`/`packageExtensions`/build allowlists/…). `valid-npmrc` (default `warn`) reads the project-level `.npmrc` next to the lockfile and delegates to `validateNpmrc()` — ini syntax, plus security checks where **plaintext auth tokens, `strict-ssl=false`, and disabled `rejectUnauthorized` are always hard errors** regardless of configured severity (insecure `http://` registries and unknown keys are warnings). Both surface as the report's "package.json" / ".npmrc (config)" sections and via the standalone `validate` command.
 - **Trust vs. portability** (`secure-resolved`/`no-remote-deps` vs. `resolved-registry-pin`): these answer
@@ -290,6 +290,20 @@ Opinionated, configurable lockfile linter for CI (non-zero exit on failure):
   is **opt-in**: empty `hosts` == off, so projects that genuinely install from a private registry are
   unaffected. `.npmrc` cannot serve as the guard here — it is gitignored (it commonly holds auth
   tokens), so it is local-only and never reaches CI.
+
+- **Release-age cooldown** (`min-release-age`): a supply-chain check on *committed policy*, not on the
+  lockfile. A compromised maintainer's malicious release is usually detected and unpublished within
+  hours, so refusing versions younger than N days means you never resolve one. The two package
+  managers disagree on **both key name and unit** — npm reads `min-release-age` from `.npmrc` in
+  **days** (≥ 11.10); pnpm reads `minimumReleaseAge` from `pnpm-workspace.yaml` in **minutes**
+  (≥ 10.16, and pnpm reads only auth/registry settings from `.npmrc`, so its cooldown is never
+  there). The rule normalizes to days before comparing, so `minimumReleaseAge: 3` is correctly
+  reported as three *minutes*. Default `warn` / `minDays: 3`, deliberately stricter than the
+  ecosystem's 1-day norm. **Presence-only was rejected**: `min-release-age=0` is set and worthless,
+  so the rule always compares a threshold and never emits a bare "it's configured". A blanket
+  `minimumReleaseAgeExclude` of `*` is flagged separately, since it voids the policy. Firing when
+  *no* cooldown is committed is intended — a cooldown living only in a dev's `~/.npmrc` never
+  reaches CI, so that project really is uncovered.
 
 - **npm v12 readiness** (the three breaking opt-ins): `install-scripts` reconciles with package.json `allowScripts` (pinned `name@version` or name-only) and flags pending/denied scripts; `no-git-deps` and `no-remote-deps` flag deps that will need `--allow-git` / `--allow-remote`. The report's Install scripts section shows `total · allowed · blocked` when the project is `allowScripts`-aware.
 - Each rule is `{id, description, defaultSeverity, check(context)}` — extensible

@@ -22,6 +22,7 @@ export class PnpmWorkspaceValidationError extends Error {
 
 const isPlainObject = (v) => typeof v === 'object' && v !== null && !Array.isArray(v);
 const isStringArray = (v) => Array.isArray(v) && v.every((x) => typeof x === 'string');
+const isNumber = (v) => typeof v === 'number' && Number.isFinite(v);
 
 // Recognized top-level keys and the type each must have. Generous (warn-only on
 // unknowns) rather than exhaustive — pnpm adds settings often.
@@ -52,12 +53,17 @@ const KNOWN_KEYS = {
   virtualStoreDir: (v) => typeof v === 'string',
   preferWorkspacePackages: (v) => typeof v === 'boolean',
   linkWorkspacePackages: (v) => typeof v === 'boolean' || typeof v === 'string',
-  saveWorkspaceProtocol: (v) => typeof v === 'boolean' || typeof v === 'string'
+  saveWorkspaceProtocol: (v) => typeof v === 'boolean' || typeof v === 'string',
+  // Supply-chain cooldown (pnpm >= 10.16). NOTE the unit is MINUTES here, while
+  // npm's `.npmrc` `min-release-age` is DAYS — see the min-release-age audit rule.
+  minimumReleaseAge: isNumber,
+  minimumReleaseAgeExclude: isStringArray
 };
 
 const TYPE_LABEL = new Map([
   [isStringArray, 'an array of strings'],
-  [isPlainObject, 'an object']
+  [isPlainObject, 'an object'],
+  [isNumber, 'a number']
 ]);
 function expectedLabel(validator) {
   return TYPE_LABEL.get(validator) || 'the correct type';

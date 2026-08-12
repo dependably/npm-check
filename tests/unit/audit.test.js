@@ -15,6 +15,9 @@ let projLockfilePath;
 beforeAll(() => {
   projDir = fs.mkdtempSync(path.join(os.tmpdir(), 'npm-check-audit-proj-'));
   fs.writeFileSync(path.join(projDir, 'app.js'), `import goodPkg from 'good-pkg';\n`);
+  // Satisfy the min-release-age rule so "clean" fixtures stay genuinely clean —
+  // the rule fires on a MISSING cooldown, which is the common real-world case.
+  fs.writeFileSync(path.join(projDir, '.npmrc'), 'min-release-age=3\n');
   projLockfilePath = path.join(projDir, 'package-lock.json');
 });
 
@@ -604,8 +607,87 @@ describe('formatAuditReport', () => {
   });
 });
 
+describe('min-release-age', () => {
+  // Each case gets its own project dir so the rule reads exactly the config the
+  // case writes — never the developer's own (gitignored) .npmrc.
+  let dir;
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'npm-check-cooldown-'));
+  });
+  afterEach(() => fs.rmSync(dir, { recursive: true, force: true }));
+
+  const auditNpm = (over = {}) => runAudit(
+    { lockfile: cleanLockfile(), packageJson: cleanPackageJson(), filePath: path.join(dir, 'package-lock.json') },
+    { rules: { 'min-release-age': ['warn', { minDays: 3, ...over }] } }
+  ).findings.filter((f) => f.ruleId === 'min-release-age');
+
+  it('flags a project with no cooldown configured at all', () => {
+    const found = auditNpm();
+    expect(found).toHaveLength(1);
+    expect(found[0].message).toMatch(/no release-age cooldown configured/);
+    expect(found[0].severity).toBe('warn');
+  });
+
+  it('passes when .npmrc meets the minimum', () => {
+    fs.writeFileSync(path.join(dir, '.npmrc'), 'min-release-age=3\n');
+    expect(auditNpm()).toEqual([]);
+  });
+
+  it('passes when .npmrc exceeds the minimum', () => {
+    fs.writeFileSync(path.join(dir, '.npmrc'), 'min-release-age=7\n');
+    expect(auditNpm()).toEqual([]);
+  });
+
+  it('flags a cooldown below the minimum, naming both values', () => {
+    fs.writeFileSync(path.join(dir, '.npmrc'), 'min-release-age=1\n');
+    const found = auditNpm();
+    expect(found).toHaveLength(1);
+    expect(found[0].message).toMatch(/1 day, below the required minimum of 3 days/);
+  });
+
+  // The whole point of rejecting presence-only: `0` IS set, and is worthless.
+  it('flags min-release-age=0 rather than accepting it as "configured"', () => {
+    fs.writeFileSync(path.join(dir, '.npmrc'), 'min-release-age=0\n');
+    const found = auditNpm();
+    expect(found).toHaveLength(1);
+    expect(found[0].message).toMatch(/below the required minimum/);
+  });
+
+  it('honours a lowered minDays', () => {
+    fs.writeFileSync(path.join(dir, '.npmrc'), 'min-release-age=1\n');
+    expect(auditNpm({ minDays: 1 })).toEqual([]);
+  });
+
+  // pnpm's unit is MINUTES; npm's is DAYS. 3 here must NOT read as 3 days.
+  const auditPnpm = (yaml, over = {}) => {
+    fs.writeFileSync(path.join(dir, 'pnpm-workspace.yaml'), yaml);
+    const lockfile = { lockfileVersion: '9.0', importers: {}, snapshots: {} };
+    return runAudit(
+      { lockfile, packageJson: cleanPackageJson(), filePath: path.join(dir, 'pnpm-lock.yaml') },
+      { rules: { 'min-release-age': ['warn', { minDays: 3, ...over }] } }
+    ).findings.filter((f) => f.ruleId === 'min-release-age');
+  };
+
+  it('reads pnpm minimumReleaseAge as MINUTES, not days', () => {
+    const found = auditPnpm('minimumReleaseAge: 3\n');
+    expect(found).toHaveLength(1);
+    // 3 minutes, nowhere near 3 days — the unit trap.
+    expect(found[0].message).toMatch(/3 minutes, below the required minimum of 3 days/);
+  });
+
+  it('passes a pnpm project at 4320 minutes (3 days)', () => {
+    expect(auditPnpm('minimumReleaseAge: 4320\n')).toEqual([]);
+  });
+
+  it('flags a blanket minimumReleaseAgeExclude that voids the policy', () => {
+    const found = auditPnpm('minimumReleaseAge: 4320\nminimumReleaseAgeExclude:\n  - "*"\n');
+    expect(found).toHaveLength(1);
+    expect(found[0].message).toMatch(/blanket pattern "\*".*voids the cooldown/);
+  });
+});
+
 describe('rules registry', () => {
-  it('exposes all seventeen rules with ids and check functions', () => {
+  it('exposes all eighteen rules with ids and check functions', () => {
     expect(rules.map((r) => r.id)).toEqual([
       'lockfile-version',
       'valid-structure',
@@ -623,7 +705,8 @@ describe('rules registry', () => {
       'no-fund',
       'valid-npmrc',
       'valid-pnpm-workspace',
-      'valid-pnpm-field'
+      'valid-pnpm-field',
+      'min-release-age'
     ]);
     rules.forEach((rule) => expect(typeof rule.check).toBe('function'));
   });

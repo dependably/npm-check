@@ -59,7 +59,8 @@ const KNOWN_KEYS = new Set([
   'fetch-retry-maxtimeout', 'fetch-timeout', 'access', 'tag', 'lockfile-version',
   'omit', 'include', 'ignore-scripts', 'foreground-scripts', 'node-options',
   'progress', 'prefer-offline', 'prefer-online', 'offline', 'global', 'unsafe-perm',
-  'update-notifier', 'user-agent', 'maxsockets', 'before', 'workspaces', 'workspace'
+  'update-notifier', 'user-agent', 'maxsockets', 'before', 'workspaces', 'workspace',
+  'min-release-age'
 ]);
 
 // Plaintext-credential keys: bare `_auth`/`_authtoken`/`_password`, or the

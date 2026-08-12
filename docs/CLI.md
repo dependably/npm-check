@@ -187,6 +187,7 @@ npm-check audit --show-suppressed         # List findings silenced by .dependabl
 | `no-git-deps` | warn | No git dependencies — npm v12 won't install them without `--allow-git` |
 | `no-remote-deps` | warn | No remote-URL (non-registry) tarball dependencies — npm v12 won't install them without `--allow-remote` |
 | `pinned-versions` | error | No `^`/`~` ranges in package.json dependency sections or `overrides` |
+| `min-release-age` | warn | A supply-chain cooldown is configured, so a version published moments ago is never installed. npm: `min-release-age` in `.npmrc` (**days**, npm ≥ 11.10); pnpm: `minimumReleaseAge` in `pnpm-workspace.yaml` (**minutes**, pnpm ≥ 10.16). Normalized to days internally; `minDays` defaults to **3**. Also flags a blanket `minimumReleaseAgeExclude` (`*`) that voids the policy |
 | `lockfile-sync` | error | package.json and the lockfile agree (name/version, every declared dep present with matching range, no lockfile-only leftovers) |
 | `no-orphan-packages` | warn | No lockfile entries unreachable from the dependency graph (fix with `npm-check prune`) |
 | `unused-dependencies` | warn | Every declared dependency is imported by the application source (heuristic; `includeDev`/`ignore` options) |

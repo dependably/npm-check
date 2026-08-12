@@ -66,6 +66,10 @@ export const DEFAULT_CONFIG = {
     // unlike `allowedRegistryHosts` this list is NOT unioned from shared config —
     // a pin that only ever widens would not be a pin.
     'resolved-registry-pin': ['error', { hosts: [] }],
+    // 3 days: stricter than pnpm v11's own 1-day default and the ecosystem's
+    // 1-day baseline, deliberately — this tool is prescriptive. Lower it per
+    // project via the rule's `minDays` option.
+    'min-release-age': ['warn', { minDays: 3 }],
     'pinned-versions': ['error', {
       sections: ['dependencies', 'devDependencies', 'optionalDependencies'],
       ignore: []
