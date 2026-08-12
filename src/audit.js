@@ -805,9 +805,10 @@ const minReleaseAgeRule = {
     const dir = path.dirname(path.resolve(filePath));
     const isPnpm = flavor === 'pnpm';
     const configFile = isPnpm ? 'pnpm-workspace.yaml' : '.npmrc';
-    const configPath = isPnpm
-      ? path.join(dir, 'pnpm-workspace.yaml')
-      : (options.npmrcPath ? path.resolve(options.npmrcPath) : path.join(dir, '.npmrc'));
+    // `npmrcPath` lets a caller point at a .npmrc outside the lockfile's dir
+    // (same option valid-npmrc takes); it is meaningless on the pnpm path.
+    const npmrcPath = options.npmrcPath ? path.resolve(options.npmrcPath) : path.join(dir, '.npmrc');
+    const configPath = isPnpm ? path.join(dir, 'pnpm-workspace.yaml') : npmrcPath;
 
     const configured = isPnpm ? pnpmCooldownDays(configPath) : npmCooldownDays(configPath);
     const setting = isPnpm ? 'minimumReleaseAge' : 'min-release-age';
