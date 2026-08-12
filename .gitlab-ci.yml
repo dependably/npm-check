@@ -205,7 +205,10 @@ sonarqube-check:
       if [ -n "${SONAR_PROJECT_KEY:-}" ]; then
         set -- "$@" -Dsonar.projectKey="$SONAR_PROJECT_KEY"
       fi
-      npx sonar-scanner "$@"
+      # Invoke the pinned devDependency by path, never `npx <name>`: npx falls
+      # through to the public registry when a name does not resolve locally, which
+      # is how an unrelated `sonar-scanner@3.1.0` got fetched and executed here.
+      ./node_modules/.bin/sonar-scanner-npm "$@"
   allow_failure: true
 
 # Verifies the vendored conformance/dependably/ copy (conformance/) still matches the
