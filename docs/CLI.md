@@ -182,6 +182,7 @@ npm-check audit --show-suppressed         # List findings silenced by .dependabl
 | `valid-structure` | error | Lockfile passes structural validation |
 | `integrity-hygiene` | error | No missing, placeholder, or sha1 integrity hashes (git/file/link/bundled deps exempt) |
 | `secure-resolved` | error | No `http://` resolved URLs; registry hosts limited to an allowlist (default: `registry.npmjs.org`) |
+| `resolved-registry-pin` | error | Every `resolved` URL points at one of the registry hosts the project pins to. **Opt-in: empty `hosts` means off.** Answers *portability* ("can everyone who builds this reach these hosts?"), not *trust* — a private mirror can be trusted and still unreachable from CI. Configure with `["error", { "hosts": ["registry.npmjs.org"] }]`; `hosts` is rule-local and is **not** unioned from `common` |
 | `install-scripts` | warn | No dependency declares a lifecycle install script (`hasInstallScript`) unless approved — via the rule's `allow` option **or** npm v12's package.json `allowScripts` map. Flags pending/denied scripts that npm v12 won't run |
 | `no-git-deps` | warn | No git dependencies — npm v12 won't install them without `--allow-git` |
 | `no-remote-deps` | warn | No remote-URL (non-registry) tarball dependencies — npm v12 won't install them without `--allow-remote` |
