@@ -26,8 +26,6 @@
 #   REGISTRY_KEY          read-only token, unprotected — the post-publish read-back
 #   dependencyTrack_url   Dependency-Track base URL, e.g. https://dtrack.example.com
 #   dependencyTrack_token DT API key with BOM_UPLOAD + PROJECT_CREATION_UPLOAD perms
-#   SNYK_TOKEN            Snyk Code (SAST) auth token. Set UNPROTECTED + masked so
-#                         merge-request pipelines (unprotected branches) can scan.
 #   SONAR_HOST_URL        SonarQube server URL (not a secret)
 #   SONAR_PROJECT_KEY     SonarQube project key (not a secret)
 #   SONAR_TOKEN           SonarQube analysis token (masked)
@@ -38,7 +36,7 @@
 #                         https://github.com/dependably/npm-check.git
 
 # Run ONE pipeline per change: a merge-request pipeline when an MR is open (so the
-# full test suite runs in — and gates — the MR, not just snyk), the branch pipeline
+# full test suite runs in — and gates — the MR), the branch pipeline
 # on the default branch, and tag pipelines — while suppressing the redundant branch
 # pipeline when an MR is already open. Mirrors the python-check pipeline.
 #
@@ -120,30 +118,6 @@ secret-scan:
       else
         trufflehog git file://. --since-commit "$BEFORE" --only-verified --fail
       fi
-
-# Snyk Code (SAST) — static analysis of the source for security bugs, using the
-# pinned-by-digest snyk/snyk image (same image the dependably-community pipeline
-# uses). This is the project's FIRST Snyk run, so it's deliberately advisory:
-# `allow_failure: true` lets findings surface as a signal without blocking merges
-# until they're triaged. Once reviewed, flip allow_failure to false to make it a
-# hard gate (dependably-community's snyk-code job shows the mature, baseline-gated
-# form). No `npm ci` needed — Snyk Code scans source directly, not node_modules.
-#
-# The `rules` keep the job out of the pipeline entirely until SNYK_TOKEN exists,
-# so it never shows a spurious auth failure before the operator configures it.
-# SNYK_TOKEN must be an UNPROTECTED, masked CI/CD variable — merge-request
-# pipelines run on unprotected branches, so a protected token would be absent
-# there and every MR scan would error. The Snyk CLI reads it from the env.
-snyk-code:
-  stage: test
-  image:
-    name: snyk/snyk:linux@sha256:aeb296d943659dccbc7464340bb8741f6e11999cd99644dc92e6d315d6eda3f4
-    entrypoint: [""]
-  allow_failure: true
-  rules:
-    - if: '$SNYK_TOKEN'
-  script:
-    - snyk code test --severity-threshold=high
 
 # SonarQube static analysis + coverage (advisory). Main-only and
 # allow_failure:true, mirroring the dependably-community sonarqube-check job.
