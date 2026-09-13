@@ -25,6 +25,7 @@ import { loadAuditConfig, mergeConfig } from '../src/audit-config.js';
 import { runReport, formatReport } from '../src/report.js';
 import { prunePackages } from '../src/pruner.js';
 import { findUnusedDependencies } from '../src/usage-scanner.js';
+import { buildFactsEnvelope } from '../src/schema.js';
 
 const argv = process.argv.slice(2);
 
@@ -49,6 +50,9 @@ Commands:
     check [file]             Verify integrity hashes and licenses
     audit [file]             Lint lockfile for best practices (non-zero exit on failure)
     unused [dir]             Flag declared dependencies the application never imports
+    imports [dir]            Report the tree's import facts (per-file imports, bindings,
+                             the module graph through node_modules, lockfile graphs) as
+                             a JSON document — data for another tool, never a gate
 
   Fix & transform (npm-only; mutate the lockfile with --write):
     fix [file] [--write]     Run automated fixer with optional write
@@ -147,6 +151,16 @@ Unused Options:
   --include-dev              Also check devDependencies (off by default)
   --format human|json        Output format (default: human; json is machine-readable)
 
+Imports Options:
+  --format json|human        Output format (default: json — the facts document, with
+                             documentType "imports"; human prints its summary)
+  --no-module-graph          Do not follow imports through node_modules
+  --max-files N              Stop the node_modules walk after N files (default: 25000)
+  --max-file-bytes N         Skip (and report) node_modules files larger than N bytes
+                             (default: 1500000)
+  (needs the optional \`typescript\` peer dependency; exits 2 with TYPESCRIPT_MISSING
+   when it is not installed. A successful scan always exits 0 — facts are not findings.)
+
 Audit Options:
   --config <file>            Suite config (.dependably; .dependably-check is a
                              deprecated alias), discovered by walking up to the
@@ -175,6 +189,7 @@ Examples:
   npm-check pin --write                        # Lock down ^/~ versions
   npm-check prune --write                      # Remove orphaned lockfile entries
   npm-check unused                             # Flag never-imported dependencies
+  npm-check imports ./src > imports.json       # Import facts for another tool to consume
   npm-check audit                              # Lint with default rules
   npm-check audit --fail-on count=0 --format json   # Any warning fails the run
   npm-check audit --rule pinned-versions:error
@@ -325,6 +340,7 @@ function parseFormatFlag(allowed, fallback, code = 2) {
 const VALUED_OPTIONS = new Set([
   '--format', '--config', '--fail-on', '--concurrency', '--timeout',
   '--registry', '--licenses-csv', '--check', '--rule', '--keep',
+  '--max-files', '--max-file-bytes',
   // deprecated valued aliases (still parsed)
   '--min-severity', '--max-warnings'
 ]);
@@ -332,7 +348,7 @@ const BOOLEAN_OPTIONS = new Set([
   '--offline', '--allow-unresolved',
   '--no-integrity', '--no-vuln', '--no-deprecated', '--no-license',
   '--include-dev', '--include-peer', '--write', '--local-fallback', '--verbose',
-  '--show-suppressed',
+  '--show-suppressed', '--no-module-graph',
   '--version', '--help', '-h',
   // deprecated boolean aliases (still parsed)
   '--strict', '--fail-on-deprecated'
@@ -993,6 +1009,81 @@ function runUnusedCommand() {
   }
 }
 
+// `imports` is a data report, not a check: it emits the import-facts document
+// (`documentType: "imports"` — language facts only, no verdicts, no
+// severities), so it defaults to `--format json`, exits 0 on every successful
+// scan, and NEVER exits 1 — there is nothing to gate on. Exit 2 is the usage
+// tier: a missing target, a bad flag value, or the optional `typescript` peer
+// being absent (`TYPESCRIPT_MISSING`). The facts modules are imported lazily
+// so the lockfile-only commands never load the TypeScript compiler.
+async function runImportsCommand() {
+  const dir = getDirArg();
+  const target = positionals()[0] ?? '.';
+  const format = parseFormatFlag(['json', 'human'], 'json');
+  const moduleGraph = !argv.includes('--no-module-graph');
+  const maxFiles = parsePositiveIntFlag('--max-files', undefined, '--max-files');
+  const maxFileBytes = parsePositiveIntFlag('--max-file-bytes', undefined, '--max-file-bytes');
+  if (!fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) {
+    console.error(`Error: Directory not found: ${dir}`);
+    process.exit(2);
+  }
+
+  const { collectImportFacts, factsDocument, FactsError } = await import('../src/facts/index.js');
+  let facts;
+  try {
+    facts = collectImportFacts(dir, {
+      moduleGraph,
+      ...(maxFiles !== undefined ? { maxFiles } : {}),
+      ...(maxFileBytes !== undefined ? { maxFileBytes } : {})
+    });
+  } catch (error) {
+    if (error instanceof FactsError && error.code === 'TYPESCRIPT_MISSING') {
+      console.error(`Error: ${error.code}: ${error.message}`);
+      process.exit(2);
+    }
+    throw error;
+  }
+
+  const { summary, ...body } = factsDocument(facts, { exitCode: 0 });
+  if (format === 'json') {
+    // The facts envelope is the ONLY thing on stdout in json mode.
+    console.log(JSON.stringify(buildFactsEnvelope({ target, summary, body }), null, 2));
+    return;
+  }
+  printImportsSummary(target, summary, body);
+}
+
+// The human rendering of the facts document is its summary — the document
+// itself is data for another tool, and a page of import sites is not
+// something a person reads at a terminal.
+function printImportsSummary(target, summary, body) {
+  console.log(`\nImport facts for ${target}`);
+  console.log(`   ${summary.scanned} first-party source file(s) found, ${summary.analyzed} analyzed, ${summary.unanalyzable} unanalyzable entr${summary.unanalyzable === 1 ? 'y' : 'ies'}`);
+  const dynamic = body.imports.reduce((n, f) => n + f.dynamicUnknown, 0);
+  console.log(`   ${summary.imports} import site(s); ${dynamic} require()/import() call(s) with non-literal arguments could not be attributed`);
+  const mg = body.moduleGraph;
+  if (!mg.enabled) {
+    console.log('   module graph: not walked (--no-module-graph)');
+  } else if (mg.nodeModulesMissing) {
+    console.log(`   module graph: node_modules is not installed — ${mg.unresolved} import(s) unresolved, nothing followed`);
+  } else {
+    const truncated = mg.truncated ? ' (truncated at the file budget)' : '';
+    console.log(`   module graph: ${mg.filesParsed} node_modules file(s) parsed, ${summary.moduleGraph.reached} installed package copy(ies) reached, ${mg.unresolved} import(s) unresolved${truncated}`);
+    if (mg.weakPackages.length > 0) {
+      console.log(`   ${mg.weakPackages.length} reached package(s) load modules dynamically or were not fully parsed: ${mg.weakPackages.slice(0, 5).join(', ')}${mg.weakPackages.length > 5 ? ', …' : ''}`);
+    }
+  }
+  const lock = body.lockfile;
+  if (lock.files.length > 0) {
+    console.log(`   lockfile graph: ${lock.packages.length} package(s), ${lock.edges.length} edge(s) from ${lock.files.join(', ')}`);
+  }
+  for (const d of [...body.workspace.diagnostics, ...lock.diagnostics]) console.log(`   note: ${d}`);
+  if (body.unanalyzable.length > 0) {
+    console.log('\n   Not analyzed (absence of evidence from these is not a negative):');
+    for (const u of body.unanalyzable) console.log(`     • ${u.file} [${u.kind}] ${u.reason}`);
+  }
+}
+
 // Print .dependably config notices (deprecated filename/section, unknown keys)
 // to stderr. Never affects exit codes or the JSON payload on stdout.
 function emitConfigWarnings(warnings, format) {
@@ -1559,6 +1650,7 @@ const COMMAND_HANDLERS = {
   pin: () => runPinCommand(),
   prune: () => runPruneCommand(),
   unused: () => runUnusedCommand(),
+  imports: () => runImportsCommand(),
   audit: () => runAuditCommand(),
   'upgrade-hashes': () => runUpgradeHashesCommand(),
   dedupe: () => runDedupeCommand(),

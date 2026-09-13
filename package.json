@@ -1,11 +1,15 @@
 {
   "name": "@dependably/npm-check",
-  "version": "1.9.0",
+  "version": "1.10.0",
   "description": "A comprehensive tool for validating, migrating, and updating npm package-lock.json files across versions 1, 2, and 3.",
   "main": "src/index.js",
   "type": "module",
   "exports": {
     ".": "./src/index.js",
+    "./facts": {
+      "types": "./src/facts/types.d.ts",
+      "default": "./src/facts/index.js"
+    },
     "./package.json": "./package.json"
   },
   "bin": {
@@ -32,7 +36,8 @@
     "docker:test:node24": "docker-compose -f tests/integration/docker/docker-compose.yml run --rm test-node24-npm11",
     "docker:test:all": "docker-compose -f tests/integration/docker/docker-compose.yml up --abort-on-container-exit",
     "lint": "eslint .",
-    "sbom": "cyclonedx-npm --output-format json --output-file sbom.json",
+    "typecheck": "tsc -p tsconfig.facts.json --noEmit",
+    "sbom":"cyclonedx-npm --output-format json --output-file sbom.json",
     "sbom:prod": "cyclonedx-npm --omit dev --output-format json --output-file sbom-prod.json",
     "prepublishOnly": "npm run test && npm run lint"
   },
@@ -69,6 +74,8 @@
     "npm": ">=10.0.0"
   },
   "dependencies": {
+    "fast-glob": "3.3.3",
+    "ignore": "7.0.5",
     "yaml": "2.9.0"
   },
   "devDependencies": {
@@ -76,11 +83,21 @@
     "@babel/preset-env": "7.28.6",
     "@cyclonedx/cyclonedx-npm": "5.0.0",
     "@eslint/js": "10.0.1",
+    "@types/node": "22.20.1",
     "babel-jest": "30.2.0",
     "eslint": "10.5.0",
     "globals": "17.6.0",
     "jest": "29.7.0",
-    "sonarqube-scanner": "5.0.0"
+    "sonarqube-scanner": "5.0.0",
+    "typescript": "5.9.3"
+  },
+  "peerDependencies": {
+    "typescript": ">=5.6"
+  },
+  "peerDependenciesMeta": {
+    "typescript": {
+      "optional": true
+    }
   },
   "allowScripts": {
     "fsevents": true,

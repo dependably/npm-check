@@ -143,6 +143,23 @@ describe('Integration: CLI vocabulary (--format json replaces boolean --json)', 
       await ws.cleanup();
     }
   }, 30000);
+
+  test('imports defaults to --format json (a data report) and emits the facts document, not a findings envelope', async () => {
+    const ws = await createTestWorkspace('unpinned-v3');
+    try {
+      const r = await runCli(['imports', ws.dir, '--no-module-graph'], { cwd: ws.dir });
+      expect(r.code).toBe(0);
+      const parsed = JSON.parse(r.stdout);
+      expect(parsed.documentType).toBe('imports');
+      expect(parsed.findings).toBeUndefined();
+      expect(Array.isArray(parsed.unanalyzable)).toBe(true);
+      const human = await runCli(['imports', ws.dir, '--no-module-graph', '--format', 'human'], { cwd: ws.dir });
+      expect(human.code).toBe(0);
+      expect(human.stdout).toMatch(/Import facts for /);
+    } finally {
+      await ws.cleanup();
+    }
+  }, 30000);
 });
 
 describe('Integration: CLI vocabulary (--config reads .dependably-check)', () => {
