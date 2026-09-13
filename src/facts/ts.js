@@ -6,10 +6,16 @@
 // actually parses something, and its absence is a coded error — the CLI maps
 // `TYPESCRIPT_MISSING` to a usage error (exit 2) with an install hint rather
 // than a stack trace.
+//
+// NOTHING here runs at module load. `createRequire` is built inside
+// `loadTypeScript()`, from `__filename` when a CJS bundle defines it and from
+// `import.meta.url` otherwise: esbuild rewrites `import.meta.url` to
+// `undefined` in a CJS bundle, and `createRequire(undefined)` throws
+// `ERR_INVALID_ARG_VALUE` — at import time, as a plain Error no
+// `TYPESCRIPT_MISSING` handler would ever see (adversarial review). Importing
+// the barrel must never throw; only a parse can.
 import { createRequire } from 'node:module';
 import { FactsError } from './errors.js';
-
-const require = createRequire(import.meta.url);
 
 /** @type {typeof import('typescript') | undefined} */
 let cached;
@@ -21,6 +27,10 @@ let cached;
  */
 export function loadTypeScript() {
   if (cached) return cached;
+  // `__filename` is only defined in a CommonJS context (a bundle); in ESM the
+  // `typeof` guard keeps the reference from throwing.
+  const anchor = typeof __filename !== 'undefined' ? __filename : import.meta.url;
+  const require = createRequire(anchor);
   try {
     cached = /** @type {typeof import('typescript')} */ (require('typescript'));
   } catch (err) {

@@ -113,6 +113,38 @@ describe('factsDocument', () => {
     expect(a.includes(tmpdir())).toBe(false);
   });
 
+  test('a NON-realpath\'d srcDir with node_modules hoisted ABOVE it still yields short ../ paths everywhere (adversarial-review repro)', () => {
+    // Deliberately NOT realpath'd: on macOS os.tmpdir() is /var/folders/…,
+    // a symlink to /private/var/folders/…, so srcDir-as-given and every
+    // resolved (realpath'd) file disagree on their prefix. The old rule
+    // preferred the realpath spelling only when it landed INSIDE the tree —
+    // with the package one level up, both spellings climbed and the as-given
+    // one produced `../../../../../../private/var/…` for every path.
+    const ws = mkdtempSync(join(tmpdir(), 'npm-check-facts-hoist-'));
+    dirs.push(ws);
+    const app = join(ws, 'app');
+    put(app, 'package.json', JSON.stringify({ name: 'app', dependencies: { hoisted: '1.0.0' } }));
+    put(app, 'src/index.js', "import { h } from 'hoisted';\nh();\nimport 'missing';\n");
+    put(ws, 'node_modules/hoisted/package.json', JSON.stringify({ name: 'hoisted', version: '1.0.0' }));
+    put(ws, 'node_modules/hoisted/index.js', "import 'leaf';\nexport const h = 1;\n");
+    put(ws, 'node_modules/leaf/package.json', JSON.stringify({ name: 'leaf', version: '1.0.0' }));
+    put(ws, 'node_modules/leaf/index.js', `// ${'x'.repeat(200)}\n`);
+    const facts = collectImportFacts(app, { maxFileBytes: 100 });
+    const doc = factsDocument(facts);
+    const site = doc.imports[0].sites[0];
+    expect(site.installed.root).toBe('../node_modules/hoisted');
+    expect(doc.moduleGraph.reached.map((r) => r.key)).toEqual(['hoisted@1.0.0\0../node_modules/hoisted', 'leaf@1.0.0\0../node_modules/leaf']);
+    expect(doc.moduleGraph.reached[0].root).toBe('../node_modules/hoisted');
+    expect(doc.moduleGraph.reached[1].chain).toEqual(['hoisted@1.0.0\0../node_modules/hoisted', 'leaf@1.0.0\0../node_modules/leaf']);
+    expect(doc.moduleGraph.reached[1].importers[0]).toMatchObject({ file: '../node_modules/hoisted/index.js', fromPackage: 'hoisted@1.0.0\0../node_modules/hoisted' });
+    expect(doc.moduleGraph.unresolvedByName).toEqual([{ package: 'missing', sites: [{ file: 'src/index.js', reason: 'package not installed: missing' }] }]);
+    expect(doc.unanalyzable).toEqual([{ file: '../node_modules/leaf/index.js', kind: 'node-modules-file', reason: expect.stringMatching(/^too large to parse/) }]);
+    const json = JSON.stringify(doc);
+    expect(json).not.toContain('/private/');
+    expect(json).not.toContain(ws);
+    expect(json).not.toMatch(/\.\.\/\.\.\//);
+  });
+
   test('carries no verdict vocabulary — facts, not findings', () => {
     const json = JSON.stringify(factsDocument(collectImportFacts(buildTree())));
     expect(json).not.toMatch(/"severity"|"purl"|"findings"|reachable|not-observed|"confidence"/);

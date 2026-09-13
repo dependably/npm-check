@@ -372,7 +372,11 @@ export interface ImportFacts {
 }
 
 export function collectImportFacts(srcDir: string, options?: CollectOptions): ImportFacts;
-/** Realpath-aware relativizer producing POSIX paths; `.` for `srcDir` itself. */
+/**
+ * Realpath-aware relativizer producing POSIX paths: of the two spellings of
+ * `srcDir` (as given, realpath), the one the file sits under with fewer `..`
+ * segments wins. `srcDir` itself relativizes to `''`, as sbom-reach's `relOf`.
+ */
 export function makeRelOf(srcDir: string, realSrcDir: string): (file: string) => string;
 
 // ------------------------------------------------------------ document ----

@@ -6,6 +6,9 @@
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { FACTS_SCHEMA_VERSION } from './facts/version.js';
+
+export { FACTS_SCHEMA_VERSION };
 
 export const TOOL_NAME = 'npm-check';
 export const SCHEMA_VERSION = '1.0';
@@ -17,6 +20,11 @@ export const SCHEMA_VERSION = '1.0';
 // payload from whichever key happens to be present. Precedent: pycheck's
 // `--imports` document.
 export const DOCUMENT_TYPE_IMPORTS = 'imports';
+
+// `FACTS_SCHEMA_VERSION` (re-exported above) is the facts document's OWN
+// version line — see src/facts/version.js, a dependency-free leaf, so that
+// this module (loaded by every lockfile command) never pulls the facts
+// barrel in and the facts barrel never pulls this one into its type-check.
 
 // The envelope-owned keys of a facts document; a body section may never
 // spell one of these (see buildFactsEnvelope).
@@ -89,7 +97,8 @@ export function buildEnvelope({ target, scanned, findings, exitCode, extra }) {
 
 /**
  * Assemble the import-facts envelope: the SAME identity fields as the
- * findings envelope (`tool`, `toolVersion`, `schemaVersion`, `target`,
+ * findings envelope (`tool`, `toolVersion`, `schemaVersion` — the facts
+ * document's OWN version line, `FACTS_SCHEMA_VERSION` — `target`,
  * `summary`) plus the `documentType` discriminator, and NO `findings` — an
  * import site has no severity, so it must never ride in the findings array
  * where `--fail-on` could gate on it. `body` is spread after the identity
@@ -112,7 +121,7 @@ export function buildFactsEnvelope({ target, summary, body }) {
   return {
     tool: TOOL_NAME,
     toolVersion: toolVersion(),
-    schemaVersion: SCHEMA_VERSION,
+    schemaVersion: FACTS_SCHEMA_VERSION,
     documentType: DOCUMENT_TYPE_IMPORTS,
     target,
     summary,

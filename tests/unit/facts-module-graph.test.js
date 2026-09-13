@@ -5,7 +5,7 @@
 // unanalyzable. Every tree is built in a temp dir; nothing here depends on a
 // real install. Ported from the resolver/walker half of sbom-reach's
 // analyzer-npm `module-graph.test.ts` (its verdict cases stayed there).
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ModuleResolver, packageRootOf, resolveExports, scanSource, walkModuleGraph, packageKey, DEFAULT_MAX_FILES, DEFAULT_MAX_FILE_BYTES } from '../../src/facts/index.js';
@@ -232,7 +232,32 @@ describe('walkModuleGraph', () => {
     expect(graph.truncated).toBe(true);
     expect(graph.filesPastBudget).toBeGreaterThan(0);
     expect(graph.weakPackages).toEqual(['big@1.0.0', 'loader@1.0.0']);
-    expect(graph.unanalyzable).toEqual([{ file: join(root, 'node_modules/big/index.js'), reason: expect.stringMatching(/^too large to parse: \d+ bytes exceeds the 100-byte limit$/) }]);
+    expect(graph.unanalyzable).toEqual([{ file: join(root, 'node_modules/big/index.js'), reason: 'too large to parse: 204 bytes exceeds the 100-byte limit' }]);
+  });
+
+  const asRoot = typeof process.getuid === 'function' && process.getuid() === 0;
+  (asRoot ? test.skip : test)('an unreadable node_modules file is listed with a path-free reason (the error code), and its package is incomplete', () => {
+    const root = tempDir();
+    put(root, 'src/index.js', "import 'locked';\n");
+    pkg(root, 'locked', '1.0.0', { 'index.js': "import 'hidden';\n" });
+    chmodSync(join(root, 'node_modules/locked/index.js'), 0o000);
+    try {
+      const graph = walkModuleGraph({ srcDir: root, resolver: new ModuleResolver(), roots: roots(root, ['src/index.js']), scan: scanSource });
+      expect(graph.byName.get('locked')[0].incomplete).toBe(true);
+      expect(graph.unanalyzable).toEqual([{ file: join(root, 'node_modules/locked/index.js'), reason: 'unreadable: EACCES' }]);
+      expect(graph.filesParsed).toBe(0);
+    } finally {
+      chmodSync(join(root, 'node_modules/locked/index.js'), 0o644);
+    }
+  });
+
+  test('a dangling relative import marks the package incomplete but lists nothing in unanalyzable — there is no file to list', () => {
+    const root = tempDir();
+    put(root, 'src/index.js', "import 'broken';\n");
+    pkg(root, 'broken', '1.0.0', { 'index.js': "import './missing.js';\n" });
+    const graph = walkModuleGraph({ srcDir: root, resolver: new ModuleResolver(), roots: roots(root, ['src/index.js']), scan: scanSource });
+    expect(graph.byName.get('broken')[0].incomplete).toBe(true);
+    expect(graph.unanalyzable).toEqual([]);
   });
 
   test('a type-only import is never an edge', () => {

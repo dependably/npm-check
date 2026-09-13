@@ -18,11 +18,12 @@
 // gap, never silently dropped):
 //  - a non-literal `require()`/`import()` inside a package marks that
 //    package `dynamic`: it can load things this walk cannot see;
-//  - a file skipped for size (bundled 5 MB `dist/` files are common), a
-//    file that resolved but could not be read, or a RELATIVE import inside a
-//    package that does not resolve, marks that package `incomplete` — some
-//    of its own edges are unknown — and the file itself is listed in
-//    `unanalyzable`;
+//  - a file skipped for size (bundled 5 MB `dist/` files are common) or a
+//    file that resolved but could not be read marks its package `incomplete`
+//    — some of its own edges are unknown — AND is listed in `unanalyzable`;
+//    a RELATIVE import inside a package that does not resolve marks the
+//    package `incomplete` too, but there is no file to list for it (nothing
+//    was found to skip), so it appears nowhere else;
 //  - an unresolvable BARE specifier is recorded under the package name it
 //    asked for (`unresolvedByName`), so the gap is attributable precisely;
 //    the walk stopping on the file budget sets `truncated` and counts the
@@ -192,7 +193,7 @@ export function walkModuleGraph(opts) {
         size = statSync(resolution.path).size;
       } catch (err) {
         entry.incomplete = true;
-        unanalyzable.push({ file: resolution.path, reason: `unreadable: ${messageOf(err)}` });
+        unanalyzable.push({ file: resolution.path, reason: `unreadable: ${errorCode(err)}` });
         continue;
       }
       if (size > maxFileBytes) {
@@ -207,7 +208,7 @@ export function walkModuleGraph(opts) {
         content = readFileSync(resolution.path, 'utf8');
       } catch (err) {
         entry.incomplete = true;
-        unanalyzable.push({ file: resolution.path, reason: `unreadable: ${messageOf(err)}` });
+        unanalyzable.push({ file: resolution.path, reason: `unreadable: ${errorCode(err)}` });
         continue;
       }
       filesParsed++;
@@ -276,9 +277,13 @@ function push(map, key, value) {
 }
 
 /**
+ * A path-free spelling of an I/O failure (Node's message embeds the absolute
+ * path, and `unanalyzable[].reason` must compare across machines): the
+ * `code` when there is one, else the constructor name.
  * @param {unknown} err
  * @returns {string}
  */
-function messageOf(err) {
-  return err instanceof Error ? err.message : String(err);
+function errorCode(err) {
+  if (err && typeof err === 'object' && 'code' in err && typeof err.code === 'string') return err.code;
+  return err instanceof Error ? err.name : 'error';
 }

@@ -11,10 +11,11 @@
 // report not gate, a `documentType` discriminator, `unanalyzable[]`
 // load-bearing, additive fields only.
 
-/** The facts document's own schema version, independent of the findings
- *  envelope's `SCHEMA_VERSION` (both `1.0` today; a field added later bumps
- *  the minor, a renamed or removed one the major). */
-export const FACTS_SCHEMA_VERSION = '1.0';
+// The facts document's own schema version — what `buildFactsEnvelope`
+// (src/schema.js) writes as `schemaVersion`, a SEPARATE version line from
+// the findings envelope's `SCHEMA_VERSION`. See version.js for why it is a
+// leaf module rather than living here or in schema.js.
+export { FACTS_SCHEMA_VERSION } from './version.js';
 
 export { FactsError } from './errors.js';
 export { loadTypeScript } from './ts.js';

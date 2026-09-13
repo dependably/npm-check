@@ -126,7 +126,10 @@ describe('collectImportFacts: unanalyzable is load-bearing', () => {
       const facts = collectImportFacts(root, { moduleGraph: false });
       expect(facts.workspace.sourceFiles).toHaveLength(2);
       expect(facts.files.map((f) => f.rel)).toEqual(['src/ok.js']);
-      expect(facts.unanalyzable).toEqual([{ file: 'src/locked.js', kind: 'file', reason: expect.stringMatching(/^unreadable: /) }]);
+      // The reason is the error CODE, never Node's message: that would carry
+      // the absolute path, and reasons must compare across machines.
+      expect(facts.unanalyzable).toEqual([{ file: 'src/locked.js', kind: 'file', reason: 'unreadable: EACCES' }]);
+      expect(JSON.stringify(facts.unanalyzable)).not.toContain(root);
     } finally {
       chmodSync(join(root, 'src/locked.js'), 0o644);
     }
@@ -201,12 +204,34 @@ describe('collectImportFacts with an installed tree', () => {
 });
 
 describe('makeRelOf', () => {
-  test('relativizes against whichever spelling of srcDir the file sits under, POSIX separators, "." for srcDir itself', () => {
+  test('relativizes against whichever spelling of srcDir the file sits under, POSIX separators', () => {
     const rel = makeRelOf('/given/src', '/real/src');
     expect(rel('/given/src/a/b.js')).toBe('a/b.js');
     expect(rel('/real/src/a/b.js')).toBe('a/b.js');
     expect(rel('/elsewhere/x.js').startsWith('..')).toBe(true);
-    expect(rel('/given/src')).toBe('.');
+  });
+
+  test('srcDir itself relativizes to "" — byte-identical to sbom-reach\'s relOf, which a consumer emits verbatim', () => {
+    expect(makeRelOf('/given/src', '/real/src')('/given/src')).toBe('');
+    expect(makeRelOf('/given/src', '/real/src')('/real/src')).toBe('');
+    expect(makeRelOf('/same/src', '/same/src')('/same/src')).toBe('');
+    const root = tempDir();
+    put(root, 'package.json', JSON.stringify({ name: 'app' }));
+    const facts = collectImportFacts(root, { moduleGraph: false });
+    expect(makeRelOf(facts.srcDir, facts.realSrcDir)(facts.srcDir)).toBe('');
+  });
+
+  test('prefers the spelling with FEWER `..` segments, so a file ABOVE a symlinked srcDir never becomes a to-the-root chain', () => {
+    // srcDir as given: /var/tmp/ws/app; its realpath: /private/var/tmp/ws/app.
+    // A file hoisted one level above, spelled by realpath (as every resolved
+    // file is): /private/var/tmp/ws/node_modules/x/index.js.
+    const rel = makeRelOf('/var/tmp/ws/app', '/private/var/tmp/ws/app');
+    expect(rel('/private/var/tmp/ws/node_modules/x/index.js')).toBe('../node_modules/x/index.js');
+    // Inside the tree, either spelling is fine and neither climbs.
+    expect(rel('/private/var/tmp/ws/app/src/a.js')).toBe('src/a.js');
+    expect(rel('/var/tmp/ws/app/src/a.js')).toBe('src/a.js');
+    // A tie (both climb the same amount) keeps the as-given spelling.
+    expect(rel('/var/tmp/ws/other.js')).toBe('../other.js');
   });
 });
 

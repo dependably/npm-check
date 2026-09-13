@@ -239,6 +239,29 @@ condition), so a TypeScript consumer gets `ImportSite`, `ScanResult`,
 `Resolution`, `ModuleGraph`, `ReachedPackage`, `LockfileGraph`,
 `ImportFacts`, `FactsDocument` and the rest without a build step.
 
+### Bundling
+
+`@dependably/npm-check/facts` is plain ESM with three CommonJS dependencies
+(`fast-glob`, `ignore`, `yaml`) and one lazily `createRequire`'d optional peer
+(`typescript`). Two things follow for a consumer that bundles it:
+
+- **An ESM bundle needs a `createRequire` banner.** `fast-glob` and `ignore`
+  are CJS; a bundler emits `__require("os")`-style shims for their own
+  builtin imports, which fail in an ESM output unless a top-of-bundle
+  `import { createRequire } from 'node:module'; const require =
+  createRequire(import.meta.url);` is prepended (tsup: `shims: true` or a
+  `banner`; esbuild: `banner.js`). sbom-reach's tsup config already does
+  this.
+- **`typescript` then resolves from the BUNDLE's location, not from
+  npm-check's.** `loadTypeScript()` builds its `createRequire` from
+  `__filename` when a CJS bundle defines it and from `import.meta.url`
+  otherwise, so a bundled copy looks for `typescript` beside the bundle. A
+  bundling consumer must therefore declare its own dependency on
+  `typescript`; the absence still surfaces as
+  `FactsError('TYPESCRIPT_MISSING')` at the first parse, never at import
+  time — nothing in the facts modules runs at module load. Never mark
+  `typescript` external-but-required: it is an optional peer here on purpose.
+
 Three rules travel with this code and are what a consumer is entitled to
 rely on: the scan **over-reports use and never under-reports it**
 (`referenced` counts any occurrence, shadowing locals included); `opaque` is

@@ -3,8 +3,8 @@
 // differ in ONE discriminator: the findings envelope has no `documentType`
 // (schema 1.0 predates the split and is unchanged), the facts envelope has
 // `documentType: "imports"` and no `findings`.
-import { buildEnvelope, buildFactsEnvelope, DOCUMENT_TYPE_IMPORTS, SCHEMA_VERSION, TOOL_NAME, toolVersion } from '../../src/schema.js';
-import { FACTS_SCHEMA_VERSION } from '../../src/facts/index.js';
+import { buildEnvelope, buildFactsEnvelope, DOCUMENT_TYPE_IMPORTS, FACTS_SCHEMA_VERSION, SCHEMA_VERSION, TOOL_NAME, toolVersion } from '../../src/schema.js';
+import { FACTS_SCHEMA_VERSION as FACTS_SCHEMA_VERSION_FROM_BARREL } from '../../src/facts/index.js';
 
 describe('buildFactsEnvelope', () => {
   const summary = { scanned: 2, analyzed: 2, unanalyzable: 0, imports: 3, moduleGraph: { filesParsed: 0, reached: 0, unresolved: 0, truncated: false }, exitCode: 0 };
@@ -15,7 +15,7 @@ describe('buildFactsEnvelope', () => {
     expect(Object.keys(env)).toEqual(['tool', 'toolVersion', 'schemaVersion', 'documentType', 'target', 'summary', 'workspace', 'imports', 'moduleGraph', 'lockfile', 'unanalyzable']);
     expect(env.tool).toBe(TOOL_NAME);
     expect(env.toolVersion).toBe(toolVersion());
-    expect(env.schemaVersion).toBe(SCHEMA_VERSION);
+    expect(env.schemaVersion).toBe(FACTS_SCHEMA_VERSION);
     expect(env.documentType).toBe('imports');
     expect(DOCUMENT_TYPE_IMPORTS).toBe('imports');
     expect(env.target).toBe('.');
@@ -36,8 +36,13 @@ describe('buildFactsEnvelope', () => {
     expect(env.summary).toBe(summary);
   });
 
-  test('the facts schema version matches the envelope schema version today', () => {
-    expect(FACTS_SCHEMA_VERSION).toBe(SCHEMA_VERSION);
+  test('the facts document carries its OWN schema version line, wired through buildFactsEnvelope, not the findings envelope\'s', () => {
+    // Both happen to read 1.0 today; what is pinned is the WIRING — the
+    // envelope emits FACTS_SCHEMA_VERSION, so the two can diverge.
+    expect(buildFactsEnvelope({ target: 'x', summary, body }).schemaVersion).toBe(FACTS_SCHEMA_VERSION);
+    expect(FACTS_SCHEMA_VERSION_FROM_BARREL).toBe(FACTS_SCHEMA_VERSION);
+    expect(FACTS_SCHEMA_VERSION).toMatch(/^\d+\.\d+$/);
+    expect(buildEnvelope({ target: 'x', scanned: 0, findings: [], exitCode: 0 }).schemaVersion).toBe(SCHEMA_VERSION);
   });
 });
 

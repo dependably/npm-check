@@ -359,16 +359,16 @@ For a tree with one file `src/index.js` reading `import { a } from 'lib-a'; a();
     "weakPackages": [],
     "reached": [
       {
-        "key": "leaf@2.0.0 node_modules/leaf",
+        "key": "leaf@2.0.0\u0000node_modules/leaf",
         "name": "leaf", "dirName": "leaf", "version": "2.0.0", "root": "node_modules/leaf",
-        "chain": ["lib-a@1.0.0 node_modules/lib-a", "leaf@2.0.0 node_modules/leaf"],
+        "chain": ["lib-a@1.0.0\u0000node_modules/lib-a", "leaf@2.0.0\u0000node_modules/leaf"],
         "dynamic": false, "incomplete": false,
         "importers": [
           { "file": "node_modules/lib-a/index.js", "line": 1, "snippet": "import * as leaf from 'leaf';", "kind": "import",
-            "bindings": ["go"], "referenced": ["go"], "opaque": false, "fromPackage": "lib-a@1.0.0 node_modules/lib-a" }
+            "bindings": ["go"], "referenced": ["go"], "opaque": false, "fromPackage": "lib-a@1.0.0\u0000node_modules/lib-a" }
         ]
       },
-      { "key": "lib-a@1.0.0 node_modules/lib-a", "...": "..." }
+      { "key": "lib-a@1.0.0\u0000node_modules/lib-a", "...": "..." }
     ],
     "unresolvedByName": []
   },
@@ -383,7 +383,7 @@ For a tree with one file `src/index.js` reading `import { a } from 'lib-a'; a();
 }
 ```
 
-`imports` lists **every first-party file that was read**, sorted by path, each with its sites in source order — a file that parsed and imports nothing is still listed, with an empty `sites`, because "searched and imports nothing" and "never searched" are different facts. Every path is relative to `target`, with `/` separators, and the module-graph keys (`name@version` + ` ` + the package root) are relativized the same way, so the document is deterministic and comparable across machines.
+`imports` lists **every first-party file that was read**, sorted by path, each with its sites in source order — a file that parsed and imports nothing is still listed, with an empty `sites`, because "searched and imports nothing" and "never searched" are different facts. Every path is relative to `target`, with `/` separators, and the module-graph keys (`name@version` + `\u0000` + the package root) are relativized the same way, so the document is deterministic and comparable across machines.
 
 `summary` counts what the document contains:
 
@@ -414,7 +414,7 @@ Each `imports` entry also carries `dynamicUnknown` — the number of `require()`
 
 `workspace` is what the tree declares about itself: every `package.json`'s `name` (`firstPartyNames`), the dev/runtime scope each manifest gives its dependencies (`depScopes`, "runtime anywhere wins" across manifests), the tsconfig/jsconfig `paths` alias bases (`aliasPrefixes`), the count of first-party source files, and `diagnostics` (an unparseable manifest or tsconfig, named and skipped).
 
-`moduleGraph` is the statically resolved module graph **through** `node_modules`: every first-party import resolved (Node-style — symlink-aware, so pnpm's `.pnpm` layout works; `exports`/`imports` maps with `import`-vs-`require` conditions; `main`, `module`, `index.*`; `.js`→`.ts` probing) to the installed file it loads, that file parsed with the same scanner, its imports resolved in turn, and so on. It is a *module* graph, not a call graph: an edge means "evaluating this module evaluates that one". One `reached` entry per installed **copy** (`key` = `name@version` + ` ` + root — two copies of one version can differ only by location), with the `importers` from outside that package (a package's own internal relative imports are traversed but never listed), the `chain` of keys along which it was first reached, and the honesty flags: `dynamic` (a file in the package has a non-literal `require()`/`import()` — it can load things the walk cannot see), `incomplete` (a file was not parsed, or a relative import inside the package went nowhere — its edges are not all known). `weakPackages` lists the `name@version` of everything flagged either way. `unresolvedByName` records every bare specifier the resolver could not follow, under the package name it asked for, with where and why (at most five sites per name) — an unresolved import is a place a runtime path could hide, and it says exactly which package it wanted. `nodeModulesMissing` is `true` when nothing resolved, something was unresolved, and there is no `node_modules` directory at all: the tree was never installed. `truncated` means the file budget stopped the walk (`--max-files`); packages past the frontier are unobserved, not absent.
+`moduleGraph` is the statically resolved module graph **through** `node_modules`: every first-party import resolved (Node-style — symlink-aware, so pnpm's `.pnpm` layout works; `exports`/`imports` maps with `import`-vs-`require` conditions; `main`, `module`, `index.*`; `.js`→`.ts` probing) to the installed file it loads, that file parsed with the same scanner, its imports resolved in turn, and so on. It is a *module* graph, not a call graph: an edge means "evaluating this module evaluates that one". One `reached` entry per installed **copy** (`key` = `name@version` + `\u0000` + root — two copies of one version can differ only by location), with the `importers` from outside that package (a package's own internal relative imports are traversed but never listed), the `chain` of keys along which it was first reached, and the honesty flags: `dynamic` (a file in the package has a non-literal `require()`/`import()` — it can load things the walk cannot see), `incomplete` (a file was not parsed, or a relative import inside the package went nowhere — its edges are not all known). `weakPackages` lists the `name@version` of everything flagged either way. `unresolvedByName` records every bare specifier the resolver could not follow, under the package name it asked for, with where and why (at most five sites per name) — an unresolved import is a place a runtime path could hide, and it says exactly which package it wanted. `nodeModulesMissing` is `true` when nothing resolved, something was unresolved, and there is no `node_modules` directory at all: the tree was never installed. `truncated` means the file budget stopped the walk (`--max-files`); packages past the frontier are unobserved, not absent.
 
 `lockfile` is the dependency graph every `package-lock.json` and `pnpm-lock.yaml` under the tree records (outside `node_modules`; several lockfiles merge into one graph): the resolved `packages` (each with the `license` the lockfile carries, a tri-state `devDeclared` — `true` reachable only through devDependencies, `false` some path reaches it without a dev edge, absent when the lockfile says nothing — and `scope: "optional"` only when npm asserts exclusivity), the `rootDependencies` the project's own manifests depend on directly, the `edges` among the closure (hoisting-accurate for npm; peer-suffix-stripped for pnpm), the `files` that were read, and `diagnostics` (`unparseable … at <file>: <why>`, or `NO_LOCKFILE`).
 
@@ -424,7 +424,7 @@ Every path the scan could not read or would not follow appears in `unanalyzable`
 
 ```json
 "unanalyzable": [
-  { "file": "src/locked.js",                        "kind": "file",              "reason": "unreadable: EACCES: permission denied, open '…'" },
+  { "file": "src/locked.js",                        "kind": "file",              "reason": "unreadable: EACCES" },
   { "file": "src/Broken.svelte",                    "kind": "file-partial",      "reason": "line 3: Expression expected." },
   { "file": "node_modules/typescript/lib/typescript.js", "kind": "node-modules-file", "reason": "too large to parse: 9313231 bytes exceeds the 1500000-byte limit" },
   { "file": "node_modules",                         "kind": "walk",              "reason": "file budget 25000 reached; 312 resolved file(s) past that frontier were not parsed, so packages they load are unobserved, not absent" }

@@ -29,11 +29,19 @@ import { discoverWorkspace } from './workspace.js';
 /** @typedef {import('./types.d.ts').UnanalyzableEntry} UnanalyzableEntry */
 
 /**
- * Relativizes paths against `srcDir` — realpath-aware. Resolved files are
- * realpath'd (pnpm symlinks, macOS `/var` → `/private/var`); `srcDir` as
- * given may not be. Relativize against whichever spelling the file actually
- * sits under, so a path never reads `../../..` for a file that is inside the
- * tree. Always POSIX separators: the document must compare across machines.
+ * Relativizes paths against `srcDir` — realpath-aware. First-party files are
+ * spelled under `srcDir` as given; resolved node_modules files are realpath'd
+ * (pnpm symlinks, macOS `/var` → `/private/var`, `/tmp` → `/private/tmp`),
+ * and `srcDir` as given may not be. Relativize against whichever spelling of
+ * `srcDir` the file actually sits under: the one that needs FEWER `..`
+ * segments. "Prefer the realpath only when it lands inside the tree" was the
+ * first rule and it was wrong — with node_modules hoisted ABOVE the target
+ * and a symlinked prefix on `srcDir`, both spellings start with `..`, and the
+ * as-given one is a `../../../..`-to-root chain followed by the whole
+ * absolute path (adversarial review), poisoning every path in the document.
+ * Always POSIX separators: the document must compare across machines. The
+ * tree itself relativizes to `''`, exactly as sbom-reach's `relOf` does — a
+ * consumer emits that spelling verbatim, so it must not change.
  * @param {string} srcDir
  * @param {string} realSrcDir
  * @returns {(file: string) => string}
@@ -41,10 +49,25 @@ import { discoverWorkspace } from './workspace.js';
 export function makeRelOf(srcDir, realSrcDir) {
   return (file) => {
     const direct = relative(srcDir, file);
-    const viaReal = realSrcDir === srcDir ? direct : relative(realSrcDir, file);
-    const chosen = direct.startsWith('..') && !viaReal.startsWith('..') ? viaReal : direct;
-    return (chosen === '' ? '.' : chosen).split(sep).join('/');
+    if (realSrcDir === srcDir) return direct.split(sep).join('/');
+    const viaReal = relative(realSrcDir, file);
+    const chosen = parentSegments(viaReal) < parentSegments(direct) ? viaReal : direct;
+    return chosen.split(sep).join('/');
   };
+}
+
+/**
+ * How many leading `..` segments a relative path climbs through.
+ * @param {string} rel
+ * @returns {number}
+ */
+function parentSegments(rel) {
+  let n = 0;
+  for (const part of rel.split(sep)) {
+    if (part !== '..') break;
+    n++;
+  }
+  return n;
 }
 
 /**
@@ -88,8 +111,10 @@ export function collectImportFacts(srcDir, options = {}) {
       content = readFileSync(file, 'utf8');
     } catch (err) {
       // The consumer used to `continue` here silently. A file nobody read is
-      // a file whose imports are unknown, and it must be listed.
-      unanalyzable.push({ file: rel, kind: 'file', reason: `unreadable: ${messageOf(err)}` });
+      // a file whose imports are unknown, and it must be listed. The reason
+      // is the error CODE, never Node's message — that carries the absolute
+      // path, and reasons must stay machine-independent (`file` says where).
+      unanalyzable.push({ file: rel, kind: 'file', reason: `unreadable: ${errorCode(err)}` });
       continue;
     }
     const result = scan(rel, content);
@@ -165,9 +190,12 @@ export function collectImportFacts(srcDir, options = {}) {
 }
 
 /**
+ * A path-free spelling of an I/O failure: the `code` (`EACCES`, `EISDIR`,
+ * `ENOENT`…) when there is one, else the constructor name.
  * @param {unknown} err
  * @returns {string}
  */
-function messageOf(err) {
-  return err instanceof Error ? err.message : String(err);
+export function errorCode(err) {
+  if (err && typeof err === 'object' && 'code' in err && typeof err.code === 'string') return err.code;
+  return err instanceof Error ? err.name : 'error';
 }
