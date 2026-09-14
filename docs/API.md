@@ -198,7 +198,7 @@ The result:
 | Field | What |
 | --- | --- |
 | `srcDir`, `realSrcDir` | The tree, absolute, and its realpath. |
-| `workspace` | `discoverWorkspace`'s result: `firstPartyNames` (Set), `depScopes` (Map, name → `runtime`/`dev`), `aliasPrefixes` (Set), `sourceFiles`, `diagnostics`. |
+| `workspace` | `discoverWorkspace`'s result: `firstPartyNames` (Set), `depScopes` (Map, name → `runtime`/`dev`), `aliasScope` (an `AliasScope` — **decide a specifier's alias with this**, since a tsconfig/jsconfig `paths` map governs only the project that declares it and this answers per file, via `.for(file)`), `aliasLayers` (the raw per-config layers `aliasScope` is built from, JSON-safe), `aliasPrefixes` (Set — the workspace-wide union of every alias base found anywhere in the tree, **for reporting only**; never decide a specifier with it), `devDeclaredBy` (Map, name → the manifest paths that declared it a dev dependency, pruned of anything "runtime anywhere wins" already settled runtime), `sourceFiles`, `diagnostics`. |
 | `files` | One `FirstPartyFile` per file read: `file` (absolute), `rel` (srcDir-relative, POSIX), `scan` (the `ScanResult`), `sites` (each `ImportSite` plus `package` — the npm package the specifier names, or `undefined` — and `installed` — the copy it resolved into, when it did). |
 | `graph` | The `ModuleGraph`, or `undefined` when `moduleGraph: false`. |
 | `nodeModulesMissing` | The walk reached nothing, something was unresolved, and there is no `node_modules`. |
@@ -220,19 +220,37 @@ consumer that wants to run its own pipeline:
 ```js
 import {
   scanSource,                       // (fileName, content) → { sites, dynamicUnknown, parseErrors? }
-  ModuleResolver,                   // new ModuleResolver(aliasPrefixes?).resolve(fromFile, specifier, 'import'|'require')
+  ModuleResolver,                   // new ModuleResolver(aliases?).resolve(fromFile, specifier, 'import'|'require')
   packageRootOf, resolveExports,    // path → package root; exports/imports-map resolution
   walkModuleGraph,                  // ({ srcDir, resolver, roots, scan, maxFiles?, maxFileBytes? }) → ModuleGraph
   DEFAULT_MAX_FILES, DEFAULT_MAX_FILE_BYTES, packageKey,
   discoverWorkspace,                // (srcDir) → Workspace
+  governedByManifest,               // (manifestRel, rel) → is rel inside the directory manifestRel governs?
   discoverLockfileGraphs,           // (srcDir) → every lockfile under the tree, merged
   parsePackageLockJsonGraph, parsePnpmLockYamlGraph, parsePackageLockJson, parsePnpmLockYaml, mergeDiscovered,
   specifierToPackage, aliasBaseFromPathsKey,
+  fixedAliasScope,                  // (prefixes?) → an AliasScope that answers the same set everywhere
+  asAliasScope,                     // (ReadonlySet<string> | AliasScope) → AliasScope, for API boundaries that accept either
+  loadGitignores,                   // (srcDir, ignoreDirs) → every .gitignore under srcDir, deepest first
+  isGitignored, filterGitignored,   // apply those layers to one path, or filter a list of absolute paths
+  OUTPUT_SHAPED_DIRS,               // directory names that usually hold generated/vendored output (never excluded by name)
+  outputDirScannedDiagnostic,       // (relPaths, names?) → the OUTPUT_DIR_SCANNED note, or undefined
   makeRelOf,                        // (srcDir, realSrcDir) → realpath-aware relativizer
   loadTypeScript,                   // the compiler API, loaded once; throws TYPESCRIPT_MISSING
   FACTS_SCHEMA_VERSION, FactsError
 } from '@dependably/npm-check/facts';
 ```
+
+`ModuleResolver`'s constructor takes either shape for its one argument: a flat `ReadonlySet<string>` of alias bases (applied everywhere — what most callers and tests want) or an `AliasScope` (per-file, from `Workspace.aliasScope`) — `asAliasScope` normalizes whichever was passed, and `resolve.js` consults `this.aliasScope.for(fromFile)` when resolving a specifier, so an alias only applies within the subtree of the tsconfig/jsconfig that declared it.
+
+- **`governedByManifest(manifestRel, rel)`** — is `rel` (a `/`-joined path) inside the directory of the manifest at `manifestRel`? What `devDeclaredBy` provenance is checked against before a consumer trusts a dev claim for a given importing file.
+- **`loadGitignores(srcDir, ignoreDirs)`** — every `.gitignore` under `srcDir`, deepest first (not just the root one), as `GitignoreLayer[]`; `ignoreDirs` keeps the walk out of `node_modules`.
+- **`isGitignored(layers, rel)`** — is `rel` ignored by those layers, decided component by component the way git itself does (an ignored directory ends the walk; a nested `!re-include` can win against a parent's ignore).
+- **`filterGitignored(srcDir, layers, paths)`** — drop the absolute paths under `srcDir` that a `.gitignore` in the tree ignores.
+- **`OUTPUT_SHAPED_DIRS`** — `['build', 'coverage', 'dist', 'out', 'vendor']`: directory names that usually hold generated or vendored output. Nothing is excluded for being on this list; it exists only so scanning one can be named in `outputDirScannedDiagnostic`.
+- **`outputDirScannedDiagnostic(relPaths, names?)`** — the `OUTPUT_DIR_SCANNED` note (not a warning — it says the scan read *more* of the tree, not less), or `undefined` when no such directory was scanned.
+- **`fixedAliasScope(prefixes?)`** — an `AliasScope` that answers the same set for every file; the empty default and what tests generally want.
+- **`asAliasScope(aliases)`** — accepts either a flat `ReadonlySet<string>` or an already-built `AliasScope` and returns an `AliasScope`, so an API boundary (like `ModuleResolver`'s constructor) does not need to care which it was given.
 
 Types for all of it ship as `src/facts/types.d.ts` (the subpath's `types`
 condition), so a TypeScript consumer gets `ImportSite`, `ScanResult`,

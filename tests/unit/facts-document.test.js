@@ -58,6 +58,8 @@ describe('factsDocument', () => {
         { name: 'tool', scope: 'dev' }
       ],
       aliasPrefixes: ['@app'],
+      aliasScope: [{ dir: '', prefixes: ['@app'] }],
+      devDeclaredBy: [{ name: 'tool', manifests: ['package.json'] }],
       sourceFiles: 2,
       diagnostics: []
     });

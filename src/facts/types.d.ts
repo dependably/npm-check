@@ -112,8 +112,12 @@ export type ResolveMode = 'import' | 'require';
  * packages come back as their own `Resolution` kinds.
  */
 export class ModuleResolver {
-  constructor(aliasPrefixes?: ReadonlySet<string>);
-  readonly aliasPrefixes: ReadonlySet<string>;
+  /**
+   * `aliases` is per-FILE (`AliasScope`), because a tsconfig's `paths`
+   * governs its own project rather than the whole tree. A plain set is still
+   * accepted and means "these everywhere".
+   */
+  constructor(aliases?: ReadonlySet<string> | AliasScope);
   resolve(fromFile: string, specifier: string, mode: ResolveMode): Resolution;
   /**
    * The package a file belongs to, from its path alone: the directory right
@@ -286,23 +290,95 @@ export function specifierToPackage(spec: string, aliasPrefixes: ReadonlySet<stri
 /** tsconfig/jsconfig `paths` keys ("@app/*", "utils") → alias bases ("@app", "utils"). */
 export function aliasBaseFromPathsKey(key: string): string;
 
+/**
+ * Which path aliases are in scope for a given file.
+ *
+ * A `paths` map belongs to the tsconfig/jsconfig that declares it and governs
+ * that project's own files -- which is what `tsc` does. One flat
+ * workspace-wide set would let ANY config anywhere under the scanned tree
+ * delete a package's evidence in EVERY file.
+ */
+export interface AliasScope {
+  /** Alias bases in scope for `file`, an absolute path. */
+  for(file: string): ReadonlySet<string>;
+}
+
+/** An `AliasScope` that answers the same set everywhere -- tests, and the empty default. */
+export function fixedAliasScope(prefixes?: ReadonlySet<string>): AliasScope;
+/** Accept either shape at an API boundary without making every caller care. */
+export function asAliasScope(aliases: ReadonlySet<string> | AliasScope): AliasScope;
+
+// ---------------------------------------------------------- sourcescan ----
+
+/**
+ * What an in-process analyzer is allowed to exclude from its first-party
+ * source scan, and how it says so. See `sourcescan.js` for the full
+ * rationale: a directory's NAME is not evidence that the code inside it is
+ * generated -- `.gitignore` is the authority instead.
+ */
+export interface GitignoreLayer {
+  /** Directory the file sits in, relative to srcDir, `/`-joined; `''` for the root one. */
+  dir: string;
+  /** An `ignore` package matcher built from that directory's `.gitignore` content. */
+  matcher: { test(path: string): { ignored: boolean; unignored: boolean } };
+}
+
+/** Every `.gitignore` under `srcDir`, deepest first -- not just the root one. */
+export function loadGitignores(srcDir: string, ignoreDirs: readonly string[]): GitignoreLayer[];
+/** Is `rel` (relative to srcDir, `/`-joined) ignored, by git's own rules? */
+export function isGitignored(layers: readonly GitignoreLayer[], rel: string): boolean;
+/** Drop the absolute paths under `srcDir` that a `.gitignore` in the tree ignores. */
+export function filterGitignored(srcDir: string, layers: readonly GitignoreLayer[], paths: string[]): string[];
+/** Directory names that usually DO hold generated or vendored output; nothing is excluded for being on this list. */
+export const OUTPUT_SHAPED_DIRS: readonly string[];
+/** `OUTPUT_DIR_SCANNED`, or undefined when no such directory was scanned. A NOTE, not a warning. */
+export function outputDirScannedDiagnostic(relPaths: readonly string[], names?: readonly string[]): string | undefined;
+
 // ----------------------------------------------------------- workspace ----
 
 export type DepScope = 'runtime' | 'dev';
+
+/** One tsconfig/jsconfig's own `paths` alias bases and the directory it governs (absolute path). */
+export interface AliasLayer {
+  dir: string;
+  prefixes: string[];
+}
 
 export interface Workspace {
   /** Names of package.json manifests found in the tree = first-party packages (lower-cased). */
   firstPartyNames: Set<string>;
   /** name → runtime|dev; "runtime anywhere wins" across all manifests. */
   depScopes: Map<string, DepScope>;
-  /** tsconfig/jsconfig paths alias bases; specifiers matching these are never package imports. */
+  /**
+   * Every tsconfig/jsconfig paths alias base found anywhere in the tree.
+   *
+   * FOR REPORTING ONLY -- never decide a specifier with this. A `paths` map
+   * governs the project that declares it, so use `aliasScope`, which answers
+   * per file.
+   */
   aliasPrefixes: Set<string>;
+  /** Which alias bases apply to a given file -- see `AliasScope`. */
+  aliasScope: AliasScope;
+  /** The raw per-config layers `aliasScope` is built from (absolute directories); carried for JSON serialization. */
+  aliasLayers: AliasLayer[];
+  /**
+   * name -> the manifests that declared it a DEV dependency, `/`-joined and
+   * relative to srcDir, for names no manifest declares runtime.
+   *
+   * A dev claim is one manifest's view, and a manifest's view covers its own
+   * subtree. Recording WHERE the claim came from is what lets a consumer
+   * refuse a vendored tool's `devDependencies` as the reason a package
+   * imported from `src/` is exempt from a build gate.
+   */
+  devDeclaredBy: Map<string, string[]>;
   /** First-party source files, absolute paths, sorted. */
   sourceFiles: string[];
   diagnostics: string[];
 }
 
 export function discoverWorkspace(srcDir: string): Workspace;
+/** Is `rel` (a `/`-joined path) inside the directory of the manifest at `manifestRel`? */
+export function governedByManifest(manifestRel: string, rel: string): boolean;
 
 // ------------------------------------------------------------- collect ----
 
@@ -444,6 +520,16 @@ export interface FactsDocumentBody {
     firstPartyNames: string[];
     depScopes: { name: string; scope: DepScope }[];
     aliasPrefixes: string[];
+    /**
+     * `aliasScope`'s raw per-config layers, JSON-safe: `aliasScope` itself is
+     * a closure and cannot be serialized, so this projects the same
+     * information the live `AliasScope` answers `.for(file)` from -- one
+     * entry per tsconfig/jsconfig that declared `paths`, `dir` relative to
+     * the target and `/`-joined.
+     */
+    aliasScope: { dir: string; prefixes: string[] }[];
+    /** `devDeclaredBy`, JSON-safe: one entry per name with an unresolved dev claim. */
+    devDeclaredBy: { name: string; manifests: string[] }[];
     sourceFiles: number;
     diagnostics: string[];
   };
@@ -482,7 +568,7 @@ export function factsDocument(facts: ImportFacts, options?: { exitCode?: number 
 
 // --------------------------------------------------------------- misc ----
 
-export const FACTS_SCHEMA_VERSION: '1.0';
+export const FACTS_SCHEMA_VERSION: '1.1';
 
 export class FactsError extends Error {
   constructor(code: string, message: string);

@@ -31,6 +31,9 @@
 import { readFileSync, realpathSync, statSync } from 'node:fs';
 import { builtinModules } from 'node:module';
 import { basename, dirname, isAbsolute, join, resolve as pathResolve, sep } from 'node:path';
+import { asAliasScope } from './specifier.js';
+
+/** @typedef {import('./types.d.ts').AliasScope} AliasScope */
 
 /** @typedef {import('./types.d.ts').PackageInfo} PackageInfo */
 /** @typedef {import('./types.d.ts').Resolution} Resolution */
@@ -61,12 +64,16 @@ const NODE_MODULES = 'node_modules';
 
 export class ModuleResolver {
   /**
-   * @param {ReadonlySet<string>} [aliasPrefixes] tsconfig/jsconfig path-alias
-   *   bases; a specifier under one resolves to `{ kind: 'alias' }`.
+   * `aliases` is per-FILE (`AliasScope`), because a tsconfig's `paths`
+   * governs its own project rather than the whole tree. A plain set is still
+   * accepted and means "these everywhere", which is what most callers and
+   * tests want.
+   * @param {ReadonlySet<string> | AliasScope} [aliases] tsconfig/jsconfig
+   *   path-alias bases; a specifier under one resolves to `{ kind: 'alias' }`.
    */
-  constructor(aliasPrefixes = new Set()) {
-    /** @type {ReadonlySet<string>} */
-    this.aliasPrefixes = aliasPrefixes;
+  constructor(aliases = new Set()) {
+    /** @type {AliasScope} */
+    this.aliasScope = asAliasScope(aliases);
     /** @type {Map<string, 'file' | 'dir' | null>} */
     this.statCache = new Map();
     /** @type {Map<string, PackageJson | null>} */
@@ -104,7 +111,7 @@ export class ModuleResolver {
     }
     if (cleaned.startsWith('#')) return this.resolveImportsField(fromFile, cleaned, mode);
 
-    for (const alias of this.aliasPrefixes) {
+    for (const alias of this.aliasScope.for(fromFile)) {
       if (cleaned === alias || cleaned.startsWith(`${alias}/`)) return { kind: 'alias' };
     }
     return this.resolveBare(fromFile, cleaned, mode);

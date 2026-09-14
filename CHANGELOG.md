@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.10.1] - 2026-09-13
+
+### Fixed
+- **`discoverWorkspace` and its facts regressed three real fixes when the language-facts layer moved here in 1.10.0 — it was ported from a sbom-reach commit that predated sbom-reach's own `95f2b94` ("fix(npm,pypi): bound the source scan by .gitignore, never by a directory name", GitLab #31), so all three landed in sbom-reach itself but never here.** A concurrent, uncoordinated port is the whole cause: 1.10.0's move happened alongside sbom-reach's own fix instead of after it, so the two never diffed against each other.
+  - **The first-party source scan is bounded by `.gitignore`, never by a directory-name skip-list.** `IGNORE_DIRS` used to hardcode `dist`, `build`, `out`, `coverage`, `.next`, `.turbo` and `vendor` as excluded by NAME, on the assumption those hold generated output — wrong for a project that keeps real source there (a tracked, non-gitignored `build/pipeline.js` importing a vulnerable package was silently unscanned, producing a false negative in any consumer). Only `node_modules`/`.git` stay hardcoded now; every `.gitignore` under the tree (not just the root one) is loaded and applied with git's own precedence, including nested re-inclusion (`!build/`). Ported as `src/facts/sourcescan.js` (`loadGitignores`, `isGitignored`, `filterGitignored`, `OUTPUT_SHAPED_DIRS`, `outputDirScannedDiagnostic`).
+  - **tsconfig/jsconfig `paths` aliases are scoped to the subtree of the config that declares them**, not applied workspace-wide: a `vendor/tsconfig.json` no longer suppresses evidence for a package used everywhere else. New `AliasScope`/`fixedAliasScope`/`asAliasScope` in `src/facts/specifier.js`; `Workspace.aliasScope` (a live, per-file closure) plus `Workspace.aliasLayers` (its JSON-safe projection) join the existing whole-tree `aliasPrefixes` union, which remains reporting-only. `ModuleResolver`'s constructor now accepts either a flat `ReadonlySet<string>` or an `AliasScope`.
+  - **`Workspace.devDeclaredBy` tracks which manifest(s), by path, declared a package a dev dependency**, pruned for anything "runtime anywhere wins" already settled runtime — so a consumer can refuse a dev claim from a manifest that does not govern the importing file (`governedByManifest`, also newly exported).
+  - The `imports --format json` document now serializes `workspace.aliasScope` (as `{dir, prefixes}` layers, since the live `AliasScope` is a closure and cannot be serialized directly) and `workspace.devDeclaredBy`.
+  - **`FACTS_SCHEMA_VERSION` bumped `1.0` → `1.1`.** Both new `workspace` fields (`aliasScope`, `devDeclaredBy`) are additive, so a `1.0`-aware consumer still parses the document, but the minor bump lets it tell "this producer predates these fields" apart from "no manifest made a dev claim" — the same tri-state discipline sbom-reach's own facts-document fields follow.
+  - No consumer-facing behavior in npm-check's own audit rules changes; this only affects the `@dependably/npm-check/facts` subpath and its consumers (sbom-reach's npm analyzer).
+
 ## [1.10.0] - 2026-09-13
 
 ### Added

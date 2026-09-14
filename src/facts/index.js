@@ -32,5 +32,6 @@ export {
   parsePnpmLockYaml,
   parsePnpmLockYamlGraph
 } from './lockfile-graph.js';
-export { specifierToPackage, aliasBaseFromPathsKey } from './specifier.js';
-export { discoverWorkspace } from './workspace.js';
+export { specifierToPackage, aliasBaseFromPathsKey, fixedAliasScope, asAliasScope } from './specifier.js';
+export { discoverWorkspace, governedByManifest } from './workspace.js';
+export { loadGitignores, isGitignored, filterGitignored, OUTPUT_SHAPED_DIRS, outputDirScannedDiagnostic } from './sourcescan.js';
