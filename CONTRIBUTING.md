@@ -5,9 +5,13 @@ Thanks for your interest in improving `@dependably/npm-check`.
 ## Requirements
 
 - **Node.js ≥ 22** and **npm ≥ 10** (see `engines`).
-- The package is ESM (`"type": "module"`). The npm core path is
-  **dependency-free**; the only runtime dependency is `yaml`, loaded lazily and
-  only when parsing a `pnpm-lock.yaml`. Please keep the npm path zero-dependency.
+- The package is ESM (`"type": "module"`). The npm lockfile path is
+  **dependency-free at load time**: `yaml` is loaded lazily and only when
+  parsing a `pnpm-lock.yaml`, and `fast-glob`/`ignore`/the optional
+  `typescript` peer are loaded only by the import-facts modules
+  (`src/facts/`, the `imports` command). Please keep it that way — nothing
+  under `src/facts/` may be imported from the main barrel or the lockfile
+  commands.
 
 ## Getting started
 
@@ -22,6 +26,7 @@ npm run setup:hooks   # enable the pre-commit hook (lint + fast tests)
 
 ```bash
 npm run lint          # eslint (must be clean)
+npm run typecheck     # tsc over the JSDoc-typed src/facts/ modules (must be clean)
 npm test              # full jest suite (unit + integration)
 npm run test:unit     # unit only (fast)
 npm run test:coverage # coverage report

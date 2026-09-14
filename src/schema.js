@@ -6,9 +6,29 @@
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { FACTS_SCHEMA_VERSION } from './facts/version.js';
+
+export { FACTS_SCHEMA_VERSION };
 
 export const TOOL_NAME = 'npm-check';
 export const SCHEMA_VERSION = '1.0';
+
+// The `documentType` discriminator for the import-facts document (`npm-check
+// imports`). A findings document has NO `documentType` — schema 1.0 predates
+// the split and the findings envelope is unchanged — so a consumer reads
+// "absent" as findings and "imports" as facts, and never has to guess the
+// payload from whichever key happens to be present. Precedent: pycheck's
+// `--imports` document.
+export const DOCUMENT_TYPE_IMPORTS = 'imports';
+
+// `FACTS_SCHEMA_VERSION` (re-exported above) is the facts document's OWN
+// version line — see src/facts/version.js, a dependency-free leaf, so that
+// this module (loaded by every lockfile command) never pulls the facts
+// barrel in and the facts barrel never pulls this one into its type-check.
+
+// The envelope-owned keys of a facts document; a body section may never
+// spell one of these (see buildFactsEnvelope).
+const FACTS_IDENTITY_KEYS = new Set(['tool', 'toolVersion', 'schemaVersion', 'documentType', 'target', 'summary']);
 
 // The ONE severity ladder, most-severe first.
 export const SEVERITY_LADDER = ['critical', 'high', 'moderate', 'low', 'info'];
@@ -73,4 +93,38 @@ export function buildEnvelope({ target, scanned, findings, exitCode, extra }) {
   };
   if (extra !== undefined) envelope.extra = extra;
   return envelope;
+}
+
+/**
+ * Assemble the import-facts envelope: the SAME identity fields as the
+ * findings envelope (`tool`, `toolVersion`, `schemaVersion` — the facts
+ * document's OWN version line, `FACTS_SCHEMA_VERSION` — `target`,
+ * `summary`) plus the `documentType` discriminator, and NO `findings` — an
+ * import site has no severity, so it must never ride in the findings array
+ * where `--fail-on` could gate on it. `body` is spread after the identity
+ * fields: the facts sections (`workspace`, `imports`, `moduleGraph`,
+ * `lockfile`, `unanalyzable`); a `summary` inside `body` is ignored in favour
+ * of the one passed explicitly, and the identity fields always win.
+ *
+ * @param {object} args
+ * @param {string} args.target  - path scanned, as given
+ * @param {object} args.summary - the facts summary; `summary.exitCode` MUST equal the real process exit code
+ * @param {object} args.body    - the document sections
+ * @returns {object} the envelope
+ */
+export function buildFactsEnvelope({ target, summary, body }) {
+  // Strip anything in `body` that spells an identity field, so the sections
+  // can never overwrite the envelope's own claims about what it is.
+  const sections = Object.fromEntries(
+    Object.entries(body && typeof body === 'object' ? body : {}).filter(([key]) => !FACTS_IDENTITY_KEYS.has(key))
+  );
+  return {
+    tool: TOOL_NAME,
+    toolVersion: toolVersion(),
+    schemaVersion: FACTS_SCHEMA_VERSION,
+    documentType: DOCUMENT_TYPE_IMPORTS,
+    target,
+    summary,
+    ...sections
+  };
 }

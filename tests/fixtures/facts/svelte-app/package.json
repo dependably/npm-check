@@ -1,0 +1,10 @@
+{
+  "name": "svelte-fixture-app",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "vuln-lib": "1.0.0",
+    "module-only-pkg": "1.0.0",
+    "aliased-pkg": "1.0.0"
+  }
+}

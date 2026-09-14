@@ -6,7 +6,7 @@ created automatically). `--format json` emits machine-readable output.
 
 Subcommands group into three families (`npm-check --help` prints the same grouping):
 
-- **Read & report** (inspect; never mutate the lockfile): `report` (default), `validate`, `vuln`, `deprecated`, `check`, `audit`, `unused`
+- **Read & report** (inspect; never mutate the lockfile): `report` (default), `validate`, `vuln`, `deprecated`, `check`, `audit`, `unused`, `imports`
 - **Fix & transform** (npm-only; mutate the lockfile with `--write`): `fix`, `fix-checksums`, `upgrade-hashes`, `migrate` (`upgrade` is an alias of `migrate 3`), `pin`, `prune`, `dedupe`, `remediate`
 - **Backups**: `backups`, `restore`, `clean-backups`
 
@@ -41,6 +41,9 @@ npm-check prune --write
 
 # Flag declared dependencies the application never imports
 npm-check unused
+
+# Report the tree's import facts as a JSON document (data for another tool)
+npm-check imports ./src > imports.json
 
 # Automated fixer (placeholders for missing integrity, dedupe), and the pieces
 npm-check fix --write
@@ -148,6 +151,8 @@ Highlights of the envelope:
 - Each finding's top-level `severity` is the ladder string (`info`|`low`|`moderate`|`high`|`critical`); advisory findings keep the **true** advisory severity verbatim, and the advisory payload (package, versions, advisory/CVE ids, vulnerable range, references) lives under `extra`. `fixedVersion` is populated only from data the advisory actually provides.
 - `report --format json` flattens every section's findings into one list (report-tier `error`→`high`, `warn`→`low`; the original tier is kept under `extra.reportSeverity`, the section table and gate rollup under the top-level `extra`).
 - `deprecated` findings map to `category: "deprecated"` with severity `low` (a soft warning, as npm treats it) or `high` when `--fail-on count=0` promotes them; `remediate` findings describe each planned bump, transitive guidance, or skip. Scan-completeness counts ride under `extra.scan`, so nothing the human output showed is lost.
+
+**The `documentType` rule.** A findings document has **no** `documentType` key — schema `1.0` predates the split and the findings envelope above is unchanged. The one other document npm-check emits, the [import-facts document](#imports-command), carries `documentType: "imports"` and no `findings`. A consumer reads "absent" as findings and `"imports"` as facts; it never has to infer the payload from whichever key happens to be present.
 
 ## Exit codes
 
@@ -281,3 +286,158 @@ npm-check unused --format json           # Machine-readable output
 ```
 
 The scan walks source files (`.js`, `.mjs`, `.cjs`, `.jsx`, `.ts`, `.tsx`, `.vue`, `.svelte`, skipping `node_modules`, `dist`, etc.) for `require()`, `import`, dynamic `import()`, and re-export specifiers. Packages mentioned in npm scripts count as used (CLI tools), and `@types/foo` counts as used when `foo` is. Results are **heuristic and report-only** — packages loaded via config files or runtime magic can be false positives, so nothing is removed automatically.
+
+## Imports command
+
+`imports` exports what a JavaScript/TypeScript/Svelte tree imports, as data for another tool. It is a **report, not a check**: it defaults to `--format json`, a successful scan always exits `0`, and it never exits `1` — there is nothing in it to gate on. It is the scan [sbom-reach](https://github.com/dependably/sbom-reach) builds its npm reachability verdicts from; the verdicts themselves are not here.
+
+```bash
+npm-check imports                        # the current directory, as JSON
+npm-check imports ./src > imports.json   # a tree; the document goes to stdout
+npm-check imports ./src --format human   # the summary only
+npm-check imports ./src --no-module-graph            # do not follow imports through node_modules
+npm-check imports ./src --max-files 5000 --max-file-bytes 500000   # walk budgets (defaults 25000 / 1500000)
+```
+
+The command needs the optional **`typescript`** peer dependency (any 5.6+ release; it is the parser). When it is not installed the run exits `2` with `TYPESCRIPT_MISSING` and an install hint. A missing target directory and an invalid flag value are also `2`. No network access, ever.
+
+**Language facts only.** The document names packages by the name and version on disk or in a lockfile, and nothing else: no purls, no verdicts, no severities. Mapping a resolved copy to an SBOM component, and deciding what "imported" means for a vulnerability, is the consumer's job.
+
+### The document
+
+For a tree with one file `src/index.js` reading `import { a } from 'lib-a'; a();`, where `lib-a` is installed and itself imports `leaf`:
+
+```json
+{
+  "tool": "npm-check",
+  "toolVersion": "1.10.0",
+  "schemaVersion": "1.0",
+  "documentType": "imports",
+  "target": "./src",
+  "summary": {
+    "scanned": 1,
+    "analyzed": 1,
+    "unanalyzable": 0,
+    "imports": 1,
+    "moduleGraph": { "filesParsed": 2, "reached": 2, "unresolved": 0, "truncated": false },
+    "exitCode": 0
+  },
+  "workspace": {
+    "firstPartyNames": ["app"],
+    "depScopes": [{ "name": "lib-a", "scope": "runtime" }],
+    "aliasPrefixes": [],
+    "sourceFiles": 1,
+    "diagnostics": []
+  },
+  "imports": [
+    {
+      "file": "src/index.js",
+      "dynamicUnknown": 0,
+      "parseErrors": [],
+      "sites": [
+        {
+          "specifier": "lib-a",
+          "package": "lib-a",
+          "line": 1,
+          "snippet": "import { a } from 'lib-a';",
+          "kind": "import",
+          "bindings": ["a"],
+          "referenced": ["a"],
+          "opaque": false,
+          "installed": { "name": "lib-a", "dirName": "lib-a", "version": "1.0.0", "root": "node_modules/lib-a" }
+        }
+      ]
+    }
+  ],
+  "moduleGraph": {
+    "enabled": true,
+    "filesParsed": 2,
+    "filesSkippedForSize": 0,
+    "unresolved": 0,
+    "truncated": false,
+    "nodeModulesMissing": false,
+    "weakPackages": [],
+    "reached": [
+      {
+        "key": "leaf@2.0.0\u0000node_modules/leaf",
+        "name": "leaf", "dirName": "leaf", "version": "2.0.0", "root": "node_modules/leaf",
+        "chain": ["lib-a@1.0.0\u0000node_modules/lib-a", "leaf@2.0.0\u0000node_modules/leaf"],
+        "dynamic": false, "incomplete": false,
+        "importers": [
+          { "file": "node_modules/lib-a/index.js", "line": 1, "snippet": "import * as leaf from 'leaf';", "kind": "import",
+            "bindings": ["go"], "referenced": ["go"], "opaque": false, "fromPackage": "lib-a@1.0.0\u0000node_modules/lib-a" }
+        ]
+      },
+      { "key": "lib-a@1.0.0\u0000node_modules/lib-a", "...": "..." }
+    ],
+    "unresolvedByName": []
+  },
+  "lockfile": {
+    "files": ["package-lock.json"],
+    "packages": [{ "name": "leaf", "version": "2.0.0", "devDeclared": false }, { "name": "lib-a", "version": "1.0.0", "devDeclared": false }],
+    "rootDependencies": ["lib-a@1.0.0"],
+    "edges": [{ "from": "lib-a@1.0.0", "to": "leaf@2.0.0" }],
+    "diagnostics": []
+  },
+  "unanalyzable": []
+}
+```
+
+`imports` lists **every first-party file that was read**, sorted by path, each with its sites in source order — a file that parsed and imports nothing is still listed, with an empty `sites`, because "searched and imports nothing" and "never searched" are different facts. Every path is relative to `target`, with `/` separators, and the module-graph keys (`name@version` + `\u0000` + the package root) are relativized the same way, so the document is deterministic and comparable across machines.
+
+`summary` counts what the document contains:
+
+| Key | Meaning |
+| --- | --- |
+| `scanned` | First-party source files the workspace discovery found (`.ts`, `.tsx`, `.mts`, `.cts`, `.js`, `.jsx`, `.mjs`, `.cjs`, `.svelte`; `node_modules`, `dist`, `build`, `.git`, gitignored paths and the usual build-output directories excluded). |
+| `analyzed` | Of those, files read and parsed — the length of `imports`. |
+| `unanalyzable` | Entries in `unanalyzable`, of every kind. Non-zero means the search was incomplete. Unlike pycheck's, this is **not** `scanned − analyzed`: a `file-partial` entry is also analyzed, and a `node-modules-file` or `walk` entry is not a first-party file at all. |
+| `imports` | Import sites summed over every first-party file. |
+| `moduleGraph` | `filesParsed` node_modules files parsed, `reached` installed package copies reached from first-party code, `unresolved` imports the resolver could not follow, and whether the walk was `truncated` by its file budget. All zero when `--no-module-graph`. |
+| `exitCode` | The process exit code, `0` for every successful scan. |
+
+Each import site:
+
+| Field | Meaning |
+| --- | --- |
+| `specifier` | As written. |
+| `package` | The npm package the specifier names (lower-cased; `lodash/get` → `lodash`, `@scope/pkg/sub` → `@scope/pkg`), or `null` for a relative/absolute path, a builtin, a `#imports` key, a `data:`/`file:` URL, or a tsconfig/jsconfig `paths` alias. A workspace sibling is still named — deciding it is first-party wiring is the consumer's, via `workspace.firstPartyNames`. |
+| `line` | 1-based. |
+| `snippet` | The statement's text, whitespace-collapsed, capped at 200 characters. |
+| `kind` | `import`, `require`, `dynamic-import`, `export-from`, or `type-only-import`. A type-only import never loads code at runtime and is never an edge of the module graph. |
+| `bindings` | The names the site introduces: named-import / named-export-from **original** names (`import { a, b as c }` → `a`, `b` — never the local alias), `require()`/`import()` destructured names, and exactly one level of property access on a default/namespace import's local identifier (`_.template(x)` → `template`). Parse-level only: no type checker, no cross-file aliasing, nothing past one property level. Empty means "no binding names observed here" — never proof that nothing was used; see `opaque`. |
+| `referenced` | The subset of `bindings` whose local identifier is actually referenced somewhere in the module body. Any occurrence counts (call, argument, spread, re-export, shorthand property) — this is "referenced", not "called" — and a shadowing local is deliberately **not** excluded. Over-reporting use is the safe direction. |
+| `opaque` | `true` when the site's default/namespace binding (or a bare `export * from`) is used in a way a parse-level scan cannot resolve to specific property names: assigned to another variable, passed as an argument, spread, exported, returned, accessed with a computed key, **or called / constructed / tagged / rendered directly** (`axios(...)`, `new X()`, `` tag`...` ``, `<X/>`). An opaque site "could use anything": a consumer must never read it as evidence that some symbol was **not** used. |
+| `installed` | The installed package copy the specifier resolved **into**, when it did: its `package.json` `name`, the node_modules `dirName` (differs for an aliased install such as `"string-width-cjs": "npm:string-width@^4"`), `version`, and `root`. Present when the resolver landed anywhere in a package — a fact, not a match; compare `name`/`dirName` against `package` before treating it as the installed copy of the package the site names. Absent for an alias, a builtin, a first-party target, or a package that is not installed. |
+
+Each `imports` entry also carries `dynamicUnknown` — the number of `require()`/`import()` calls in that file whose argument is not a string literal (a package loaded that way cannot be named) — and `parseErrors`, non-empty only for a `.svelte` file whose `<script>` extraction reported a problem (its sites are still present; see `unanalyzable` below).
+
+`workspace` is what the tree declares about itself: every `package.json`'s `name` (`firstPartyNames`), the dev/runtime scope each manifest gives its dependencies (`depScopes`, "runtime anywhere wins" across manifests), the tsconfig/jsconfig `paths` alias bases (`aliasPrefixes`), the count of first-party source files, and `diagnostics` (an unparseable manifest or tsconfig, named and skipped).
+
+`moduleGraph` is the statically resolved module graph **through** `node_modules`: every first-party import resolved (Node-style — symlink-aware, so pnpm's `.pnpm` layout works; `exports`/`imports` maps with `import`-vs-`require` conditions; `main`, `module`, `index.*`; `.js`→`.ts` probing) to the installed file it loads, that file parsed with the same scanner, its imports resolved in turn, and so on. It is a *module* graph, not a call graph: an edge means "evaluating this module evaluates that one". One `reached` entry per installed **copy** (`key` = `name@version` + `\u0000` + root — two copies of one version can differ only by location), with the `importers` from outside that package (a package's own internal relative imports are traversed but never listed), the `chain` of keys along which it was first reached, and the honesty flags: `dynamic` (a file in the package has a non-literal `require()`/`import()` — it can load things the walk cannot see), `incomplete` (a file was not parsed, or a relative import inside the package went nowhere — its edges are not all known). `weakPackages` lists the `name@version` of everything flagged either way. `unresolvedByName` records every bare specifier the resolver could not follow, under the package name it asked for, with where and why (at most five sites per name) — an unresolved import is a place a runtime path could hide, and it says exactly which package it wanted. `nodeModulesMissing` is `true` when nothing resolved, something was unresolved, and there is no `node_modules` directory at all: the tree was never installed. `truncated` means the file budget stopped the walk (`--max-files`); packages past the frontier are unobserved, not absent.
+
+`lockfile` is the dependency graph every `package-lock.json` and `pnpm-lock.yaml` under the tree records (outside `node_modules`; several lockfiles merge into one graph): the resolved `packages` (each with the `license` the lockfile carries, a tri-state `devDeclared` — `true` reachable only through devDependencies, `false` some path reaches it without a dev edge, absent when the lockfile says nothing — and `scope: "optional"` only when npm asserts exclusivity), the `rootDependencies` the project's own manifests depend on directly, the `edges` among the closure (hoisting-accurate for npm; peer-suffix-stripped for pnpm), the `files` that were read, and `diagnostics` (`unparseable … at <file>: <why>`, or `NO_LOCKFILE`).
+
+### `unanalyzable`
+
+Every path the scan could not read or would not follow appears in `unanalyzable` with a `kind` and a `reason`, and is counted in `summary`. The list is always present — empty when nothing was skipped. A scan that hits one still succeeds and reports everything else.
+
+```json
+"unanalyzable": [
+  { "file": "src/locked.js",                        "kind": "file",              "reason": "unreadable: EACCES" },
+  { "file": "src/Broken.svelte",                    "kind": "file-partial",      "reason": "line 3: Expression expected." },
+  { "file": "node_modules/typescript/lib/typescript.js", "kind": "node-modules-file", "reason": "too large to parse: 9313231 bytes exceeds the 1500000-byte limit" },
+  { "file": "node_modules",                         "kind": "walk",              "reason": "file budget 25000 reached; 312 resolved file(s) past that frontier were not parsed, so packages they load are unobserved, not absent" }
+]
+```
+
+| Kind | Meaning |
+| --- | --- |
+| `file` | A first-party source file that could not be read. Its imports are unknown; it appears in neither `imports` nor the graph. |
+| `file-partial` | A first-party `.svelte` file whose `<script>` extraction reported a problem — the extracted text failed to parse, or a `<script`/`</script>` tag was found outside every span the extraction accounted for. Its sites **are** in `imports`; what this entry says is that their absence for some package is not a clean negative. |
+| `node-modules-file` | A `node_modules` file the walk resolved but did not parse (unreadable, or over `--max-file-bytes`). The package it belongs to is `incomplete`. |
+| `walk` | The walk stopped on `--max-files`; everything past the frontier is unobserved. |
+
+This is the part that matters most: absence of evidence is only a negative if the search actually ran. A file that could not be read used to be skipped silently by the consumer; now it is named.
+
+**What a scan does not look at**, so you can reason about what was not searched: `node_modules`, `.git`, `dist`, `build`, `out`, `coverage`, `.next`, `.turbo`, `vendor`, dot-directories, and anything the tree's own `.gitignore` ignores are excluded from the first-party scan by policy (a deliberate, documented choice, so they are *not* listed in `unanalyzable`); symbolic links are not followed during discovery; and only the nine source extensions above are picked up. Inside `node_modules` the walk follows resolved imports only — an installed package nothing imports is not visited, and is reported through `lockfile`, not `moduleGraph`.

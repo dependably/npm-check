@@ -85,6 +85,9 @@ lint:
   <<: *npm_install
   script:
     - npm run lint
+    # Type-checks the JSDoc-typed import-facts modules (src/facts/) against
+    # their hand-written types.d.ts — the public surface of the ./facts subpath.
+    - npm run typecheck
 
 unit-tests:
   stage: test

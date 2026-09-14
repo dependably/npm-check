@@ -81,6 +81,7 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run lint
+      - run: npm run typecheck
 
   # Unit tests across the supported Node range (package.json engines: >=22) — the
   # two current LTS lines. 18 and 20 are end-of-life and dropped.
