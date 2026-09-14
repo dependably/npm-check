@@ -95,7 +95,7 @@ export function collectImportFacts(srcDir, options = {}) {
   const relOf = makeRelOf(absSrcDir, realSrcDir);
 
   const workspace = discoverWorkspace(absSrcDir);
-  const resolver = new ModuleResolver(workspace.aliasPrefixes);
+  const resolver = new ModuleResolver(workspace.aliasScope);
 
   /** @type {UnanalyzableEntry[]} */
   const unanalyzable = [];
@@ -127,7 +127,7 @@ export function collectImportFacts(srcDir, options = {}) {
     }
     /** @type {ResolvedSite[]} */
     const sites = result.sites.map((site) => {
-      const pkg = specifierToPackage(site.specifier, workspace.aliasPrefixes);
+      const pkg = specifierToPackage(site.specifier, workspace.aliasScope.for(file));
       // Which installed copy does this statement load? Version-accurate
       // attribution is the consumer's, but the fact — the copy the resolver
       // lands in — is established here, once, with the same resolver the

@@ -109,6 +109,17 @@ export function factsDocument(facts, options = {}) {
       .map(([name, scope]) => ({ name, scope }))
       .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0)),
     aliasPrefixes: [...ws.aliasPrefixes].sort(),
+    // `aliasScope` itself is a closure (`.for(file)`) and cannot be
+    // serialized; this projects the same per-config information it answers
+    // from, the way `reached`/`unresolvedByName` project the module graph's
+    // Maps above -- one entry per tsconfig/jsconfig that declared `paths`,
+    // `dir` made target-relative and POSIX like every other path here.
+    aliasScope: ws.aliasLayers
+      .map((layer) => ({ dir: relOf(layer.dir), prefixes: [...layer.prefixes].sort() }))
+      .sort((a, b) => (a.dir < b.dir ? -1 : a.dir > b.dir ? 1 : 0)),
+    devDeclaredBy: [...ws.devDeclaredBy]
+      .map(([name, manifests]) => ({ name, manifests: [...manifests].sort() }))
+      .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0)),
     sourceFiles: ws.sourceFiles.length,
     diagnostics: ws.diagnostics
   };
