@@ -24,6 +24,15 @@
 //
 // Ported verbatim (semantics preserved) from sbom-reach's
 // `packages/core/src/reach/sourcescan.ts`.
+//
+// That TypeScript file is this one's independently-maintained TWIN: npm's
+// facts moved out to this package, but `analyzer-pypi` still imports the
+// original directly, so the gitignore-bounding rules now live in two places.
+// The two were verified to agree by a differential fuzz at port time, but
+// nothing pins them together afterward -- a future change to gitignore
+// precedence or the `OUTPUT_DIR_SCANNED` wording made in only one of them
+// silently diverges the two ecosystems' scan-bounding rules. Port any change
+// to both, or note here why it does not apply to npm.
 import { readFileSync } from 'node:fs';
 import { dirname, relative, sep } from 'node:path';
 import fg from 'fast-glob';
@@ -203,7 +212,7 @@ export function outputDirScannedDiagnostic(relPaths, names = OUTPUT_SHAPED_DIRS)
     .join(', ');
   return (
     `OUTPUT_DIR_SCANNED: scanned source under ${listed}, which no .gitignore under srcDir ` +
-    'ignores. A directory name is not evidence, so those files are read as first-party source -- ' +
+    'ignores. A directory name is not evidence, so those files are read as first-party source — ' +
     'the alternative is claiming `not-observed` for a package only such a file imports. One of ' +
     'them may also SHADOW a package of the same name, in which case that finding is reported ' +
     '`unknown` naming the collision rather than as a negative. If they really are generated ' +

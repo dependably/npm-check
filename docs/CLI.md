@@ -310,8 +310,8 @@ For a tree with one file `src/index.js` reading `import { a } from 'lib-a'; a();
 ```json
 {
   "tool": "npm-check",
-  "toolVersion": "1.10.0",
-  "schemaVersion": "1.0",
+  "toolVersion": "1.10.1",
+  "schemaVersion": "1.1",
   "documentType": "imports",
   "target": "./src",
   "summary": {
@@ -326,6 +326,8 @@ For a tree with one file `src/index.js` reading `import { a } from 'lib-a'; a();
     "firstPartyNames": ["app"],
     "depScopes": [{ "name": "lib-a", "scope": "runtime" }],
     "aliasPrefixes": [],
+    "aliasScope": [{ "dir": "vendor", "prefixes": ["@vendor"] }],
+    "devDeclaredBy": [{ "name": "leaf", "manifests": ["tools/package.json"] }],
     "sourceFiles": 1,
     "diagnostics": []
   },
@@ -389,7 +391,7 @@ For a tree with one file `src/index.js` reading `import { a } from 'lib-a'; a();
 
 | Key | Meaning |
 | --- | --- |
-| `scanned` | First-party source files the workspace discovery found (`.ts`, `.tsx`, `.mts`, `.cts`, `.js`, `.jsx`, `.mjs`, `.cjs`, `.svelte`; `node_modules`, `dist`, `build`, `.git`, gitignored paths and the usual build-output directories excluded). |
+| `scanned` | First-party source files the workspace discovery found (`.ts`, `.tsx`, `.mts`, `.cts`, `.js`, `.jsx`, `.mjs`, `.cjs`, `.svelte`; `node_modules`, `.git`, dot-directories and anything the tree's own `.gitignore` ignores excluded — **not** `dist`/`build`/`out`/etc. by name; see below). |
 | `analyzed` | Of those, files read and parsed — the length of `imports`. |
 | `unanalyzable` | Entries in `unanalyzable`, of every kind. Non-zero means the search was incomplete. Unlike pycheck's, this is **not** `scanned − analyzed`: a `file-partial` entry is also analyzed, and a `node-modules-file` or `walk` entry is not a first-party file at all. |
 | `imports` | Import sites summed over every first-party file. |
@@ -412,7 +414,7 @@ Each import site:
 
 Each `imports` entry also carries `dynamicUnknown` — the number of `require()`/`import()` calls in that file whose argument is not a string literal (a package loaded that way cannot be named) — and `parseErrors`, non-empty only for a `.svelte` file whose `<script>` extraction reported a problem (its sites are still present; see `unanalyzable` below).
 
-`workspace` is what the tree declares about itself: every `package.json`'s `name` (`firstPartyNames`), the dev/runtime scope each manifest gives its dependencies (`depScopes`, "runtime anywhere wins" across manifests), the tsconfig/jsconfig `paths` alias bases (`aliasPrefixes`), the count of first-party source files, and `diagnostics` (an unparseable manifest or tsconfig, named and skipped).
+`workspace` is what the tree declares about itself: every `package.json`'s `name` (`firstPartyNames`), the dev/runtime scope each manifest gives its dependencies (`depScopes`, "runtime anywhere wins" across manifests), the tsconfig/jsconfig `paths` alias bases (`aliasPrefixes` — the whole-tree union, **reporting only**), the count of first-party source files, and `diagnostics` (an unparseable manifest or tsconfig, named and skipped). Two fields carry provenance a consumer decides with rather than just reports: `aliasScope` is the live per-file alias answer (`{dir, prefixes}[]`, one layer per tsconfig/jsconfig that declared `paths`, `dir` target-relative) — a `paths` map governs only the project that declares it, so deciding whether a specifier is aliased means finding the layer whose `dir` is that file's own directory or an ancestor of it, never consulting `aliasPrefixes` directly; `devDeclaredBy` (`{name, manifests}[]`) names, for every package no manifest declares runtime anywhere, which manifest path(s) called it a dev dependency — a consumer can then refuse a dev claim from a manifest that does not govern the importing file (see `governedByManifest` in the [API guide](./API.md)).
 
 `moduleGraph` is the statically resolved module graph **through** `node_modules`: every first-party import resolved (Node-style — symlink-aware, so pnpm's `.pnpm` layout works; `exports`/`imports` maps with `import`-vs-`require` conditions; `main`, `module`, `index.*`; `.js`→`.ts` probing) to the installed file it loads, that file parsed with the same scanner, its imports resolved in turn, and so on. It is a *module* graph, not a call graph: an edge means "evaluating this module evaluates that one". One `reached` entry per installed **copy** (`key` = `name@version` + `\u0000` + root — two copies of one version can differ only by location), with the `importers` from outside that package (a package's own internal relative imports are traversed but never listed), the `chain` of keys along which it was first reached, and the honesty flags: `dynamic` (a file in the package has a non-literal `require()`/`import()` — it can load things the walk cannot see), `incomplete` (a file was not parsed, or a relative import inside the package went nowhere — its edges are not all known). `weakPackages` lists the `name@version` of everything flagged either way. `unresolvedByName` records every bare specifier the resolver could not follow, under the package name it asked for, with where and why (at most five sites per name) — an unresolved import is a place a runtime path could hide, and it says exactly which package it wanted. `nodeModulesMissing` is `true` when nothing resolved, something was unresolved, and there is no `node_modules` directory at all: the tree was never installed. `truncated` means the file budget stopped the walk (`--max-files`); packages past the frontier are unobserved, not absent.
 
@@ -440,4 +442,4 @@ Every path the scan could not read or would not follow appears in `unanalyzable`
 
 This is the part that matters most: absence of evidence is only a negative if the search actually ran. A file that could not be read used to be skipped silently by the consumer; now it is named.
 
-**What a scan does not look at**, so you can reason about what was not searched: `node_modules`, `.git`, `dist`, `build`, `out`, `coverage`, `.next`, `.turbo`, `vendor`, dot-directories, and anything the tree's own `.gitignore` ignores are excluded from the first-party scan by policy (a deliberate, documented choice, so they are *not* listed in `unanalyzable`); symbolic links are not followed during discovery; and only the nine source extensions above are picked up. Inside `node_modules` the walk follows resolved imports only — an installed package nothing imports is not visited, and is reported through `lockfile`, not `moduleGraph`.
+**What a scan does not look at**, so you can reason about what was not searched: `node_modules`, `.git`, dot-directories, and anything the tree's own `.gitignore` ignores are excluded from the first-party scan by policy (a deliberate, documented choice, so they are *not* listed in `unanalyzable`); symbolic links are not followed during discovery; and only the nine source extensions above are picked up. **A directory name (`dist`, `build`, `out`, `coverage`, `vendor`, …) is never, by itself, evidence that its contents are generated** — only `.gitignore` decides that, applied with git's own precedence (every `.gitignore` in the tree, not just the root one, deepest match wins, including a nested `!re-include`). A project that gitignores `dist/` gets it excluded; one whose real source lives in `build/` and does not gitignore it gets `build/` scanned as first-party code. When that happens, `workspace.diagnostics` carries an `OUTPUT_DIR_SCANNED` note naming which such directory (from `OUTPUT_SHAPED_DIRS`: `build`, `coverage`, `dist`, `out`, `vendor`) was read — a note, not a warning, since it means the scan looked at *more* of the tree, not less; if one of those names also collides with an unrelated npm package, that package's finding is reported `unknown` rather than a false negative. Inside `node_modules` the walk follows resolved imports only — an installed package nothing imports is not visited, and is reported through `lockfile`, not `moduleGraph`.

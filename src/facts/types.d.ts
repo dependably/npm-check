@@ -568,7 +568,7 @@ export function factsDocument(facts: ImportFacts, options?: { exitCode?: number 
 
 // --------------------------------------------------------------- misc ----
 
-export const FACTS_SCHEMA_VERSION: '1.0';
+export const FACTS_SCHEMA_VERSION: '1.1';
 
 export class FactsError extends Error {
   constructor(code: string, message: string);
