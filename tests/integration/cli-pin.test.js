@@ -94,7 +94,16 @@ describe('Integration: npm-check pin', () => {
     const workspace = await createTestWorkspace('unpinned-v3');
     try {
       await runCli(['pin', workspace.dir, '--write'], { cwd: workspace.dir });
-      const audit = await runCli(['audit', workspace.lockfilePath, '--strict'], { cwd: workspace.dir });
+      // This asserts the pinned-versions rule is satisfied, via the gate. Scope
+      // the run to that claim: the fixture is a bare package.json + lockfile
+      // copied to a temp dir with no `.npmrc`, so the default-on
+      // `min-release-age` rule warns about a cooldown this fixture was never
+      // meant to carry, and `--strict` turns any warning into exit 1. Silencing
+      // it by id keeps the assertion — the audit must still exit 0 on every
+      // other rule — instead of relaxing it.
+      const audit = await runCli([
+        'audit', workspace.lockfilePath, '--strict', '--rule', 'min-release-age:off'
+      ], { cwd: workspace.dir });
       expect(audit.code).toBe(0);
     } finally {
       await workspace.cleanup();
