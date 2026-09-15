@@ -450,7 +450,7 @@ export function discoverLockfileGraphs(srcDir) {
         files.push(path);
       } catch (err) {
         diagnostics.push(
-          `unparseable ${what} at ${relative(srcDir, path)}: ${err instanceof Error ? err.message : String(err)}`
+          `NPM_LOCKFILE_UNPARSEABLE: unparseable ${what} at ${relative(srcDir, path)}: ${err instanceof Error ? err.message : String(err)}`
         );
       }
     }

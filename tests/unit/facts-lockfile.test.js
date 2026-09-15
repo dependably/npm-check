@@ -386,7 +386,7 @@ describe('discoverLockfileGraphs', () => {
     expect(packages.map((p) => p.name)).toEqual(['lodash']);
     expect(files).toEqual([join(dir, 'web', 'package-lock.json')]);
     expect(diagnostics).toHaveLength(1);
-    expect(diagnostics[0]).toMatch(/^unparseable package-lock\.json at package-lock\.json: /);
+    expect(diagnostics[0]).toMatch(/^NPM_LOCKFILE_UNPARSEABLE: unparseable package-lock\.json at package-lock\.json: /);
   });
 
   test('dedupes an identical name+version found in more than one lockfile', () => {

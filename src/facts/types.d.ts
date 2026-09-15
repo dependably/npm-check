@@ -268,7 +268,7 @@ export interface LockfileGraph {
 export interface LockfileDiscovery extends LockfileGraph {
   /** Absolute paths of the lockfiles that parsed, in the order they were merged. */
   files: string[];
-  /** `unparseable … at <rel>: <why>` per lockfile that failed; `NO_LOCKFILE: …` when none was found. */
+  /** `NPM_LOCKFILE_UNPARSEABLE: unparseable … at <rel>: <why>` per lockfile that failed; `NO_LOCKFILE: …` when none was found. */
   diagnostics: string[];
 }
 
@@ -373,6 +373,13 @@ export interface Workspace {
   devDeclaredBy: Map<string, string[]>;
   /** First-party source files, absolute paths, sorted. */
   sourceFiles: string[];
+  /**
+   * `NPM_MANIFEST_UNPARSEABLE: …` per package.json that failed to parse;
+   * `NPM_TSCONFIG_UNPARSEABLE: …` per tsconfig/jsconfig that failed to parse;
+   * `OUTPUT_DIR_SCANNED: …` (a note, not a warning) when a directory named
+   * like generated output was scanned as first-party source because nothing
+   * gitignored it.
+   */
   diagnostics: string[];
 }
 

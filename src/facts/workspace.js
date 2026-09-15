@@ -85,7 +85,7 @@ export function discoverWorkspace(srcDir) {
     try {
       json = /** @type {Record<string, unknown>} */ (JSON.parse(readFileSync(path, 'utf8')));
     } catch {
-      diagnostics.push(`unparseable package.json at ${relative(srcDir, path)}; skipped`);
+      diagnostics.push(`NPM_MANIFEST_UNPARSEABLE: unparseable package.json at ${relative(srcDir, path)}; skipped`);
       continue;
     }
     if (typeof json.name === 'string') firstPartyNames.add(json.name.toLowerCase());
@@ -122,7 +122,9 @@ export function discoverWorkspace(srcDir) {
   for (const path of aliasConfigPaths) {
     const read = ts.readConfigFile(path, (p) => readFileSync(p, 'utf8'));
     if (read.error) {
-      diagnostics.push(`unparseable tsconfig/jsconfig at ${relative(srcDir, path)}; aliases from it ignored`);
+      diagnostics.push(
+        `NPM_TSCONFIG_UNPARSEABLE: unparseable tsconfig/jsconfig at ${relative(srcDir, path)}; aliases from it ignored`
+      );
       continue;
     }
     // Resolve `extends` so inherited paths are honored too.

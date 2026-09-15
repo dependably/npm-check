@@ -206,6 +206,8 @@ The result:
 | `unanalyzable` | **Always present.** `{ file, kind, reason }` for every first-party file that could not be read (`file`), every `.svelte` file with an extraction problem (`file-partial`), every `node_modules` file the walk skipped (`node-modules-file`), and a budget stop (`walk`). |
 | `dynamicUnknownTotal` | Non-literal `require()`/`import()` calls across first-party files. |
 
+**Diagnostic codes.** Every string in `workspace.diagnostics` and `lockfile.diagnostics` starts with a stable `CODE:` prefix so a consumer can classify by prefix match instead of parsing prose: `NPM_MANIFEST_UNPARSEABLE`, `NPM_TSCONFIG_UNPARSEABLE`, `OUTPUT_DIR_SCANNED` (workspace); `NPM_LOCKFILE_UNPARSEABLE`, `NO_LOCKFILE` (lockfile). Severity is deliberately not part of the document — see the [CLI reference](./CLI.md#diagnostic-codes) for the full table and what each one means.
+
 `factsDocument(facts, { exitCode })` renders that as the body of the
 `imports` document (`summary` + `workspace` + `imports` + `moduleGraph` +
 `lockfile` + `unanalyzable`); `buildFactsEnvelope` in `src/schema.js` wraps
