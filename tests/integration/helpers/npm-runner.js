@@ -1,5 +1,24 @@
 import { spawn } from 'child_process';
 
+// The registry these integration installs must use.
+//
+// The fixtures' lockfiles were resolved against the PUBLIC npm registry (every
+// `resolved` URL is a registry.npmjs.org one), and the repo's own `.npmrc`
+// pins that registry for exactly this reason — contributors commonly have a
+// private registry as their user-level default. But `createTestWorkspace`
+// builds each workspace under `os.tmpdir()`, OUTSIDE the repo, so that pin does
+// not apply there: npm falls back to the user-level default and rewrites the
+// lockfile's `resolved` host to it, then fails (`403 Forbidden - GET
+// https://<private-host>/npm/glob/-/glob-8.1.0.tgz`) because a private feed is
+// not a mirror of every public tarball path. Passing `--registry` restores the
+// repo's pin for the spawned install instead of inheriting whatever the machine
+// happens to default to.
+//
+// Override with $NPM_CHECK_TEST_REGISTRY to run these against an internal
+// mirror of the public registry.
+export const TEST_REGISTRY =
+  process.env.NPM_CHECK_TEST_REGISTRY || 'https://registry.npmjs.org/';
+
 /**
  * Run npm ci in workspace directory
  * @param {string} workspaceDir - Working directory
@@ -15,7 +34,7 @@ export async function runNpmCi(workspaceDir, options = {}) {
   } = options;
 
   return new Promise((resolve, reject) => {
-    const child = spawn('npm', ['ci', '--loglevel=error'], {
+    const child = spawn('npm', ['ci', '--loglevel=error', `--registry=${TEST_REGISTRY}`], {
       cwd: workspaceDir,
       env: { ...process.env, ...env },
       timeout,
