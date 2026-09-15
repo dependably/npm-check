@@ -20,6 +20,14 @@ export const TEST_REGISTRY =
   process.env.NPM_CHECK_TEST_REGISTRY || 'https://registry.npmjs.org/';
 
 /**
+ * The exact tarball URL `npm ci` fetches for one of the fixture's locked
+ * packages — the reachability probe for these suites uses it verbatim.
+ * @type {string}
+ */
+export const TEST_REGISTRY_PROBE_URL =
+  `${TEST_REGISTRY.replace(/\/$/, '')}/glob/-/glob-8.1.0.tgz`;
+
+/**
  * Run npm ci in workspace directory
  * @param {string} workspaceDir - Working directory
  * @param {Object} options - Options

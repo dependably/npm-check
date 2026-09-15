@@ -6,10 +6,24 @@ import { promisify } from 'util';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { createTestWorkspace, readJSON, writeJSON } from './helpers/test-workspace.js';
+import { describeWithRegistry } from './helpers/registry-availability.js';
 
 const execFileAsync = promisify(execFile);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CLI = path.join(__dirname, '../../bin/cli.js');
+
+// `fix-checksums` derives the registry per package from the entry's own
+// `resolved` URL, so for this fixture it fetches the PUBLIC registry's
+// per-version packument. That is a hard prerequisite, not a soft one: with the
+// registry unreachable the command reports the candidate `unresolved` and exits
+// 1, which is correct behaviour and not something to assert away. Probe the
+// exact URL the command will fetch and skip with the reason instead. The v1
+// refusal test below needs no network and is deliberately left outside the gate.
+const REGISTRY_PROBE_URL = 'https://registry.npmjs.org/lodash/4.17.21';
+const registryGate = describeWithRegistry(
+  'Integration: npm-check fix-checksums (real registry)',
+  REGISTRY_PROBE_URL
+);
 
 async function runCli(args, options = {}) {
   try {
@@ -20,7 +34,7 @@ async function runCli(args, options = {}) {
   }
 }
 
-describe('Integration: npm-check fix-checksums (real registry)', () => {
+registryGate.describe(registryGate.title, () => {
   test('restores a blanked integrity hash to the original registry value', async () => {
     const workspace = await createTestWorkspace('unpinned-v3');
     try {
@@ -47,6 +61,10 @@ describe('Integration: npm-check fix-checksums (real registry)', () => {
     }
   }, 60000);
 
+});
+
+// No network: a v1 lockfile is rejected before any fetch happens.
+describe('Integration: npm-check fix-checksums (offline)', () => {
   test('refuses v1 lockfiles with a migrate hint', async () => {
     const workspace = await createTestWorkspace('unpinned-v3');
     try {
