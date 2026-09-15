@@ -668,6 +668,66 @@ describe('discoverLockfileGraphs', () => {
     expect(diagnostics[0]).toContain('sha512-TAMPERED');
   });
 
+  // The two tests below COMPOSE the two merge sites -- the fold inside one
+  // `parsePackageLockJsonGraph`, and the fold across lockfiles in
+  // `discoverLockfileGraphs` -- which is where an identity-keyed conflict
+  // memory silently evaporated: `addGraph` folds a fresh `{ ...pkg }` copy,
+  // so the mark set on the per-lockfile record never crossed the boundary.
+  // A test that stays inside ONE merge site pins nothing about the other.
+  // Both orders are asserted because the conflicted record is the merge
+  // TARGET in one and the merge SOURCE in the other, and those used to be
+  // two different bugs.
+  /** @param {string} conflictDir @param {string} agreeDir */
+  function twoLockfilesOneConflicted(conflictDir, agreeDir) {
+    const dir = tempDir();
+    // Two paths in ONE lockfile resolve foo@1.0.0 to different hashes:
+    // hoisted at the root, and nested under a package that pinned it.
+    writeNpmLock(
+      dir,
+      {
+        '': { dependencies: { foo: '1.0.0', bar: '2.0.0' } },
+        'node_modules/foo': { version: '1.0.0', integrity: 'sha512-AAAAgood' },
+        'node_modules/bar': { version: '2.0.0', dependencies: { foo: '1.0.0' } },
+        'node_modules/bar/node_modules/foo': { version: '1.0.0', integrity: 'sha512-ZZZZevil' }
+      },
+      conflictDir
+    );
+    // A second lockfile that agrees with ONE of the two hashes. It must not
+    // be able to reinstate the field: the disagreement already means this
+    // name@version's hash cannot be trusted.
+    writeNpmLock(
+      dir,
+      { '': { dependencies: { foo: '1.0.0' } }, 'node_modules/foo': { version: '1.0.0', integrity: 'sha512-AAAAgood' } },
+      agreeDir
+    );
+    return discoverLockfileGraphs(dir);
+  }
+
+  test('an intra-lockfile conflict is not undone by a second lockfile that agrees (the conflicted record is the merge TARGET)', () => {
+    const { packages, diagnostics, files } = twoLockfilesOneConflicted('a', 'b');
+    expect(files).toHaveLength(2);
+    const foo = packages.find((p) => p.name === 'foo');
+    // The document must not say "dropped" and publish a hash in the same
+    // breath -- that is the conflicting sighting being hidden, which is the
+    // whole reason this diagnostic exists.
+    expect(foo.integrity).toBeUndefined();
+    expect(diagnostics.filter((d) => d.startsWith('NPM_INTEGRITY_CONFLICT:'))).toHaveLength(1);
+    expect(diagnostics[0]).toContain('foo@1.0.0');
+  });
+
+  test('... and not by one read BEFORE it either (the conflicted record is the merge SOURCE)', () => {
+    // Same pair, reverse discovery order (lockfile paths are read sorted, so
+    // the agreeing file in `a/` is merged first and the conflicted one in
+    // `b/` arrives as `other`). Where two disagreeing sightings SIT must not
+    // decide whether a third sighting's hash gets published.
+    const { packages, diagnostics, files } = twoLockfilesOneConflicted('b', 'a');
+    expect(files).toHaveLength(2);
+    const foo = packages.find((p) => p.name === 'foo');
+    expect(foo.integrity).toBeUndefined();
+    expect(diagnostics.filter((d) => d.startsWith('NPM_INTEGRITY_CONFLICT:'))).toHaveLength(1);
+    expect(diagnostics[0]).toContain('foo@1.0.0');
+  });
+
   test('a lockfile inside node_modules is never read', () => {
     const dir = tempDir();
     writeNpmLock(dir, { '': {}, 'node_modules/inner': { version: '9.9.9' } }, 'node_modules/dep');
