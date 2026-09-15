@@ -9,14 +9,21 @@ deprecation, and license checks that work straight from the lockfile, with no
 
 ## Install
 
+`@dependably/npm-check` publishes to the private **Dependably registry** — the
+same feed the rest of this org's CI installs from — never to public npmjs. On a
+machine that carries the org's registry credentials:
+
 ```bash
 npm install -g @dependably/npm-check
 # or run once, without installing:
 npx @dependably/npm-check
 ```
 
-Requires Node.js ≥ 22. Building from source: see
+Without those credentials, build and run from source — the repository is public
+and needs no registry access of its own: see
 [CONTRIBUTING.md](https://github.com/dependably/npm-check/blob/main/CONTRIBUTING.md).
+
+Requires Node.js ≥ 22.
 
 ## Quick start
 
