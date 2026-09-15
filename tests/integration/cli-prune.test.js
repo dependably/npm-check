@@ -59,9 +59,14 @@ describe('Integration: npm-check prune', () => {
       expect(backups.some((name) => name.includes('package-lock.json'))).toBe(true);
 
       // And the audit no-orphan-packages rule is clean afterwards
-      // (the fixture is intentionally unpinned, so silence that rule for strict mode)
+      // (the fixture is intentionally unpinned, so silence that rule for strict
+      // mode; and it is a bare package.json + lockfile in a temp dir with no
+      // `.npmrc`, so the default-on min-release-age cooldown rule warns about a
+      // policy this fixture was never meant to carry)
       const audit = await runCli([
-        'audit', workspace.lockfilePath, '--strict', '--rule', 'pinned-versions:off'
+        'audit', workspace.lockfilePath, '--strict',
+        '--rule', 'pinned-versions:off',
+        '--rule', 'min-release-age:off'
       ], { cwd: workspace.dir });
       expect(audit.code).toBe(0);
     } finally {
