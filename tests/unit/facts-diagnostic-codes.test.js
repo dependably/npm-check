@@ -42,7 +42,14 @@ const ALLOWED_IDENTIFIERS = new Set([
   // itself is pinned to return an `OUTPUT_DIR_SCANNED:`-prefixed string (or
   // undefined) by `tests/unit/facts-sourcescan.test.js`, and the runtime
   // assertion at the bottom of this file re-checks it directly too.
-  'outputDirs'
+  'outputDirs',
+  // `lockfile-graph.js`'s `discoverLockfileGraphs`: `for (const
+  // graphDiagnostic of graph.diagnostics) diagnostics.push(graphDiagnostic);`
+  // -- forwards a `LockfileGraph.diagnostics` entry that was already pushed,
+  // coded, by `mergeDiscovered` inside `parsePackageLockJsonGraph`/
+  // `parsePnpmLockYamlGraph` (both scanned by this same test); this is a
+  // relay, not a new construction site.
+  'graphDiagnostic'
 ]);
 
 /**
@@ -57,7 +64,10 @@ const ALLOWED_IDENTIFIERS = new Set([
  */
 function extractDiagnosticPushArgs(source) {
   const results = [];
-  const callRe = /diagnostics\.push\(/g;
+  // `\??` also catches `diagnostics?.push(...)` (used when the sink is an
+  // optional third parameter, e.g. `mergeDiscovered`'s conflict report) --
+  // without it, an optional-chained call site is invisible to this scan.
+  const callRe = /diagnostics\??\.push\(/g;
   let match;
   while ((match = callRe.exec(source))) {
     const start = match.index + match[0].length;

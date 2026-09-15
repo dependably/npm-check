@@ -248,6 +248,27 @@ export interface DiscoveredPackage {
    * through optionalDependencies. Absent otherwise — never asserted.
    */
   scope?: 'optional';
+  /**
+   * The artifact hash the lockfile entry recorded, carried VERBATIM in the
+   * lockfile's own spelling — npm's is an SRI string (`sha512-<base64>`);
+   * this is never converted to hex, never normalized, and never guessed.
+   * Absent when the entry carried none. On a merge (`mergeDiscovered`) a
+   * matching or one-sided value is kept; two DIFFERENT hashes for the same
+   * name@version drop this to absent and add a coded
+   * `NPM_INTEGRITY_CONFLICT: …` diagnostic instead of picking one — a
+   * mismatched hash for one resolved package is a supply-chain signal, not
+   * a merge nuisance.
+   */
+  integrity?: string;
+  /**
+   * The resolved download URL the lockfile entry recorded, carried verbatim
+   * (npm's `resolved`; pnpm-lock.yaml's `resolution.tarball`, present only
+   * for a non-registry source since pnpm can otherwise derive the URL
+   * itself). Absent when the entry carried none. Unlike `integrity`, a
+   * merge keeps the first value seen without checking for disagreement —
+   * legitimate mirrors can serve one package at different URLs.
+   */
+  resolved?: string;
 }
 
 /** One dependency edge; both ends are "name@version" keys matching a `DiscoveredPackage`. */
@@ -262,17 +283,38 @@ export interface LockfileGraph {
   rootDependencies: string[];
   /** Edges among the resolved closure; does not include root-level edges. */
   edges: DependencyEdge[];
+  /**
+   * Diagnostics from folding THIS lockfile's own duplicate name@version
+   * sightings (e.g. npm's hoisted-plus-nested paths) into one record —
+   * today, only ever `NPM_INTEGRITY_CONFLICT: …`. Always present, empty
+   * when nothing conflicted. A lockfile that failed to PARSE is not
+   * represented here at all — see `LockfileDiscovery.diagnostics`.
+   */
+  diagnostics: string[];
 }
 
 /** `discoverLockfileGraphs`' result: every lockfile under the tree merged into one graph. */
 export interface LockfileDiscovery extends LockfileGraph {
   /** Absolute paths of the lockfiles that parsed, in the order they were merged. */
   files: string[];
-  /** `NPM_LOCKFILE_UNPARSEABLE: unparseable … at <rel>: <why>` per lockfile that failed; `NO_LOCKFILE: …` when none was found. */
+  /**
+   * `NPM_LOCKFILE_UNPARSEABLE: unparseable … at <rel>: <why>` per lockfile
+   * that failed; `NO_LOCKFILE: …` when none was found; `NPM_INTEGRITY_CONFLICT: …`
+   * per name@version whose `integrity` disagreed across sightings (folded
+   * up from each source `LockfileGraph.diagnostics`, plus any conflict
+   * found while merging ACROSS lockfiles — see `mergeDiscovered`).
+   */
   diagnostics: string[];
 }
 
-export function mergeDiscovered(into: DiscoveredPackage, other: DiscoveredPackage): void;
+/**
+ * `diagnostics`, when supplied, receives a coded `NPM_INTEGRITY_CONFLICT: …`
+ * entry naming the package and both hashes if `into` and `other` disagree on
+ * `integrity` — the field then drops to absent on `into` rather than being
+ * set to either value. Omit it only when there is nowhere to route the
+ * diagnostic (e.g. a standalone call with no consumer for it).
+ */
+export function mergeDiscovered(into: DiscoveredPackage, other: DiscoveredPackage, diagnostics?: string[]): void;
 export function parsePackageLockJsonGraph(path: string): LockfileGraph;
 export function parsePackageLockJson(path: string): DiscoveredPackage[];
 export function parsePnpmLockYamlGraph(path: string): LockfileGraph;
@@ -575,7 +617,7 @@ export function factsDocument(facts: ImportFacts, options?: { exitCode?: number 
 
 // --------------------------------------------------------------- misc ----
 
-export const FACTS_SCHEMA_VERSION: '1.1';
+export const FACTS_SCHEMA_VERSION: '1.2';
 
 export class FactsError extends Error {
   constructor(code: string, message: string);
