@@ -116,7 +116,7 @@ Registry-backed commands (`check --check hash`, `vuln`, `deprecated`, `report`) 
 ```json
 {
   "tool": "npm-check",
-  "toolVersion": "1.7.0",
+  "toolVersion": "1.11.0",
   "schemaVersion": "1.0",
   "target": "package-lock.json",
   "summary": {
@@ -310,7 +310,7 @@ For a tree with one file `src/index.js` reading `import { a } from 'lib-a'; a();
 ```json
 {
   "tool": "npm-check",
-  "toolVersion": "1.10.1",
+  "toolVersion": "1.11.0",
   "schemaVersion": "1.2",
   "documentType": "imports",
   "target": "./src",
