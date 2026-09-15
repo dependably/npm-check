@@ -9,8 +9,13 @@ import { spawn } from 'child_process';
 // builds each workspace under `os.tmpdir()`, OUTSIDE the repo, so that pin does
 // not apply there: npm falls back to the user-level default and rewrites the
 // lockfile's `resolved` host to it, then fails (`403 Forbidden - GET
-// https://<private-host>/npm/glob/-/glob-8.1.0.tgz`) because a private feed is
-// not a mirror of every public tarball path. Passing `--registry` restores the
+// https://<private-host>/npm/glob/-/glob-8.1.0.tgz`). The 403 is NOT "a private
+// feed lacks this path" -- that reading was checked and is wrong: the same feed
+// serves non-deprecated packages fine. It refuses DEPRECATED versions at the
+// tarball layer while still advertising them in its packument, and the fixture
+// pins glob@8.1.0, which upstream deprecated. See dependably-community#700.
+// Either way the workspace must not be asking that feed for a tarball it locked
+// against npmjs, which is what this fixes. Passing `--registry` restores the
 // repo's pin for the spawned install instead of inheriting whatever the machine
 // happens to default to.
 //
