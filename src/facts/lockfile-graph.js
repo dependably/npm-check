@@ -29,18 +29,37 @@ import { parse as parseYaml } from 'yaml';
 /** @typedef {import('./types.d.ts').LockfileDiscovery} LockfileDiscovery */
 
 /**
- * Records which merged `DiscoveredPackage` objects have already had their
- * `integrity` dropped for a conflict, so a THIRD sighting (a third path, or
- * a third lockfile) cannot silently reinstate one merely by happening not to
- * conflict with whichever value is currently on the record — once two
- * sightings of a name@version disagree, that name@version's integrity stays
- * absent for the rest of the fold, not just until the next sighting. Keyed
- * by object identity (every caller here folds into the SAME record object
- * across repeated `mergeDiscovered` calls), so this never leaks into the
- * serialized `DiscoveredPackage` shape.
- * @type {WeakSet<DiscoveredPackage>}
+ * The mutable state ONE fold carries: where to route diagnostics, and which
+ * name@version keys have already had their `integrity` dropped for a
+ * conflict.
+ *
+ * `integrityConflicts` is keyed by `name@version` — the VALUE the fold is
+ * about — and never by object identity. A `DiscoveredPackage` is copied
+ * freely as it travels (`discoverLockfileGraphs`' `addGraph` folds a fresh
+ * `{ ...pkg }` into the merged list, and a spread drops anything that is not
+ * an own enumerable property), so identity-keyed state silently evaporates
+ * at every copy site: an earlier identity-keyed tracker lost the mark at the
+ * per-lockfile/discovery boundary, and a record that arrived as the merge
+ * SOURCE carried no mark at all — both of which let a third, agreeing
+ * sighting reinstate a hash the fold had already reported as dropped. Keying
+ * by value closes the whole class, not the two known routes.
+ *
+ * The two fields travel together, in one object, on purpose: the conflict
+ * set is the memory behind the diagnostic the sink receives, and a caller
+ * that passes one without the other gets a fold that reports a conflict it
+ * cannot remember. `diagnostics` stays optional (a caller may have nowhere
+ * to route it); `integrityConflicts` does not.
+ * @typedef {import('./types.d.ts').MergeFold} MergeFold
  */
-const integrityConflicted = new WeakSet();
+
+/**
+ * @returns {MergeFold} a fresh fold: an empty diagnostics sink and an empty
+ * conflict set. For a caller that folds records itself and wants the same
+ * "permanent for the rest of the fold" guarantee the readers here have.
+ */
+export function createMergeFold() {
+  return { diagnostics: [], integrityConflicts: new Set() };
+}
 
 /**
  * Folds a second sighting of the same name@version into the first — two
@@ -58,31 +77,54 @@ const integrityConflicted = new WeakSet();
  * (or one-sided) `integrity` merges normally; a genuine disagreement drops
  * the field to absent on the merged record — never guessed, never
  * defaulted, same as an entry that never carried one — and, when
- * `diagnostics` is supplied, appends a coded `NPM_INTEGRITY_CONFLICT: …`
- * naming the package and both hashes. `diagnostics` is optional so this
- * function's own unit tests (and any caller that has nowhere to route a
- * diagnostic) can still call it with two arguments.
+ * `fold.diagnostics` is supplied, appends a coded `NPM_INTEGRITY_CONFLICT: …`
+ * naming the package and both hashes.
  *
- * Order-independent.
+ * That drop is PERMANENT for the rest of the fold, and permanence is what
+ * `fold.integrityConflicts` is for: once `foo@1.0.0` has been reported
+ * dropped, no later sighting of `foo@1.0.0` can set the field again — not
+ * one that agrees with an earlier value, and not one merging in the other
+ * direction (an already-conflicted record arriving as `other`, which
+ * carries no `integrity` at all to disagree with). The check therefore runs
+ * BEFORE the one-sided-merge branch and does not consult `other`.
+ *
+ * `fold` itself is optional so this function's own unit tests (and any
+ * caller with a single pair of records and nowhere to route a diagnostic)
+ * can still call it with two arguments — that call is one merge, not a
+ * fold, and remembers nothing beyond it.
+ *
+ * Order-independent, and independent of how the sightings are DISTRIBUTED:
+ * two disagreeing sightings in one lockfile and two in two lockfiles reach
+ * the same merged record, because the conflict key outlives both the record
+ * objects and the per-lockfile boundary.
  * @param {DiscoveredPackage} into
  * @param {DiscoveredPackage} other
- * @param {string[]} [diagnostics]
+ * @param {MergeFold} [fold]
  */
-export function mergeDiscovered(into, other, diagnostics) {
+export function mergeDiscovered(into, other, fold) {
   if (other.devDeclared === false) into.devDeclared = false;
   else if (other.devDeclared === true && into.devDeclared === undefined) into.devDeclared = true;
   if (into.scope === 'optional' && other.scope !== 'optional') delete into.scope;
   if (into.license === undefined && other.license !== undefined) into.license = other.license;
   if (into.resolved === undefined && other.resolved !== undefined) into.resolved = other.resolved;
-  if (other.integrity !== undefined) {
+
+  const key = `${into.name}@${into.version}`;
+  if (fold?.integrityConflicts.has(key)) {
+    // Already reported dropped earlier in this fold. `into` may still carry
+    // a hash (it is a different record object from the one that conflicted,
+    // or the conflict happened while this record was the SOURCE of an
+    // earlier merge) -- drop it again rather than publishing a hash the
+    // document has already said cannot be trusted.
+    delete into.integrity;
+  } else if (other.integrity !== undefined) {
     if (into.integrity === undefined) {
-      if (!integrityConflicted.has(into)) into.integrity = other.integrity;
+      into.integrity = other.integrity;
     } else if (other.integrity !== into.integrity) {
-      diagnostics?.push(
+      fold?.diagnostics?.push(
         `NPM_INTEGRITY_CONFLICT: ${into.name}@${into.version} has conflicting integrity hashes (${into.integrity} vs ${other.integrity}); dropped`
       );
       delete into.integrity;
-      integrityConflicted.add(into);
+      fold?.integrityConflicts.add(key);
     }
   }
 }
@@ -149,10 +191,18 @@ function devDeclaredFromNpmFlags(entry) {
  * level). A workspace-local (`link: true`) hit along that walk isn't
  * resolvable to an external package, so the edge is silently dropped
  * rather than guessed.
+ * `integrityConflicts` is the fold-wide conflict set (see `mergeDiscovered`),
+ * threaded in by `discoverLockfileGraphs` so that a conflict found INSIDE
+ * this lockfile (npm's hoisted-plus-nested paths) still binds when the same
+ * name@version is later merged with another lockfile's sighting of it —
+ * where two disagreeing sightings happen to SIT must not decide whether a
+ * third one's hash gets published. A standalone caller may omit it and gets
+ * a set scoped to this file alone.
  * @param {string} path
+ * @param {Set<string>} [integrityConflicts]
  * @returns {LockfileGraph}
  */
-export function parsePackageLockJsonGraph(path) {
+export function parsePackageLockJsonGraph(path, integrityConflicts = new Set()) {
   const raw = /** @type {{ packages?: Record<string, NpmLockEntry> }} */ (JSON.parse(readFileSync(path, 'utf8')));
   const rawPackages = raw.packages;
   if (!rawPackages) return { packages: [], rootDependencies: [], edges: [], diagnostics: [] };
@@ -201,6 +251,7 @@ export function parsePackageLockJsonGraph(path) {
   const packages = [];
   /** @type {string[]} */
   const diagnostics = [];
+  const fold = { diagnostics, integrityConflicts };
   for (const nv of nameVersionByPath.values()) {
     const key = keyOf(nv);
     const existing = byKey.get(key);
@@ -209,7 +260,7 @@ export function parsePackageLockJsonGraph(path) {
       byKey.set(key, record);
       packages.push(record);
     } else {
-      mergeDiscovered(existing, nv, diagnostics);
+      mergeDiscovered(existing, nv, fold);
     }
   }
 
@@ -474,6 +525,15 @@ export function discoverLockfileGraphs(srcDir) {
   const edgeSeen = new Set();
   /** @type {string[]} */
   const files = [];
+  // One conflict set for the WHOLE discovery, keyed by name@version and
+  // threaded into each npm parse below, so an `integrity` disagreement is
+  // permanent across the lockfile boundary in both directions: a record
+  // already conflicted inside its own lockfile cannot have a hash restored
+  // by a later agreeing lockfile, nor restore one when it is itself the
+  // merge source.
+  /** @type {Set<string>} */
+  const integrityConflicts = new Set();
+  const fold = { diagnostics, integrityConflicts };
 
   /** @param {LockfileGraph} graph */
   const addGraph = (graph) => {
@@ -486,7 +546,7 @@ export function discoverLockfileGraphs(srcDir) {
         packages.push(copy);
         continue;
       }
-      mergeDiscovered(existing, pkg, diagnostics);
+      mergeDiscovered(existing, pkg, fold);
     }
     for (const key of graph.rootDependencies) rootDependencies.add(key);
     for (const edge of graph.edges) {
@@ -511,7 +571,7 @@ export function discoverLockfileGraphs(srcDir) {
 
   /** @type {[string[], (path: string) => LockfileGraph, string][]} */
   const sources = [
-    [npmLockPaths, parsePackageLockJsonGraph, 'package-lock.json'],
+    [npmLockPaths, (/** @type {string} */ path) => parsePackageLockJsonGraph(path, integrityConflicts), 'package-lock.json'],
     [pnpmLockPaths, parsePnpmLockYamlGraph, 'pnpm-lock.yaml']
   ];
   for (const [paths, parse, what] of sources) {

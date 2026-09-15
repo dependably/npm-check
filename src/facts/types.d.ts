@@ -308,14 +308,49 @@ export interface LockfileDiscovery extends LockfileGraph {
 }
 
 /**
- * `diagnostics`, when supplied, receives a coded `NPM_INTEGRITY_CONFLICT: …`
- * entry naming the package and both hashes if `into` and `other` disagree on
- * `integrity` — the field then drops to absent on `into` rather than being
- * set to either value. Omit it only when there is nowhere to route the
- * diagnostic (e.g. a standalone call with no consumer for it).
+ * The mutable state ONE fold of `DiscoveredPackage`s carries. Both fields
+ * belong to the same fold and are passed together: `integrityConflicts` is
+ * the memory behind the diagnostic `diagnostics` receives, so a caller that
+ * supplied only a sink would report a conflict the fold cannot remember.
  */
-export function mergeDiscovered(into: DiscoveredPackage, other: DiscoveredPackage, diagnostics?: string[]): void;
-export function parsePackageLockJsonGraph(path: string): LockfileGraph;
+export interface MergeFold {
+  /**
+   * Receives a coded `NPM_INTEGRITY_CONFLICT: …` entry naming the package
+   * and both hashes when two sightings disagree. Optional: omit it only
+   * when there is nowhere to route the diagnostic.
+   */
+  diagnostics?: string[];
+  /**
+   * The `name@version` keys whose `integrity` has already been dropped for
+   * a conflict in this fold — keyed by VALUE, never by record identity, so
+   * the state survives every point a `DiscoveredPackage` is copied (a
+   * spread at a per-lockfile boundary, a record merged as the SOURCE rather
+   * than the target). A key in this set can never have `integrity` set
+   * again by any later sighting, however the sightings are distributed
+   * across paths and lockfiles.
+   */
+  integrityConflicts: Set<string>;
+}
+
+/** A fresh, empty `MergeFold` — for a caller folding records of its own. */
+export function createMergeFold(): MergeFold;
+
+/**
+ * Folds `other` into `into`. Two sightings that disagree on `integrity`
+ * drop the field to absent on `into` rather than setting it to either
+ * value, report it through `fold.diagnostics`, and record the name@version
+ * in `fold.integrityConflicts` so no later sighting in the same fold can
+ * reinstate it. Omit `fold` only for a standalone pair of records with
+ * nowhere to route a diagnostic and nothing to remember past the call.
+ */
+export function mergeDiscovered(into: DiscoveredPackage, other: DiscoveredPackage, fold?: MergeFold): void;
+/**
+ * `integrityConflicts` is the fold-wide conflict set (`MergeFold`), threaded
+ * in by `discoverLockfileGraphs` so a conflict found between two paths of
+ * THIS lockfile still binds when the same name@version is later merged with
+ * another lockfile's sighting. Omit it for a standalone parse.
+ */
+export function parsePackageLockJsonGraph(path: string, integrityConflicts?: Set<string>): LockfileGraph;
 export function parsePackageLockJson(path: string): DiscoveredPackage[];
 export function parsePnpmLockYamlGraph(path: string): LockfileGraph;
 export function parsePnpmLockYaml(path: string): DiscoveredPackage[];

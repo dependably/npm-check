@@ -14,6 +14,7 @@ import {
   parsePnpmLockYaml,
   parsePnpmLockYamlGraph,
   discoverLockfileGraphs,
+  createMergeFold,
   mergeDiscovered
 } from '../../src/facts/index.js';
 
@@ -437,17 +438,18 @@ describe('mergeDiscovered', () => {
     expect(into.integrity).toBe('sha512-same');
   });
 
-  test('a conflicting integrity drops to absent and reports a coded diagnostic naming both hashes; the diagnostics param is optional', () => {
+  test('a conflicting integrity drops to absent and reports a coded diagnostic naming both hashes; the fold param is optional', () => {
     const into = { name: 'a', version: '1', integrity: 'sha512-one' };
-    const diagnostics = [];
-    mergeDiscovered(into, { name: 'a', version: '1', integrity: 'sha512-two' }, diagnostics);
+    const fold = createMergeFold();
+    mergeDiscovered(into, { name: 'a', version: '1', integrity: 'sha512-two' }, fold);
     expect(into.integrity).toBeUndefined();
-    expect(diagnostics).toEqual([
+    expect(fold.diagnostics).toEqual([
       'NPM_INTEGRITY_CONFLICT: a@1 has conflicting integrity hashes (sha512-one vs sha512-two); dropped'
     ]);
+    expect([...fold.integrityConflicts]).toEqual(['a@1']);
 
-    // No diagnostics array supplied: the conflict still resolves to absent,
-    // it just has nowhere to report to.
+    // No fold supplied: the conflict still resolves to absent, it just has
+    // nowhere to report to and nothing to remember past this one call.
     const silent = { name: 'b', version: '1', integrity: 'sha512-one' };
     mergeDiscovered(silent, { name: 'b', version: '1', integrity: 'sha512-two' });
     expect(silent.integrity).toBeUndefined();
@@ -455,15 +457,44 @@ describe('mergeDiscovered', () => {
 
   test('once conflicted, a THIRD sighting cannot silently reinstate integrity, even one that agrees with the original value', () => {
     const into = { name: 'a', version: '1', integrity: 'sha512-one' };
-    const diagnostics = [];
-    mergeDiscovered(into, { name: 'a', version: '1', integrity: 'sha512-two' }, diagnostics);
+    const fold = createMergeFold();
+    mergeDiscovered(into, { name: 'a', version: '1', integrity: 'sha512-two' }, fold);
     expect(into.integrity).toBeUndefined();
     // A third sighting that matches the ORIGINAL value must not undo the
     // conflict -- the disagreement already means this name@version's hash
     // cannot be trusted, whatever a later sighting happens to say.
-    mergeDiscovered(into, { name: 'a', version: '1', integrity: 'sha512-one' }, diagnostics);
+    mergeDiscovered(into, { name: 'a', version: '1', integrity: 'sha512-one' }, fold);
     expect(into.integrity).toBeUndefined();
-    expect(diagnostics).toHaveLength(1);
+    expect(fold.diagnostics).toHaveLength(1);
+  });
+
+  test('the conflict is keyed by name@version, not by record identity: a FRESH record for the same key cannot carry a hash back in, in either merge direction', () => {
+    // The identity-keyed tracker this replaced marked the record OBJECT, so
+    // every point a DiscoveredPackage is copied (`{ ...pkg }` at a
+    // per-lockfile boundary) silently lost the mark, and a record that
+    // arrived as the merge SOURCE was never consulted at all.
+    const fold = createMergeFold();
+    const first = { name: 'a', version: '1', integrity: 'sha512-one' };
+    mergeDiscovered(first, { name: 'a', version: '1', integrity: 'sha512-two' }, fold);
+    expect(first.integrity).toBeUndefined();
+
+    // A different record object for the same name@version, folded as the
+    // TARGET of a later, agreeing sighting.
+    const copy = { name: 'a', version: '1' };
+    mergeDiscovered(copy, { name: 'a', version: '1', integrity: 'sha512-one' }, fold);
+    expect(copy.integrity).toBeUndefined();
+
+    // ... and as the SOURCE: an untouched record that still carries a hash
+    // must not keep it once this name@version is known to be conflicted.
+    const untouched = { name: 'a', version: '1', integrity: 'sha512-one' };
+    mergeDiscovered(untouched, { name: 'a', version: '1' }, fold);
+    expect(untouched.integrity).toBeUndefined();
+
+    // A different name@version is untouched by any of it.
+    const other = { name: 'b', version: '1' };
+    mergeDiscovered(other, { name: 'b', version: '1', integrity: 'sha512-b' }, fold);
+    expect(other.integrity).toBe('sha512-b');
+    expect(fold.diagnostics).toHaveLength(1);
   });
 });
 
