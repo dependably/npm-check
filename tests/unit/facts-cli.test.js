@@ -26,7 +26,7 @@ describe('imports: the facts document', () => {
     const doc = JSON.parse(r.stdout);
     expect(doc.tool).toBe('npm-check');
     expect(doc.documentType).toBe('imports');
-    expect(doc.schemaVersion).toBe('1.1');
+    expect(doc.schemaVersion).toBe('1.2');
     expect(doc.target).toBe(NPM_APP);
     expect(doc.findings).toBeUndefined();
     expect(doc.summary.scanned).toBe(6);

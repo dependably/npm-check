@@ -286,7 +286,9 @@ describe('discoverWorkspace', () => {
     put(root, 'web/jsconfig.json', JSON.stringify({ extends: '@tsconfig/node20', compilerOptions: { paths: { utils: ['x'] } } }));
     const ws = discoverWorkspace(root);
     expect([...ws.aliasPrefixes].sort()).toEqual(['@app', '@base', 'utils']);
-    expect(ws.diagnostics).toEqual(['unparseable tsconfig/jsconfig at web/tsconfig.json; aliases from it ignored']);
+    expect(ws.diagnostics).toEqual([
+      'NPM_TSCONFIG_UNPARSEABLE: unparseable tsconfig/jsconfig at web/tsconfig.json; aliases from it ignored'
+    ]);
   });
 
   test('reports an unparseable package.json and keeps going', () => {
@@ -294,7 +296,7 @@ describe('discoverWorkspace', () => {
     put(root, 'package.json', '{');
     put(root, 'packages/a/package.json', JSON.stringify({ name: 'a' }));
     const ws = discoverWorkspace(root);
-    expect(ws.diagnostics).toEqual(['unparseable package.json at package.json; skipped']);
+    expect(ws.diagnostics).toEqual(['NPM_MANIFEST_UNPARSEABLE: unparseable package.json at package.json; skipped']);
     expect(ws.firstPartyNames.has('a')).toBe(true);
   });
 });

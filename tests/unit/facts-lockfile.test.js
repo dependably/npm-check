@@ -14,6 +14,7 @@ import {
   parsePnpmLockYaml,
   parsePnpmLockYamlGraph,
   discoverLockfileGraphs,
+  createMergeFold,
   mergeDiscovered
 } from '../../src/facts/index.js';
 
@@ -85,6 +86,52 @@ describe('parsePackageLockJson', () => {
     expect(pkgs.find((p) => p.name === 'lodash').license).toBe('MIT');
     expect(pkgs.find((p) => p.name === 'dual').license).toBe('(MIT OR Apache-2.0)');
     expect(pkgs.find((p) => p.name === 'no-license-field').license).toBeUndefined();
+  });
+
+  test('carries integrity and resolved straight through, verbatim, in npm\'s own SRI spelling; absent when the entry had neither', () => {
+    const path = writeNpmLock(tempDir(), {
+      '': {},
+      'node_modules/lodash': {
+        version: '4.17.21',
+        integrity: 'sha512-v2kDEe57lecTulaDIuNTPy3Ry4//eKlhYWYFRD/pMcSHkFO4M6VW7T2VG6QaAgTOFYYAKAeuMYVUj27EiaZWiA==',
+        resolved: 'https://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz'
+      },
+      'node_modules/no-integrity': { version: '1.0.0' }
+    });
+    const pkgs = parsePackageLockJson(path);
+    const lodash = pkgs.find((p) => p.name === 'lodash');
+    expect(lodash.integrity).toBe('sha512-v2kDEe57lecTulaDIuNTPy3Ry4//eKlhYWYFRD/pMcSHkFO4M6VW7T2VG6QaAgTOFYYAKAeuMYVUj27EiaZWiA==');
+    expect(lodash.resolved).toBe('https://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz');
+    const noIntegrity = pkgs.find((p) => p.name === 'no-integrity');
+    expect(noIntegrity.integrity).toBeUndefined();
+    expect(noIntegrity.resolved).toBeUndefined();
+  });
+
+  test('two paths for the same name@version with the SAME integrity merge silently; a genuine conflict drops it and reports a coded diagnostic', () => {
+    const agreeing = parsePackageLockJsonGraph(
+      writeNpmLock(tempDir(), {
+        '': { dependencies: { 'app-dep': '1.0.0', shared: '2.0.0' } },
+        'node_modules/app-dep': { version: '1.0.0', dependencies: { shared: '2.0.0' } },
+        'node_modules/app-dep/node_modules/shared': { version: '2.0.0', integrity: 'sha512-same' },
+        'node_modules/shared': { version: '2.0.0', integrity: 'sha512-same' }
+      })
+    );
+    expect(agreeing.packages.find((p) => p.name === 'shared').integrity).toBe('sha512-same');
+    expect(agreeing.diagnostics).toEqual([]);
+
+    const conflicting = parsePackageLockJsonGraph(
+      writeNpmLock(tempDir(), {
+        '': { dependencies: { 'app-dep': '1.0.0', shared: '2.0.0' } },
+        'node_modules/app-dep': { version: '1.0.0', dependencies: { shared: '2.0.0' } },
+        'node_modules/app-dep/node_modules/shared': { version: '2.0.0', integrity: 'sha512-nested' },
+        'node_modules/shared': { version: '2.0.0', integrity: 'sha512-hoisted' }
+      })
+    );
+    expect(conflicting.packages.find((p) => p.name === 'shared').integrity).toBeUndefined();
+    expect(conflicting.diagnostics).toHaveLength(1);
+    expect(conflicting.diagnostics[0]).toMatch(/^NPM_INTEGRITY_CONFLICT: shared@2\.0\.0 has conflicting integrity hashes/);
+    expect(conflicting.diagnostics[0]).toContain('sha512-nested');
+    expect(conflicting.diagnostics[0]).toContain('sha512-hoisted');
   });
 
   test("reads npm's own per-entry flags for the WHOLE tree: dev → true, no flag → false, extraneous → absent", () => {
@@ -215,6 +262,37 @@ describe('parsePnpmLockYaml', () => {
     const path = join(dir, 'pnpm-lock.yaml');
     writeFileSync(path, "lockfileVersion: '9.0'\n");
     expect(parsePnpmLockYaml(path)).toEqual([]);
+  });
+
+  test('reads resolution.integrity verbatim; resolution.tarball becomes `resolved`; absent when the value carries neither', () => {
+    const dir = tempDir();
+    const path = join(dir, 'pnpm-lock.yaml');
+    writeFileSync(
+      path,
+      [
+        "lockfileVersion: '9.0'",
+        '',
+        'packages:',
+        '',
+        '  lodash@4.17.21:',
+        '    resolution: {integrity: sha512-x, tarball: https://example.com/lodash-4.17.21.tgz}',
+        '',
+        '  no-tarball@1.0.0:',
+        '    resolution: {integrity: sha512-y}',
+        '',
+        '  no-resolution@1.0.0: {}'
+      ].join('\n')
+    );
+    const pkgs = parsePnpmLockYaml(path);
+    const lodash = pkgs.find((p) => p.name === 'lodash');
+    expect(lodash.integrity).toBe('sha512-x');
+    expect(lodash.resolved).toBe('https://example.com/lodash-4.17.21.tgz');
+    const noTarball = pkgs.find((p) => p.name === 'no-tarball');
+    expect(noTarball.integrity).toBe('sha512-y');
+    expect(noTarball.resolved).toBeUndefined();
+    const noResolution = pkgs.find((p) => p.name === 'no-resolution');
+    expect(noResolution.integrity).toBeUndefined();
+    expect(noResolution.resolved).toBeUndefined();
   });
 
   test('marks a root-direct devDependency devDeclared true; a root-direct runtime dependency devDeclared false', () => {
@@ -350,6 +428,74 @@ describe('mergeDiscovered', () => {
     mergeDiscovered(silent, { name: 'b', version: '1', devDeclared: true });
     expect(silent.devDeclared).toBe(true);
   });
+
+  test('a matching integrity across sightings merges silently; the first `resolved` seen is kept without conflict checking', () => {
+    const into = { name: 'a', version: '1', resolved: 'https://mirror-one.example/a-1.tgz' };
+    mergeDiscovered(into, { name: 'a', version: '1', integrity: 'sha512-same', resolved: 'https://mirror-two.example/a-1.tgz' });
+    expect(into.integrity).toBe('sha512-same');
+    expect(into.resolved).toBe('https://mirror-one.example/a-1.tgz');
+    mergeDiscovered(into, { name: 'a', version: '1', integrity: 'sha512-same' });
+    expect(into.integrity).toBe('sha512-same');
+  });
+
+  test('a conflicting integrity drops to absent and reports a coded diagnostic naming both hashes; the fold param is optional', () => {
+    const into = { name: 'a', version: '1', integrity: 'sha512-one' };
+    const fold = createMergeFold();
+    mergeDiscovered(into, { name: 'a', version: '1', integrity: 'sha512-two' }, fold);
+    expect(into.integrity).toBeUndefined();
+    expect(fold.diagnostics).toEqual([
+      'NPM_INTEGRITY_CONFLICT: a@1 has conflicting integrity hashes (sha512-one vs sha512-two); dropped'
+    ]);
+    expect([...fold.integrityConflicts]).toEqual(['a@1']);
+
+    // No fold supplied: the conflict still resolves to absent, it just has
+    // nowhere to report to and nothing to remember past this one call.
+    const silent = { name: 'b', version: '1', integrity: 'sha512-one' };
+    mergeDiscovered(silent, { name: 'b', version: '1', integrity: 'sha512-two' });
+    expect(silent.integrity).toBeUndefined();
+  });
+
+  test('once conflicted, a THIRD sighting cannot silently reinstate integrity, even one that agrees with the original value', () => {
+    const into = { name: 'a', version: '1', integrity: 'sha512-one' };
+    const fold = createMergeFold();
+    mergeDiscovered(into, { name: 'a', version: '1', integrity: 'sha512-two' }, fold);
+    expect(into.integrity).toBeUndefined();
+    // A third sighting that matches the ORIGINAL value must not undo the
+    // conflict -- the disagreement already means this name@version's hash
+    // cannot be trusted, whatever a later sighting happens to say.
+    mergeDiscovered(into, { name: 'a', version: '1', integrity: 'sha512-one' }, fold);
+    expect(into.integrity).toBeUndefined();
+    expect(fold.diagnostics).toHaveLength(1);
+  });
+
+  test('the conflict is keyed by name@version, not by record identity: a FRESH record for the same key cannot carry a hash back in, in either merge direction', () => {
+    // The identity-keyed tracker this replaced marked the record OBJECT, so
+    // every point a DiscoveredPackage is copied (`{ ...pkg }` at a
+    // per-lockfile boundary) silently lost the mark, and a record that
+    // arrived as the merge SOURCE was never consulted at all.
+    const fold = createMergeFold();
+    const first = { name: 'a', version: '1', integrity: 'sha512-one' };
+    mergeDiscovered(first, { name: 'a', version: '1', integrity: 'sha512-two' }, fold);
+    expect(first.integrity).toBeUndefined();
+
+    // A different record object for the same name@version, folded as the
+    // TARGET of a later, agreeing sighting.
+    const copy = { name: 'a', version: '1' };
+    mergeDiscovered(copy, { name: 'a', version: '1', integrity: 'sha512-one' }, fold);
+    expect(copy.integrity).toBeUndefined();
+
+    // ... and as the SOURCE: an untouched record that still carries a hash
+    // must not keep it once this name@version is known to be conflicted.
+    const untouched = { name: 'a', version: '1', integrity: 'sha512-one' };
+    mergeDiscovered(untouched, { name: 'a', version: '1' }, fold);
+    expect(untouched.integrity).toBeUndefined();
+
+    // A different name@version is untouched by any of it.
+    const other = { name: 'b', version: '1' };
+    mergeDiscovered(other, { name: 'b', version: '1', integrity: 'sha512-b' }, fold);
+    expect(other.integrity).toBe('sha512-b');
+    expect(fold.diagnostics).toHaveLength(1);
+  });
 });
 
 describe('discoverLockfileGraphs', () => {
@@ -364,7 +510,7 @@ describe('discoverLockfileGraphs', () => {
     const dir = tempDir();
     writeFileSync(join(dir, 'pnpm-lock.yaml'), ["lockfileVersion: '9.0'", '', 'packages:', '', '  chalk@4.1.0:', '    resolution: {integrity: sha512-z}'].join('\n'));
     const { packages, diagnostics, files } = discoverLockfileGraphs(dir);
-    expect(packages).toEqual([{ name: 'chalk', version: '4.1.0' }]);
+    expect(packages).toEqual([{ name: 'chalk', version: '4.1.0', integrity: 'sha512-z' }]);
     expect(diagnostics).toEqual([]);
     expect(files).toEqual([join(dir, 'pnpm-lock.yaml')]);
   });
@@ -386,7 +532,7 @@ describe('discoverLockfileGraphs', () => {
     expect(packages.map((p) => p.name)).toEqual(['lodash']);
     expect(files).toEqual([join(dir, 'web', 'package-lock.json')]);
     expect(diagnostics).toHaveLength(1);
-    expect(diagnostics[0]).toMatch(/^unparseable package-lock\.json at package-lock\.json: /);
+    expect(diagnostics[0]).toMatch(/^NPM_LOCKFILE_UNPARSEABLE: unparseable package-lock\.json at package-lock\.json: /);
   });
 
   test('dedupes an identical name+version found in more than one lockfile', () => {
@@ -394,7 +540,7 @@ describe('discoverLockfileGraphs', () => {
     writeNpmLock(dir, { '': {}, 'node_modules/lodash': { version: '4.17.21' } });
     writeFileSync(join(dir, 'pnpm-lock.yaml'), ["lockfileVersion: '9.0'", '', 'packages:', '', '  lodash@4.17.21:', '    resolution: {integrity: sha512-a}'].join('\n'));
     const { packages } = discoverLockfileGraphs(dir);
-    expect(packages).toEqual([{ name: 'lodash', version: '4.17.21', devDeclared: false }]);
+    expect(packages).toEqual([{ name: 'lodash', version: '4.17.21', devDeclared: false, integrity: 'sha512-a' }]);
   });
 
   test('builds the graph from a lockfile that is not at the root', () => {
@@ -469,6 +615,117 @@ describe('discoverLockfileGraphs', () => {
     writeFileSync(join(dir, 'b', 'pnpm-lock.yaml'), ["lockfileVersion: '9.0'", '', 'packages:', '', '  vitest@1.0.0:', '    resolution: {integrity: sha512-a}'].join('\n'));
     const { packages } = discoverLockfileGraphs(dir);
     expect(packages.find((p) => p.name === 'vitest').devDeclared).toBe(true);
+  });
+
+  test('a mixed run: most lockfiles agree, one disagrees on a hash for the same name@version -- that one package drops to absent with a diagnostic, everything else is unaffected', () => {
+    // Three lockfiles feed one workspace graph (a real fan-out, not a
+    // single-file edge case): two agree on `shared`'s hash, a third
+    // resolves it to a DIFFERENT hash -- exactly the "one lockfile got a
+    // tampered/mismatched artifact" shape this diagnostic exists to catch.
+    // `lodash`, present in every file with the SAME hash, must be
+    // completely unaffected by the neighboring conflict.
+    const dir = tempDir();
+    writeNpmLock(
+      dir,
+      {
+        '': { dependencies: { shared: '1.0.0', lodash: '4.17.21' } },
+        'node_modules/shared': { version: '1.0.0', integrity: 'sha512-good' },
+        'node_modules/lodash': { version: '4.17.21', integrity: 'sha512-lodash' }
+      },
+      'a'
+    );
+    writeNpmLock(
+      dir,
+      {
+        '': { dependencies: { shared: '1.0.0', lodash: '4.17.21' } },
+        'node_modules/shared': { version: '1.0.0', integrity: 'sha512-good' },
+        'node_modules/lodash': { version: '4.17.21', integrity: 'sha512-lodash' }
+      },
+      'b'
+    );
+    mkdirSync(join(dir, 'c'));
+    writeFileSync(
+      join(dir, 'c', 'pnpm-lock.yaml'),
+      [
+        "lockfileVersion: '9.0'",
+        '',
+        'packages:',
+        '',
+        '  shared@1.0.0:',
+        '    resolution: {integrity: sha512-TAMPERED}',
+        '',
+        '  lodash@4.17.21:',
+        '    resolution: {integrity: sha512-lodash}'
+      ].join('\n')
+    );
+    const { packages, diagnostics, files } = discoverLockfileGraphs(dir);
+    expect(files).toHaveLength(3);
+    expect(packages.find((p) => p.name === 'lodash').integrity).toBe('sha512-lodash');
+    expect(packages.find((p) => p.name === 'shared').integrity).toBeUndefined();
+    expect(diagnostics).toHaveLength(1);
+    expect(diagnostics[0]).toMatch(/^NPM_INTEGRITY_CONFLICT: shared@1\.0\.0 has conflicting integrity hashes/);
+    expect(diagnostics[0]).toContain('sha512-good');
+    expect(diagnostics[0]).toContain('sha512-TAMPERED');
+  });
+
+  // The two tests below COMPOSE the two merge sites -- the fold inside one
+  // `parsePackageLockJsonGraph`, and the fold across lockfiles in
+  // `discoverLockfileGraphs` -- which is where an identity-keyed conflict
+  // memory silently evaporated: `addGraph` folds a fresh `{ ...pkg }` copy,
+  // so the mark set on the per-lockfile record never crossed the boundary.
+  // A test that stays inside ONE merge site pins nothing about the other.
+  // Both orders are asserted because the conflicted record is the merge
+  // TARGET in one and the merge SOURCE in the other, and those used to be
+  // two different bugs.
+  /** @param {string} conflictDir @param {string} agreeDir */
+  function twoLockfilesOneConflicted(conflictDir, agreeDir) {
+    const dir = tempDir();
+    // Two paths in ONE lockfile resolve foo@1.0.0 to different hashes:
+    // hoisted at the root, and nested under a package that pinned it.
+    writeNpmLock(
+      dir,
+      {
+        '': { dependencies: { foo: '1.0.0', bar: '2.0.0' } },
+        'node_modules/foo': { version: '1.0.0', integrity: 'sha512-AAAAgood' },
+        'node_modules/bar': { version: '2.0.0', dependencies: { foo: '1.0.0' } },
+        'node_modules/bar/node_modules/foo': { version: '1.0.0', integrity: 'sha512-ZZZZevil' }
+      },
+      conflictDir
+    );
+    // A second lockfile that agrees with ONE of the two hashes. It must not
+    // be able to reinstate the field: the disagreement already means this
+    // name@version's hash cannot be trusted.
+    writeNpmLock(
+      dir,
+      { '': { dependencies: { foo: '1.0.0' } }, 'node_modules/foo': { version: '1.0.0', integrity: 'sha512-AAAAgood' } },
+      agreeDir
+    );
+    return discoverLockfileGraphs(dir);
+  }
+
+  test('an intra-lockfile conflict is not undone by a second lockfile that agrees (the conflicted record is the merge TARGET)', () => {
+    const { packages, diagnostics, files } = twoLockfilesOneConflicted('a', 'b');
+    expect(files).toHaveLength(2);
+    const foo = packages.find((p) => p.name === 'foo');
+    // The document must not say "dropped" and publish a hash in the same
+    // breath -- that is the conflicting sighting being hidden, which is the
+    // whole reason this diagnostic exists.
+    expect(foo.integrity).toBeUndefined();
+    expect(diagnostics.filter((d) => d.startsWith('NPM_INTEGRITY_CONFLICT:'))).toHaveLength(1);
+    expect(diagnostics[0]).toContain('foo@1.0.0');
+  });
+
+  test('... and not by one read BEFORE it either (the conflicted record is the merge SOURCE)', () => {
+    // Same pair, reverse discovery order (lockfile paths are read sorted, so
+    // the agreeing file in `a/` is merged first and the conflicted one in
+    // `b/` arrives as `other`). Where two disagreeing sightings SIT must not
+    // decide whether a third sighting's hash gets published.
+    const { packages, diagnostics, files } = twoLockfilesOneConflicted('b', 'a');
+    expect(files).toHaveLength(2);
+    const foo = packages.find((p) => p.name === 'foo');
+    expect(foo.integrity).toBeUndefined();
+    expect(diagnostics.filter((d) => d.startsWith('NPM_INTEGRITY_CONFLICT:'))).toHaveLength(1);
+    expect(diagnostics[0]).toContain('foo@1.0.0');
   });
 
   test('a lockfile inside node_modules is never read', () => {

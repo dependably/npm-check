@@ -10,7 +10,13 @@
 // fields" apart from "no manifest made a dev claim", which is the whole
 // point of tracking the minor at all.
 //
+// Bumped to `1.2` when `DiscoveredPackage.integrity`/`.resolved` were added
+// (checker-npm#37) — both additive and both optional, so a `1.1`-aware
+// consumer still parses `lockfile.packages` unchanged and can tell "this
+// producer predates these fields" apart from "the lockfile entry carried
+// neither" the same way the `1.1` bump did for the workspace fields above.
+//
 // A dependency-free leaf on purpose: `src/schema.js` (loaded by every
 // lockfile command) imports THIS file to stamp `buildFactsEnvelope`, and the
 // facts barrel re-exports it — neither side pulls the other's imports in.
-export const FACTS_SCHEMA_VERSION = '1.1';
+export const FACTS_SCHEMA_VERSION = '1.2';

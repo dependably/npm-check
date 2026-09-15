@@ -29,20 +29,104 @@ import { parse as parseYaml } from 'yaml';
 /** @typedef {import('./types.d.ts').LockfileDiscovery} LockfileDiscovery */
 
 /**
+ * The mutable state ONE fold carries: where to route diagnostics, and which
+ * name@version keys have already had their `integrity` dropped for a
+ * conflict.
+ *
+ * `integrityConflicts` is keyed by `name@version` — the VALUE the fold is
+ * about — and never by object identity. A `DiscoveredPackage` is copied
+ * freely as it travels (`discoverLockfileGraphs`' `addGraph` folds a fresh
+ * `{ ...pkg }` into the merged list, and a spread drops anything that is not
+ * an own enumerable property), so identity-keyed state silently evaporates
+ * at every copy site: an earlier identity-keyed tracker lost the mark at the
+ * per-lockfile/discovery boundary, and a record that arrived as the merge
+ * SOURCE carried no mark at all — both of which let a third, agreeing
+ * sighting reinstate a hash the fold had already reported as dropped. Keying
+ * by value closes the whole class, not the two known routes.
+ *
+ * The two fields travel together, in one object, on purpose: the conflict
+ * set is the memory behind the diagnostic the sink receives, and a caller
+ * that passes one without the other gets a fold that reports a conflict it
+ * cannot remember. `diagnostics` stays optional (a caller may have nowhere
+ * to route it); `integrityConflicts` does not.
+ * @typedef {import('./types.d.ts').MergeFold} MergeFold
+ */
+
+/**
+ * @returns {MergeFold} a fresh fold: an empty diagnostics sink and an empty
+ * conflict set. For a caller that folds records itself and wants the same
+ * "permanent for the rest of the fold" guarantee the readers here have.
+ */
+export function createMergeFold() {
+  return { diagnostics: [], integrityConflicts: new Set() };
+}
+
+/**
  * Folds a second sighting of the same name@version into the first — two
  * paths in one lockfile, or two lockfiles in one workspace. dev/runtime:
  * `false` (ships somewhere) beats `true` (dev-only somewhere) beats absent —
  * "runtime anywhere wins". `optional` is a claim of EXCLUSIVITY ("reachable
  * only through optionalDependencies"), so one sighting that needs the package
- * outright revokes it. First license seen is kept. Order-independent.
+ * outright revokes it. First license seen is kept. `resolved` keeps the
+ * first value seen too — legitimate mirrors can serve one package at
+ * different URLs, so there is nothing to reconcile.
+ *
+ * `integrity` is different: two sightings of the SAME name@version
+ * resolving to different hashes is a supply-chain signal, not a merge
+ * nuisance, and picking either one silently would hide it. A matching
+ * (or one-sided) `integrity` merges normally; a genuine disagreement drops
+ * the field to absent on the merged record — never guessed, never
+ * defaulted, same as an entry that never carried one — and, when
+ * `fold.diagnostics` is supplied, appends a coded `NPM_INTEGRITY_CONFLICT: …`
+ * naming the package and both hashes.
+ *
+ * That drop is PERMANENT for the rest of the fold, and permanence is what
+ * `fold.integrityConflicts` is for: once `foo@1.0.0` has been reported
+ * dropped, no later sighting of `foo@1.0.0` can set the field again — not
+ * one that agrees with an earlier value, and not one merging in the other
+ * direction (an already-conflicted record arriving as `other`, which
+ * carries no `integrity` at all to disagree with). The check therefore runs
+ * BEFORE the one-sided-merge branch and does not consult `other`.
+ *
+ * `fold` itself is optional so this function's own unit tests (and any
+ * caller with a single pair of records and nowhere to route a diagnostic)
+ * can still call it with two arguments — that call is one merge, not a
+ * fold, and remembers nothing beyond it.
+ *
+ * Order-independent, and independent of how the sightings are DISTRIBUTED:
+ * two disagreeing sightings in one lockfile and two in two lockfiles reach
+ * the same merged record, because the conflict key outlives both the record
+ * objects and the per-lockfile boundary.
  * @param {DiscoveredPackage} into
  * @param {DiscoveredPackage} other
+ * @param {MergeFold} [fold]
  */
-export function mergeDiscovered(into, other) {
+export function mergeDiscovered(into, other, fold) {
   if (other.devDeclared === false) into.devDeclared = false;
   else if (other.devDeclared === true && into.devDeclared === undefined) into.devDeclared = true;
   if (into.scope === 'optional' && other.scope !== 'optional') delete into.scope;
   if (into.license === undefined && other.license !== undefined) into.license = other.license;
+  if (into.resolved === undefined && other.resolved !== undefined) into.resolved = other.resolved;
+
+  const key = `${into.name}@${into.version}`;
+  if (fold?.integrityConflicts.has(key)) {
+    // Already reported dropped earlier in this fold. `into` may still carry
+    // a hash (it is a different record object from the one that conflicted,
+    // or the conflict happened while this record was the SOURCE of an
+    // earlier merge) -- drop it again rather than publishing a hash the
+    // document has already said cannot be trusted.
+    delete into.integrity;
+  } else if (other.integrity !== undefined) {
+    if (into.integrity === undefined) {
+      into.integrity = other.integrity;
+    } else if (other.integrity !== into.integrity) {
+      fold?.diagnostics?.push(
+        `NPM_INTEGRITY_CONFLICT: ${into.name}@${into.version} has conflicting integrity hashes (${into.integrity} vs ${other.integrity}); dropped`
+      );
+      delete into.integrity;
+      fold?.integrityConflicts.add(key);
+    }
+  }
 }
 
 /**
@@ -55,6 +139,8 @@ export function mergeDiscovered(into, other) {
  * @property {boolean} [devOptional]
  * @property {boolean} [peer]
  * @property {boolean} [extraneous]
+ * @property {string} [integrity] SRI string as npm wrote it (`sha512-<base64>`); carried verbatim, never converted.
+ * @property {string} [resolved] The tarball URL npm resolved this entry from; carried verbatim.
  * @property {Record<string, string>} [dependencies]
  * @property {Record<string, string>} [devDependencies]
  * @property {Record<string, string>} [optionalDependencies]
@@ -105,13 +191,21 @@ function devDeclaredFromNpmFlags(entry) {
  * level). A workspace-local (`link: true`) hit along that walk isn't
  * resolvable to an external package, so the edge is silently dropped
  * rather than guessed.
+ * `integrityConflicts` is the fold-wide conflict set (see `mergeDiscovered`),
+ * threaded in by `discoverLockfileGraphs` so that a conflict found INSIDE
+ * this lockfile (npm's hoisted-plus-nested paths) still binds when the same
+ * name@version is later merged with another lockfile's sighting of it —
+ * where two disagreeing sightings happen to SIT must not decide whether a
+ * third one's hash gets published. A standalone caller may omit it and gets
+ * a set scoped to this file alone.
  * @param {string} path
+ * @param {Set<string>} [integrityConflicts]
  * @returns {LockfileGraph}
  */
-export function parsePackageLockJsonGraph(path) {
+export function parsePackageLockJsonGraph(path, integrityConflicts = new Set()) {
   const raw = /** @type {{ packages?: Record<string, NpmLockEntry> }} */ (JSON.parse(readFileSync(path, 'utf8')));
   const rawPackages = raw.packages;
-  if (!rawPackages) return { packages: [], rootDependencies: [], edges: [] };
+  if (!rawPackages) return { packages: [], rootDependencies: [], edges: [], diagnostics: [] };
 
   /** @type {Map<string, DiscoveredPackage>} */
   const nameVersionByPath = new Map();
@@ -127,7 +221,9 @@ export function parsePackageLockJsonGraph(path) {
       version: entry.version,
       ...(entry.license ? { license: entry.license } : {}),
       ...devDeclaredFromNpmFlags(entry),
-      ...(entry.optional === true ? { scope: 'optional' } : {})
+      ...(entry.optional === true ? { scope: 'optional' } : {}),
+      ...(entry.integrity ? { integrity: entry.integrity } : {}),
+      ...(entry.resolved ? { resolved: entry.resolved } : {})
     });
   }
 
@@ -153,6 +249,9 @@ export function parsePackageLockJsonGraph(path) {
   const byKey = new Map();
   /** @type {DiscoveredPackage[]} */
   const packages = [];
+  /** @type {string[]} */
+  const diagnostics = [];
+  const fold = { diagnostics, integrityConflicts };
   for (const nv of nameVersionByPath.values()) {
     const key = keyOf(nv);
     const existing = byKey.get(key);
@@ -161,7 +260,7 @@ export function parsePackageLockJsonGraph(path) {
       byKey.set(key, record);
       packages.push(record);
     } else {
-      mergeDiscovered(existing, nv);
+      mergeDiscovered(existing, nv, fold);
     }
   }
 
@@ -217,7 +316,7 @@ export function parsePackageLockJsonGraph(path) {
     }
   }
 
-  return { packages, rootDependencies: [...new Set(rootDependencies)], edges };
+  return { packages, rootDependencies: [...new Set(rootDependencies)], edges, diagnostics };
 }
 
 /**
@@ -285,17 +384,28 @@ function splitNameVersion(key) {
 export function parsePnpmLockYamlGraph(path) {
   const raw = /** @type {{
     importers?: Record<string, PnpmImporter>;
-    packages?: Record<string, unknown>;
+    packages?: Record<string, { resolution?: { integrity?: string; tarball?: string } }>;
     snapshots?: Record<string, { dependencies?: Record<string, string>; optionalDependencies?: Record<string, string> }>;
   }} */ (parseYaml(readFileSync(path, 'utf8')));
 
   /** @type {DiscoveredPackage[]} */
   const packages = [];
   const validKeys = new Set();
-  for (const key of Object.keys(raw.packages ?? {})) {
+  for (const [key, value] of Object.entries(raw.packages ?? {})) {
     const parsed = splitNameVersion(key);
     if (!parsed) continue;
-    packages.push(parsed);
+    // `resolution.integrity` is the pnpm-lock.yaml equivalent of npm's
+    // per-entry `integrity`; `resolution.tarball` (only present for a
+    // non-registry source — a tarball URL, a git dependency) is the
+    // equivalent of `resolved`. Both carried verbatim, absent when the
+    // entry had neither (the common case: a plain registry entry with no
+    // `tarball` at all, since pnpm can derive the download URL itself).
+    const resolution = value?.resolution;
+    packages.push({
+      ...parsed,
+      ...(resolution?.integrity ? { integrity: resolution.integrity } : {}),
+      ...(resolution?.tarball ? { resolved: resolution.tarball } : {})
+    });
     validKeys.add(`${parsed.name}@${parsed.version}`);
   }
 
@@ -361,7 +471,12 @@ export function parsePnpmLockYamlGraph(path) {
     else if (runtimeKeys.has(key)) pkg.devDeclared = false;
   }
 
-  return { packages, rootDependencies: [...new Set(rootDependencies)], edges };
+  // pnpm's `packages` map is already keyed by bare name@version, so there is
+  // no same-lockfile duplicate-path fold the way npm's `resolve()` walk
+  // needs -- every entry here is already the one and only sighting within
+  // this file. Diagnostics are still always present, for the same shape
+  // `parsePackageLockJsonGraph` returns.
+  return { packages, rootDependencies: [...new Set(rootDependencies)], edges, diagnostics: [] };
 }
 
 /**
@@ -387,8 +502,10 @@ const LOCKFILE_IGNORE_DIRS = ['**/node_modules/**', '**/.git/**'];
  *
  * A package listed by more than one lockfile merges the same way: "runtime
  * anywhere wins" for dev/runtime (one lockfile shipping it makes it runtime),
- * `scope: optional` survives only if every lockfile says optional, and the
- * first license seen is kept.
+ * `scope: optional` survives only if every lockfile says optional, the first
+ * license/`resolved` seen is kept, and a same-hash `integrity` merges
+ * silently — a genuine disagreement drops it to absent and emits
+ * `NPM_INTEGRITY_CONFLICT: …` instead of picking one (`mergeDiscovered`).
  *
  * A lockfile that does not parse is a diagnostic, not an exception — the
  * rest of the tree is still described. No lockfile at all is `NO_LOCKFILE`.
@@ -408,6 +525,15 @@ export function discoverLockfileGraphs(srcDir) {
   const edgeSeen = new Set();
   /** @type {string[]} */
   const files = [];
+  // One conflict set for the WHOLE discovery, keyed by name@version and
+  // threaded into each npm parse below, so an `integrity` disagreement is
+  // permanent across the lockfile boundary in both directions: a record
+  // already conflicted inside its own lockfile cannot have a hash restored
+  // by a later agreeing lockfile, nor restore one when it is itself the
+  // merge source.
+  /** @type {Set<string>} */
+  const integrityConflicts = new Set();
+  const fold = { diagnostics, integrityConflicts };
 
   /** @param {LockfileGraph} graph */
   const addGraph = (graph) => {
@@ -420,7 +546,7 @@ export function discoverLockfileGraphs(srcDir) {
         packages.push(copy);
         continue;
       }
-      mergeDiscovered(existing, pkg);
+      mergeDiscovered(existing, pkg, fold);
     }
     for (const key of graph.rootDependencies) rootDependencies.add(key);
     for (const edge of graph.edges) {
@@ -429,6 +555,11 @@ export function discoverLockfileGraphs(srcDir) {
       edgeSeen.add(edgeKey);
       edges.push(edge);
     }
+    // A same-lockfile integrity conflict (e.g. two paths in one
+    // package-lock.json) was already folded, and reported, inside `parse()`
+    // itself -- surface it here too so it reaches the one diagnostics list a
+    // consumer actually reads.
+    for (const graphDiagnostic of graph.diagnostics) diagnostics.push(graphDiagnostic);
   };
 
   const npmLockPaths = fg
@@ -440,7 +571,7 @@ export function discoverLockfileGraphs(srcDir) {
 
   /** @type {[string[], (path: string) => LockfileGraph, string][]} */
   const sources = [
-    [npmLockPaths, parsePackageLockJsonGraph, 'package-lock.json'],
+    [npmLockPaths, (/** @type {string} */ path) => parsePackageLockJsonGraph(path, integrityConflicts), 'package-lock.json'],
     [pnpmLockPaths, parsePnpmLockYamlGraph, 'pnpm-lock.yaml']
   ];
   for (const [paths, parse, what] of sources) {
@@ -450,7 +581,7 @@ export function discoverLockfileGraphs(srcDir) {
         files.push(path);
       } catch (err) {
         diagnostics.push(
-          `unparseable ${what} at ${relative(srcDir, path)}: ${err instanceof Error ? err.message : String(err)}`
+          `NPM_LOCKFILE_UNPARSEABLE: unparseable ${what} at ${relative(srcDir, path)}: ${err instanceof Error ? err.message : String(err)}`
         );
       }
     }

@@ -248,6 +248,27 @@ export interface DiscoveredPackage {
    * through optionalDependencies. Absent otherwise — never asserted.
    */
   scope?: 'optional';
+  /**
+   * The artifact hash the lockfile entry recorded, carried VERBATIM in the
+   * lockfile's own spelling — npm's is an SRI string (`sha512-<base64>`);
+   * this is never converted to hex, never normalized, and never guessed.
+   * Absent when the entry carried none. On a merge (`mergeDiscovered`) a
+   * matching or one-sided value is kept; two DIFFERENT hashes for the same
+   * name@version drop this to absent and add a coded
+   * `NPM_INTEGRITY_CONFLICT: …` diagnostic instead of picking one — a
+   * mismatched hash for one resolved package is a supply-chain signal, not
+   * a merge nuisance.
+   */
+  integrity?: string;
+  /**
+   * The resolved download URL the lockfile entry recorded, carried verbatim
+   * (npm's `resolved`; pnpm-lock.yaml's `resolution.tarball`, present only
+   * for a non-registry source since pnpm can otherwise derive the URL
+   * itself). Absent when the entry carried none. Unlike `integrity`, a
+   * merge keeps the first value seen without checking for disagreement —
+   * legitimate mirrors can serve one package at different URLs.
+   */
+  resolved?: string;
 }
 
 /** One dependency edge; both ends are "name@version" keys matching a `DiscoveredPackage`. */
@@ -262,18 +283,74 @@ export interface LockfileGraph {
   rootDependencies: string[];
   /** Edges among the resolved closure; does not include root-level edges. */
   edges: DependencyEdge[];
+  /**
+   * Diagnostics from folding THIS lockfile's own duplicate name@version
+   * sightings (e.g. npm's hoisted-plus-nested paths) into one record —
+   * today, only ever `NPM_INTEGRITY_CONFLICT: …`. Always present, empty
+   * when nothing conflicted. A lockfile that failed to PARSE is not
+   * represented here at all — see `LockfileDiscovery.diagnostics`.
+   */
+  diagnostics: string[];
 }
 
 /** `discoverLockfileGraphs`' result: every lockfile under the tree merged into one graph. */
 export interface LockfileDiscovery extends LockfileGraph {
   /** Absolute paths of the lockfiles that parsed, in the order they were merged. */
   files: string[];
-  /** `unparseable … at <rel>: <why>` per lockfile that failed; `NO_LOCKFILE: …` when none was found. */
+  /**
+   * `NPM_LOCKFILE_UNPARSEABLE: unparseable … at <rel>: <why>` per lockfile
+   * that failed; `NO_LOCKFILE: …` when none was found; `NPM_INTEGRITY_CONFLICT: …`
+   * per name@version whose `integrity` disagreed across sightings (folded
+   * up from each source `LockfileGraph.diagnostics`, plus any conflict
+   * found while merging ACROSS lockfiles — see `mergeDiscovered`).
+   */
   diagnostics: string[];
 }
 
-export function mergeDiscovered(into: DiscoveredPackage, other: DiscoveredPackage): void;
-export function parsePackageLockJsonGraph(path: string): LockfileGraph;
+/**
+ * The mutable state ONE fold of `DiscoveredPackage`s carries. Both fields
+ * belong to the same fold and are passed together: `integrityConflicts` is
+ * the memory behind the diagnostic `diagnostics` receives, so a caller that
+ * supplied only a sink would report a conflict the fold cannot remember.
+ */
+export interface MergeFold {
+  /**
+   * Receives a coded `NPM_INTEGRITY_CONFLICT: …` entry naming the package
+   * and both hashes when two sightings disagree. Optional: omit it only
+   * when there is nowhere to route the diagnostic.
+   */
+  diagnostics?: string[];
+  /**
+   * The `name@version` keys whose `integrity` has already been dropped for
+   * a conflict in this fold — keyed by VALUE, never by record identity, so
+   * the state survives every point a `DiscoveredPackage` is copied (a
+   * spread at a per-lockfile boundary, a record merged as the SOURCE rather
+   * than the target). A key in this set can never have `integrity` set
+   * again by any later sighting, however the sightings are distributed
+   * across paths and lockfiles.
+   */
+  integrityConflicts: Set<string>;
+}
+
+/** A fresh, empty `MergeFold` — for a caller folding records of its own. */
+export function createMergeFold(): MergeFold;
+
+/**
+ * Folds `other` into `into`. Two sightings that disagree on `integrity`
+ * drop the field to absent on `into` rather than setting it to either
+ * value, report it through `fold.diagnostics`, and record the name@version
+ * in `fold.integrityConflicts` so no later sighting in the same fold can
+ * reinstate it. Omit `fold` only for a standalone pair of records with
+ * nowhere to route a diagnostic and nothing to remember past the call.
+ */
+export function mergeDiscovered(into: DiscoveredPackage, other: DiscoveredPackage, fold?: MergeFold): void;
+/**
+ * `integrityConflicts` is the fold-wide conflict set (`MergeFold`), threaded
+ * in by `discoverLockfileGraphs` so a conflict found between two paths of
+ * THIS lockfile still binds when the same name@version is later merged with
+ * another lockfile's sighting. Omit it for a standalone parse.
+ */
+export function parsePackageLockJsonGraph(path: string, integrityConflicts?: Set<string>): LockfileGraph;
 export function parsePackageLockJson(path: string): DiscoveredPackage[];
 export function parsePnpmLockYamlGraph(path: string): LockfileGraph;
 export function parsePnpmLockYaml(path: string): DiscoveredPackage[];
@@ -373,6 +450,13 @@ export interface Workspace {
   devDeclaredBy: Map<string, string[]>;
   /** First-party source files, absolute paths, sorted. */
   sourceFiles: string[];
+  /**
+   * `NPM_MANIFEST_UNPARSEABLE: …` per package.json that failed to parse;
+   * `NPM_TSCONFIG_UNPARSEABLE: …` per tsconfig/jsconfig that failed to parse;
+   * `OUTPUT_DIR_SCANNED: …` (a note, not a warning) when a directory named
+   * like generated output was scanned as first-party source because nothing
+   * gitignored it.
+   */
   diagnostics: string[];
 }
 
@@ -568,7 +652,7 @@ export function factsDocument(facts: ImportFacts, options?: { exitCode?: number 
 
 // --------------------------------------------------------------- misc ----
 
-export const FACTS_SCHEMA_VERSION: '1.1';
+export const FACTS_SCHEMA_VERSION: '1.2';
 
 export class FactsError extends Error {
   constructor(code: string, message: string);

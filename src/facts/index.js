@@ -25,6 +25,7 @@ export { scanSource } from './scan.js';
 export { ModuleResolver, packageRootOf, resolveExports } from './resolve.js';
 export { walkModuleGraph, packageKey, DEFAULT_MAX_FILES, DEFAULT_MAX_FILE_BYTES } from './modulegraph.js';
 export {
+  createMergeFold,
   discoverLockfileGraphs,
   mergeDiscovered,
   parsePackageLockJson,
