@@ -17,28 +17,31 @@ import { makeRelOf } from './collect.js';
 /** @typedef {import('./types.d.ts').FactsSummary} FactsSummary */
 /** @typedef {import('./types.d.ts').ReachedPackage} ReachedPackage */
 /** @typedef {import('./types.d.ts').DocumentReachedPackage} DocumentReachedPackage */
+/** @typedef {import('./types.d.ts').ModuleGraph} ModuleGraph */
+/** @typedef {(file: string) => string} RelOf */
 
 /**
- * Render collected facts as the document body: `summary` plus every section.
- * `target` is recorded by the envelope, not here; paths are relative to the
- * facts' own `srcDir` (which is the target the CLI scanned).
- *
- * @param {ImportFacts} facts
- * @param {{ exitCode?: number }} [options] `exitCode` lands in `summary.exitCode`
- *   and MUST equal the process exit code the run will return (0 here — a
- *   successful scan never gates).
- * @returns {FactsDocumentBody}
+ * A comparator ordering items by a string key, by code unit.
+ * @template T
+ * @param {(item: T) => string} keyOf
+ * @returns {(a: T, b: T) => number}
  */
-export function factsDocument(facts, options = {}) {
-  const exitCode = options.exitCode ?? 0;
-  const relOf = makeRelOf(facts.srcDir, facts.realSrcDir);
-  /** @param {string} key */
-  const relKey = (key) => {
-    const nul = key.indexOf('\0');
-    return nul === -1 ? key : `${key.slice(0, nul)}\0${relOf(key.slice(nul + 1))}`;
+function byKey(keyOf) {
+  return (a, b) => {
+    const ka = keyOf(a);
+    const kb = keyOf(b);
+    if (ka < kb) return -1;
+    return ka > kb ? 1 : 0;
   };
+}
 
-  const imports = facts.files.map((f) => ({
+/**
+ * @param {ImportFacts} facts
+ * @param {RelOf} relOf
+ * @returns {FactsDocumentBody['imports']}
+ */
+function documentImports(facts, relOf) {
+  return facts.files.map((f) => ({
     file: f.rel,
     dynamicUnknown: f.scan.dynamicUnknown,
     parseErrors: f.scan.parseErrors ?? [],
@@ -54,75 +57,128 @@ export function factsDocument(facts, options = {}) {
       ...(s.installed ? { installed: { ...s.installed, root: relOf(s.installed.root) } } : {})
     }))
   }));
+}
 
-  const graph = facts.graph;
-  /** @type {DocumentReachedPackage[]} */
-  const reached = graph
-    ? [...graph.reached.values()]
-        .map((entry) => ({
-          key: relKey(entry.key),
-          name: entry.name,
-          dirName: entry.dirName,
-          version: entry.version,
-          root: relOf(entry.root),
-          chain: entry.chain.map(relKey),
-          dynamic: entry.dynamic,
-          incomplete: entry.incomplete,
-          importers: entry.importers.map((imp) => ({
-            file: relOf(imp.file),
-            line: imp.line,
-            snippet: imp.snippet,
-            kind: imp.kind,
-            bindings: imp.bindings ?? [],
-            referenced: imp.referenced ?? [],
-            opaque: imp.opaque === true,
-            fromPackage: imp.fromPackage === undefined ? null : relKey(imp.fromPackage)
-          }))
-        }))
-        .sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0))
-    : [];
-  const unresolvedByName = graph
-    ? [...graph.unresolvedByName]
-        .map(([pkg, sites]) => ({
-          package: pkg,
-          sites: sites.map((s) => ({ file: relOf(s.file), reason: s.reason }))
-        }))
-        .sort((a, b) => (a.package < b.package ? -1 : a.package > b.package ? 1 : 0))
-    : [];
-
-  const moduleGraph = {
-    enabled: graph !== undefined,
-    filesParsed: graph ? graph.filesParsed : 0,
-    filesSkippedForSize: graph ? graph.filesSkippedForSize : 0,
-    unresolved: graph ? graph.unresolved : 0,
-    truncated: graph ? graph.truncated : false,
-    nodeModulesMissing: facts.nodeModulesMissing,
-    weakPackages: graph ? graph.weakPackages : [],
-    reached,
-    unresolvedByName
+/**
+ * @param {ModuleGraph} graph
+ * @param {RelOf} relOf
+ * @returns {DocumentReachedPackage[]}
+ */
+function documentReached(graph, relOf) {
+  /** @param {string} key */
+  const relKey = (key) => {
+    const nul = key.indexOf('\0');
+    return nul === -1 ? key : `${key.slice(0, nul)}\0${relOf(key.slice(nul + 1))}`;
   };
+  return [...graph.reached.values()]
+    .map((entry) => ({
+      key: relKey(entry.key),
+      name: entry.name,
+      dirName: entry.dirName,
+      version: entry.version,
+      root: relOf(entry.root),
+      chain: entry.chain.map(relKey),
+      dynamic: entry.dynamic,
+      incomplete: entry.incomplete,
+      importers: entry.importers.map((imp) => ({
+        file: relOf(imp.file),
+        line: imp.line,
+        snippet: imp.snippet,
+        kind: imp.kind,
+        bindings: imp.bindings ?? [],
+        referenced: imp.referenced ?? [],
+        opaque: imp.opaque === true,
+        fromPackage: imp.fromPackage === undefined ? null : relKey(imp.fromPackage)
+      }))
+    }))
+    .sort(byKey((entry) => entry.key));
+}
 
-  const ws = facts.workspace;
-  const workspace = {
+/**
+ * @param {ImportFacts} facts
+ * @param {RelOf} relOf
+ * @returns {FactsDocumentBody['moduleGraph']}
+ */
+function documentModuleGraph(facts, relOf) {
+  const graph = facts.graph;
+  if (graph === undefined) {
+    return {
+      enabled: false,
+      filesParsed: 0,
+      filesSkippedForSize: 0,
+      unresolved: 0,
+      truncated: false,
+      nodeModulesMissing: facts.nodeModulesMissing,
+      weakPackages: [],
+      reached: [],
+      unresolvedByName: []
+    };
+  }
+  return {
+    enabled: true,
+    filesParsed: graph.filesParsed,
+    filesSkippedForSize: graph.filesSkippedForSize,
+    unresolved: graph.unresolved,
+    truncated: graph.truncated,
+    nodeModulesMissing: facts.nodeModulesMissing,
+    weakPackages: graph.weakPackages,
+    reached: documentReached(graph, relOf),
+    unresolvedByName: [...graph.unresolvedByName]
+      .map(([pkg, sites]) => ({
+        package: pkg,
+        sites: sites.map((s) => ({ file: relOf(s.file), reason: s.reason }))
+      }))
+      .sort(byKey((entry) => entry.package))
+  };
+}
+
+/**
+ * @param {ImportFacts['workspace']} ws
+ * @param {RelOf} relOf
+ * @returns {FactsDocumentBody['workspace']}
+ */
+function documentWorkspace(ws, relOf) {
+  return {
     firstPartyNames: [...ws.firstPartyNames].sort(),
     depScopes: [...ws.depScopes]
       .map(([name, scope]) => ({ name, scope }))
-      .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0)),
+      .sort(byKey((entry) => entry.name)),
     aliasPrefixes: [...ws.aliasPrefixes].sort(),
     // `aliasScope` itself is a closure (`.for(file)`) and cannot be
     // serialized; this projects the same per-config information it answers
     // from, the way `reached`/`unresolvedByName` project the module graph's
-    // Maps above -- one entry per tsconfig/jsconfig that declared `paths`,
+    // Maps -- one entry per tsconfig/jsconfig that declared `paths`,
     // `dir` made target-relative and POSIX like every other path here.
     aliasScope: ws.aliasLayers
       .map((layer) => ({ dir: relOf(layer.dir), prefixes: [...layer.prefixes].sort() }))
-      .sort((a, b) => (a.dir < b.dir ? -1 : a.dir > b.dir ? 1 : 0)),
+      .sort(byKey((entry) => entry.dir)),
     devDeclaredBy: [...ws.devDeclaredBy]
       .map(([name, manifests]) => ({ name, manifests: [...manifests].sort() }))
-      .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0)),
+      .sort(byKey((entry) => entry.name)),
     sourceFiles: ws.sourceFiles.length,
     diagnostics: ws.diagnostics
   };
+}
+
+/**
+ * Render collected facts as the document body: `summary` plus every section.
+ * `target` is recorded by the envelope, not here; paths are relative to the
+ * facts' own `srcDir` (which is the target the CLI scanned).
+ *
+ * @param {ImportFacts} facts
+ * @param {{ exitCode?: number }} [options] `exitCode` lands in `summary.exitCode`
+ *   and MUST equal the process exit code the run will return (0 here — a
+ *   successful scan never gates).
+ * @returns {FactsDocumentBody}
+ */
+export function factsDocument(facts, options = {}) {
+  const exitCode = options.exitCode ?? 0;
+  const relOf = makeRelOf(facts.srcDir, facts.realSrcDir);
+
+  const imports = documentImports(facts, relOf);
+  const moduleGraph = documentModuleGraph(facts, relOf);
+  const ws = facts.workspace;
+  const workspace = documentWorkspace(ws, relOf);
 
   const lockfile = {
     files: facts.lockfile.files.map(relOf),
@@ -140,7 +196,7 @@ export function factsDocument(facts, options = {}) {
     imports: facts.files.reduce((n, f) => n + f.sites.length, 0),
     moduleGraph: {
       filesParsed: moduleGraph.filesParsed,
-      reached: reached.length,
+      reached: moduleGraph.reached.length,
       unresolved: moduleGraph.unresolved,
       truncated: moduleGraph.truncated
     },

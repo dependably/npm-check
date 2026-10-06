@@ -129,8 +129,8 @@ function componentIgnored(layers, path, testPath) {
     // Layers are deepest-first; one applies when its directory is the
     // component's own directory or an ancestor of it.
     if (layer.dir !== '' && parent !== layer.dir && !parent.startsWith(`${layer.dir}/`)) continue;
-    const rel = layer.dir === '' ? path : path.slice(layer.dir.length + 1);
-    const sub = layer.dir === '' ? testPath : testPath.slice(layer.dir.length + 1);
+    const rel = withinLayer(layer.dir, path);
+    const sub = withinLayer(layer.dir, testPath);
     // `ignore` reports a path as ignored when an ANCESTOR directory of it
     // matched, which is its own walk, not this one. Disregard that: the
     // ancestor was judged on its own turn above, and reaching this component
@@ -144,6 +144,16 @@ function componentIgnored(layers, path, testPath) {
     // Silent about this component: keep walking outwards.
   }
   return false;
+}
+
+/**
+ * `path` relative to the layer's directory (the root layer's directory is `''`).
+ * @param {string} layerDir
+ * @param {string} path
+ * @returns {string}
+ */
+function withinLayer(layerDir, path) {
+  return layerDir === '' ? path : path.slice(layerDir.length + 1);
 }
 
 /**

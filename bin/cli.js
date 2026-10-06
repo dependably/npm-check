@@ -1061,18 +1061,7 @@ function printImportsSummary(target, summary, body) {
   console.log(`   ${summary.scanned} first-party source file(s) found, ${summary.analyzed} analyzed, ${summary.unanalyzable} unanalyzable entr${summary.unanalyzable === 1 ? 'y' : 'ies'}`);
   const dynamic = body.imports.reduce((n, f) => n + f.dynamicUnknown, 0);
   console.log(`   ${summary.imports} import site(s); ${dynamic} require()/import() call(s) with non-literal arguments could not be attributed`);
-  const mg = body.moduleGraph;
-  if (!mg.enabled) {
-    console.log('   module graph: not walked (--no-module-graph)');
-  } else if (mg.nodeModulesMissing) {
-    console.log(`   module graph: node_modules is not installed — ${mg.unresolved} import(s) unresolved, nothing followed`);
-  } else {
-    const truncated = mg.truncated ? ' (truncated at the file budget)' : '';
-    console.log(`   module graph: ${mg.filesParsed} node_modules file(s) parsed, ${summary.moduleGraph.reached} installed package copy(ies) reached, ${mg.unresolved} import(s) unresolved${truncated}`);
-    if (mg.weakPackages.length > 0) {
-      console.log(`   ${mg.weakPackages.length} reached package(s) load modules dynamically or were not fully parsed: ${mg.weakPackages.slice(0, 5).join(', ')}${mg.weakPackages.length > 5 ? ', …' : ''}`);
-    }
-  }
+  printModuleGraphSummary(body.moduleGraph, summary);
   const lock = body.lockfile;
   if (lock.files.length > 0) {
     console.log(`   lockfile graph: ${lock.packages.length} package(s), ${lock.edges.length} edge(s) from ${lock.files.join(', ')}`);
@@ -1081,6 +1070,22 @@ function printImportsSummary(target, summary, body) {
   if (body.unanalyzable.length > 0) {
     console.log('\n   Not analyzed (absence of evidence from these is not a negative):');
     for (const u of body.unanalyzable) console.log(`     • ${u.file} [${u.kind}] ${u.reason}`);
+  }
+}
+
+function printModuleGraphSummary(mg, summary) {
+  if (!mg.enabled) {
+    console.log('   module graph: not walked (--no-module-graph)');
+    return;
+  }
+  if (mg.nodeModulesMissing) {
+    console.log(`   module graph: node_modules is not installed — ${mg.unresolved} import(s) unresolved, nothing followed`);
+    return;
+  }
+  const truncated = mg.truncated ? ' (truncated at the file budget)' : '';
+  console.log(`   module graph: ${mg.filesParsed} node_modules file(s) parsed, ${summary.moduleGraph.reached} installed package copy(ies) reached, ${mg.unresolved} import(s) unresolved${truncated}`);
+  if (mg.weakPackages.length > 0) {
+    console.log(`   ${mg.weakPackages.length} reached package(s) load modules dynamically or were not fully parsed: ${mg.weakPackages.slice(0, 5).join(', ')}${mg.weakPackages.length > 5 ? ', …' : ''}`);
   }
 }
 
