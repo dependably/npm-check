@@ -103,7 +103,7 @@ export class ModuleResolver {
     // Strip a query/fragment (`./x.svg?raw`, bundler conventions); nothing
     // real resolves through them. A leading `#` is a package `imports` key,
     // not a fragment.
-    const cleaned = specifier.startsWith('#') ? specifier : specifier.replace(/[?#].*$/, '');
+    const cleaned = specifier.startsWith('#') ? specifier : stripQueryAndFragment(specifier);
 
     if (cleaned.startsWith('.') || isAbsolute(cleaned)) {
       const target = pathResolve(dirname(fromFile), cleaned);
@@ -186,17 +186,28 @@ export class ModuleResolver {
   resolvePackage(root, subpath, mode) {
     const pj = this.readPackageJson(root);
     if (pj !== null && pj.exports !== undefined && pj.exports !== null) {
-      const target = resolveExports(pj.exports, subpath === '' ? '.' : `./${subpath}`, conditionsFor(mode));
-      if (target === undefined) return unresolved(`exports map does not expose "${subpath || '.'}" of ${basename(root)}`);
-      if (target === null) return unresolved(`exports map blocks "${subpath || '.'}" of ${basename(root)}`);
-      if (target.includes('..') || !target.startsWith('./')) return unresolved(`invalid exports target ${target}`);
-      return this.loadAsFile(join(root, target)) ?? this.loadAsDirectory(join(root, target)) ?? unresolved(`exports target missing: ${target}`);
+      return this.resolveThroughExports(root, subpath, pj.exports, mode);
     }
     if (subpath !== '') {
       const p = join(root, subpath);
       return this.loadAsFile(p) ?? this.loadAsDirectory(p) ?? unresolved(`not found in package: ${subpath}`);
     }
     return this.loadAsDirectory(root) ?? unresolved(`no entry point in ${basename(root)}`);
+  }
+
+  /**
+   * @param {string} root
+   * @param {string} subpath
+   * @param {unknown} exportsMap
+   * @param {ResolveMode} mode
+   * @returns {Resolution}
+   */
+  resolveThroughExports(root, subpath, exportsMap, mode) {
+    const target = resolveExports(exportsMap, subpath === '' ? '.' : `./${subpath}`, conditionsFor(mode));
+    if (target === undefined) return unresolved(`exports map does not expose "${subpath || '.'}" of ${basename(root)}`);
+    if (target === null) return unresolved(`exports map blocks "${subpath || '.'}" of ${basename(root)}`);
+    if (target.includes('..') || !target.startsWith('./')) return unresolved(`invalid exports target ${target}`);
+    return this.loadAsFile(join(root, target)) ?? this.loadAsDirectory(join(root, target)) ?? unresolved(`exports target missing: ${target}`);
   }
 
   /**
@@ -319,10 +330,11 @@ export class ModuleResolver {
     const cached = this.statCache.get(p);
     if (cached !== undefined) return cached;
     /** @type {'file' | 'dir' | null} */
-    let kind;
+    let kind = null;
     try {
       const st = statSync(p);
-      kind = st.isFile() ? 'file' : st.isDirectory() ? 'dir' : null;
+      if (st.isFile()) kind = 'file';
+      else if (st.isDirectory()) kind = 'dir';
     } catch {
       kind = null;
     }
@@ -408,30 +420,34 @@ export function packageRootOf(file) {
  */
 export function resolveExports(map, subpath, conditions) {
   if (typeof map === 'string') return subpath === '.' ? map : undefined;
-  if (Array.isArray(map)) {
-    for (const entry of map) {
-      const r = resolveExports(entry, subpath, conditions);
-      if (r !== undefined) return r;
-    }
-    return undefined;
-  }
+  if (Array.isArray(map)) return firstResolved(map, (entry) => resolveExports(entry, subpath, conditions));
   if (map === null || typeof map !== 'object') return undefined;
   const obj = /** @type {Record<string, unknown>} */ (map);
   const keys = Object.keys(obj);
   const isSubpathMap = keys.some((k) => k.startsWith('.') || k.startsWith('#'));
   if (!isSubpathMap) {
     // A conditions object for the requested subpath.
-    if (subpath !== '.') return undefined;
-    return resolveConditions(obj, conditions);
+    return subpath === '.' ? resolveConditions(obj, conditions, undefined) : undefined;
   }
   // Exact key first.
   if (Object.prototype.hasOwnProperty.call(obj, subpath)) {
     return resolveTarget(obj[subpath], conditions, undefined);
   }
-  // Pattern keys, ranked like Node's PATTERN_KEY_COMPARE: the longest prefix
-  // before `*` wins, and on a tie the longer key overall (`./*.css` beats
-  // `./*` for `./400.css` — with prefix-only ranking the first key won and
-  // produced `./400.css.css`).
+  const best = bestPatternKey(keys, subpath);
+  if (best === undefined) return undefined;
+  return resolveTarget(obj[best.key], conditions, best.captured);
+}
+
+/**
+ * Pattern keys, ranked like Node's PATTERN_KEY_COMPARE: the longest prefix
+ * before `*` wins, and on a tie the longer key overall (`./*.css` beats
+ * `./*` for `./400.css` — with prefix-only ranking the first key won and
+ * produced `./400.css.css`).
+ * @param {string[]} keys
+ * @param {string} subpath
+ * @returns {{ key: string; prefixLength: number; captured: string } | undefined}
+ */
+function bestPatternKey(keys, subpath) {
   /** @type {{ key: string; prefixLength: number; captured: string } | undefined} */
   let best;
   for (const key of keys) {
@@ -448,19 +464,32 @@ export function resolveExports(map, subpath, conditions) {
       best = { key, prefixLength: prefix.length, captured: subpath.slice(prefix.length, subpath.length - suffix.length) };
     }
   }
-  if (best === undefined) return undefined;
-  return resolveTarget(obj[best.key], conditions, best.captured);
+  return best;
+}
+
+/**
+ * @param {unknown[]} entries
+ * @param {(entry: unknown) => string | null | undefined} resolveEntry
+ * @returns {string | null | undefined}
+ */
+function firstResolved(entries, resolveEntry) {
+  for (const entry of entries) {
+    const r = resolveEntry(entry);
+    if (r !== undefined) return r;
+  }
+  return undefined;
 }
 
 /**
  * @param {Record<string, unknown>} obj
  * @param {ReadonlySet<string>} conditions
+ * @param {string | undefined} captured
  * @returns {string | null | undefined}
  */
-function resolveConditions(obj, conditions) {
+function resolveConditions(obj, conditions, captured) {
   for (const [key, value] of Object.entries(obj)) {
     if (!conditions.has(key)) continue;
-    const r = resolveTarget(value, conditions, undefined);
+    const r = resolveTarget(value, conditions, captured);
     if (r !== undefined) return r;
   }
   return undefined;
@@ -475,19 +504,17 @@ function resolveConditions(obj, conditions) {
 function resolveTarget(value, conditions, captured) {
   if (value === null) return null;
   if (typeof value === 'string') return captured === undefined ? value : value.replace(/\*/g, captured);
-  if (Array.isArray(value)) {
-    for (const entry of value) {
-      const r = resolveTarget(entry, conditions, captured);
-      if (r !== undefined) return r;
-    }
-    return undefined;
-  }
-  if (typeof value === 'object') {
-    for (const [key, inner] of Object.entries(/** @type {Record<string, unknown>} */ (value))) {
-      if (!conditions.has(key)) continue;
-      const r = resolveTarget(inner, conditions, captured);
-      if (r !== undefined) return r;
-    }
-  }
+  if (Array.isArray(value)) return firstResolved(value, (entry) => resolveTarget(entry, conditions, captured));
+  if (typeof value === 'object') return resolveConditions(/** @type {Record<string, unknown>} */ (value), conditions, captured);
   return undefined;
+}
+
+/**
+ * Drops a query or fragment (`./x.svg?raw`) from a specifier.
+ * @param {string} specifier
+ * @returns {string}
+ */
+function stripQueryAndFragment(specifier) {
+  const cut = specifier.search(/[?#]/);
+  return cut === -1 ? specifier : specifier.slice(0, cut);
 }

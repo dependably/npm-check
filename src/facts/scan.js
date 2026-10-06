@@ -79,7 +79,7 @@ export function scanSource(fileName, content) {
     parseText,
     ts.ScriptTarget.Latest,
     /* setParentNodes */ false,
-    svelteExtraction ? (svelteExtraction.hasTs ? ts.ScriptKind.TS : ts.ScriptKind.JS) : scriptKindOf(ts, fileName)
+    svelteExtraction ? svelteScriptKind(ts, svelteExtraction) : scriptKindOf(ts, fileName)
   );
 
   // `.svelte` script extraction is regex-based, not a real HTML parser: a
@@ -391,8 +391,7 @@ function isValueReference(ts, node, parent) {
   if ((ts.isMethodDeclaration(parent) || ts.isPropertyDeclaration(parent) || ts.isPropertySignature(parent) || ts.isMethodSignature(parent)) && parent.name === node) return false;
   if (ts.isBindingElement(parent) && parent.propertyName === node) return false;
   if (ts.isImportSpecifier(parent) || ts.isExportSpecifier(parent)) return false;
-  if (ts.isTypeReferenceNode(parent) || ts.isQualifiedName(parent)) return false;
-  return true;
+  return !(ts.isTypeReferenceNode(parent) || ts.isQualifiedName(parent));
 }
 
 /**
@@ -738,6 +737,15 @@ function findLostScriptWarnings(content, consumedRanges) {
   scanFor(SVELTE_SCRIPT_OPEN_TOKEN_RE, "'<script' opening tag");
   scanFor(SVELTE_SCRIPT_CLOSE_RE, "'</script>' closing tag");
   return warnings;
+}
+
+/**
+ * @param {typeof import('typescript')} ts
+ * @param {{ hasTs: boolean }} extraction
+ * @returns {import('typescript').ScriptKind}
+ */
+function svelteScriptKind(ts, extraction) {
+  return extraction.hasTs ? ts.ScriptKind.TS : ts.ScriptKind.JS;
 }
 
 /**

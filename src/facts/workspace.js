@@ -230,9 +230,7 @@ function buildAliasScope(layers) {
       /** @type {Set<string> | undefined} */
       let hits;
       for (const layer of layers) {
-        if (dir !== layer.dir && !dir.startsWith(layer.dir.endsWith(sep) ? layer.dir : `${layer.dir}${sep}`)) {
-          continue;
-        }
+        if (!layerGoverns(layer.dir, dir)) continue;
         hits ??= new Set();
         for (const prefix of layer.prefixes) hits.add(prefix);
       }
@@ -241,6 +239,16 @@ function buildAliasScope(layers) {
       return result;
     }
   };
+}
+
+/**
+ * Is `dir` the layer's own directory or somewhere below it?
+ * @param {string} layerDir
+ * @param {string} dir
+ * @returns {boolean}
+ */
+function layerGoverns(layerDir, dir) {
+  return dir === layerDir || dir.startsWith(layerDir.endsWith(sep) ? layerDir : `${layerDir}${sep}`);
 }
 
 /**
