@@ -8,3 +8,10 @@ if (typeof jest === 'undefined') {
     })
     .catch(() => {});
 }
+
+// Isolate every test from the developer's (or CI runner's) user-level .npmrc.
+// pnpm registry resolution and registry credentials read it, so a machine whose
+// ~/.npmrc names a private registry would otherwise change test outcomes. Tests
+// that exercise the user layer pass their own `env`/`homeDir`.
+process.env.NPM_CONFIG_USERCONFIG = '/nonexistent/npm-check-test/.npmrc';
+delete process.env.npm_config_userconfig;

@@ -3,7 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import { createRequire } from 'module';
 import { parseLockfile as parseLockfileFromFormat, stringifyLockfile } from './format-library.js';
-import { parseNpmrc } from './npmrc-validator.js';
+import { expandEnvRefs, readNpmrcLayers } from './registry-auth.js';
 import { DEFAULT_REGISTRY } from './integrity.js';
 import { BackupError } from './backup.js';
 import { parseLockfileStreamSync } from './streaming-parser.js';
@@ -26,26 +26,29 @@ function isPnpmLockfilePath(filePath) {
 }
 
 /**
- * Build the registry config for a pnpm lockfile from its sibling .npmrc — pnpm
- * reads .npmrc ONLY for registry + auth, so this is the authoritative source for
- * the per-package registry base (there is no `resolved` URL to parse).
+ * Build the registry config for a pnpm lockfile from the .npmrc files pnpm reads:
+ * the user-level file, overridden by the project file next to the lockfile. pnpm
+ * reads .npmrc ONLY for registry + auth, so these are the authoritative source for
+ * the per-package registry base (there is no `resolved` URL to parse). The user
+ * file matters in CI, where the registry is commonly written to `$HOME/.npmrc`
+ * rather than committed. Values get npm's `${VAR}` expansion; one that references
+ * an unset variable is ignored.
  * @param {string} filePath - Path to the pnpm lockfile
+ * @param {object} [options] - { env, homeDir } (tests)
  * @returns {{ registry: string, scopedRegistries: object }}
  */
-function buildPnpmRegistryConfig(filePath) {
-  const npmrcPath = path.join(path.dirname(filePath), '.npmrc');
+function buildPnpmRegistryConfig(filePath, options = {}) {
+  const env = options.env || process.env;
   let registry = DEFAULT_REGISTRY;
   const scopedRegistries = {};
-  if (fs.existsSync(npmrcPath)) {
-    try {
-      for (const { key, value } of parseNpmrc(fs.readFileSync(npmrcPath, 'utf8'))) {
-        if (key === 'registry') registry = value;
-        else if (key && key.startsWith('@') && key.endsWith(':registry')) {
-          scopedRegistries[key.slice(0, key.indexOf(':'))] = value;
-        }
+  for (const entries of readNpmrcLayers({ projectDir: path.dirname(filePath), env, homeDir: options.homeDir })) {
+    for (const { key, value } of entries) {
+      const expanded = expandEnvRefs(value, env);
+      if (!expanded) continue;
+      if (key === 'registry') registry = expanded;
+      else if (key && key.startsWith('@') && key.endsWith(':registry')) {
+        scopedRegistries[key.slice(0, key.indexOf(':'))] = expanded;
       }
-    } catch {
-      // A malformed .npmrc shouldn't break lockfile parsing — fall back to defaults.
     }
   }
   return { registry, scopedRegistries };
@@ -56,9 +59,10 @@ function buildPnpmRegistryConfig(filePath) {
  * `__npmCheckMeta` ({ flavor, lockfileVersion, registry, scopedRegistries }).
  * The meta is non-enumerable so it never leaks into JSON output or stringify.
  * @param {string} filePath - Path to the pnpm lockfile
+ * @param {object} [options] - { env, homeDir } for the .npmrc lookup (tests)
  * @returns {object} Parsed pnpm lockfile
  */
-function parsePnpmLockfile(filePath) {
+function parsePnpmLockfile(filePath, options = {}) {
   const content = fs.readFileSync(filePath, 'utf8');
   const data = loadYaml().parse(content);
   if (!data || typeof data !== 'object') {
@@ -68,7 +72,7 @@ function parsePnpmLockfile(filePath) {
     value: {
       flavor: 'pnpm',
       lockfileVersion: data.lockfileVersion,
-      ...buildPnpmRegistryConfig(filePath)
+      ...buildPnpmRegistryConfig(filePath, options)
     },
     enumerable: false,
     writable: true,
@@ -86,12 +90,14 @@ function parsePnpmLockfile(filePath) {
  * @param {boolean} options.useStreaming - Force streaming parser (default: auto-detect, npm only)
  * @param {number} options.streamingThreshold - File size threshold in bytes for streaming (default: 10MB)
  * @param {Function} options.onProgress - Progress callback for streaming
+ * @param {object} options.env - Environment for the pnpm .npmrc lookup (default: process.env)
+ * @param {string} options.homeDir - Home directory for the user .npmrc (default: os.homedir())
  * @returns {Object} Parsed lockfile object
  */
 export function parseLockfile(filePath, options = {}) {
   // pnpm lockfiles are YAML and rarely huge — parse directly, no streaming.
   if (isPnpmLockfilePath(filePath)) {
-    return parsePnpmLockfile(filePath);
+    return parsePnpmLockfile(filePath, options);
   }
 
   const {

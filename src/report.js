@@ -390,6 +390,7 @@ function describeSection(id, findings, state) {
  * @param {boolean} options.strict - Treat warnings as failures
  * @param {number} options.maxWarnings - Warning budget (-1 = unlimited)
  * @param {number} options.concurrency / options.timeoutMs / options.defaultRegistry / options.failOnUnresolved
+ * @param {object} [options.registryAuth] - Credential resolver from loadRegistryAuth() ({ authFor(url) }); no credentials when absent
  * @param {Function} options.fetchIntegrity - Injectable registry transport (tests)
  * @param {Function} options.onProgress - Progress callback for the integrity stage
  * @returns {Promise<object>} { filePath, sections, summary }
@@ -418,6 +419,7 @@ function resolveRunOptions(options, dir) {
     fetchIntegrity: null,
     fetchAdvisories: null,
     fetchManifest: null,
+    registryAuth: null,
     onProgress: null,
     // The `secure-resolved` and `no-remote-deps` audit rules independently flag
     // a package resolved from an untrusted/unrecognized host — for a private
@@ -511,7 +513,8 @@ async function runIntegrityStage(buckets, lockfile, opts) {
   if (!opts.integrity) return null;
   const result = await checkIntegrity(lockfile, {
     concurrency: opts.concurrency, timeoutMs: opts.timeoutMs, failOnUnresolved: opts.failOnUnresolved,
-    fetchIntegrity: opts.fetchIntegrity, onProgress: opts.onProgress, ...registryOption(opts.defaultRegistry)
+    fetchIntegrity: opts.fetchIntegrity, registryAuth: opts.registryAuth, onProgress: opts.onProgress,
+    ...registryOption(opts.defaultRegistry)
   });
   collectIntegrityFindings(buckets, result, opts.failOnUnresolved);
   return result;
@@ -522,7 +525,8 @@ async function runVulnStage(buckets, lockfile, opts) {
   if (!opts.vuln) return null;
   const result = await checkVulnerabilities(lockfile, {
     concurrency: opts.concurrency, timeoutMs: opts.timeoutMs, minSeverity: opts.minSeverity,
-    failOnUnresolved: opts.failOnUnresolved, fetchAdvisories: opts.fetchAdvisories, onProgress: opts.onProgress,
+    failOnUnresolved: opts.failOnUnresolved, fetchAdvisories: opts.fetchAdvisories, registryAuth: opts.registryAuth,
+    onProgress: opts.onProgress,
     ...registryOption(opts.defaultRegistry)
   });
   collectVulnFindings(buckets, result, opts.failOnUnresolved);
@@ -534,7 +538,8 @@ async function runDeprecationStage(buckets, lockfile, opts) {
   if (!opts.deprecated) return null;
   const result = await checkDeprecations(lockfile, {
     concurrency: opts.concurrency, timeoutMs: opts.timeoutMs, failOnDeprecated: opts.failOnDeprecated,
-    failOnUnresolved: opts.failOnUnresolved, fetchManifest: opts.fetchManifest, onProgress: opts.onProgress,
+    failOnUnresolved: opts.failOnUnresolved, fetchManifest: opts.fetchManifest, registryAuth: opts.registryAuth,
+    onProgress: opts.onProgress,
     ...registryOption(opts.defaultRegistry)
   });
   collectDeprecationFindings(buckets, result, opts.failOnUnresolved);

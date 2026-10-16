@@ -26,6 +26,7 @@ import { runReport, formatReport } from '../src/report.js';
 import { prunePackages } from '../src/pruner.js';
 import { findUnusedDependencies } from '../src/usage-scanner.js';
 import { buildFactsEnvelope } from '../src/schema.js';
+import { loadRegistryAuth } from '../src/registry-auth.js';
 
 const argv = process.argv.slice(2);
 
@@ -514,6 +515,13 @@ function parseNetworkFlags(code = 2) {
   };
 }
 
+// Registry credentials for the project that owns `lockfilePath`: the user
+// .npmrc, overridden by the project .npmrc beside the lockfile (as npm/pnpm do).
+// Each credential is sent only to URLs under the registry it is scoped to.
+function registryAuthFor(lockfilePath) {
+  return loadRegistryAuth({ projectDir: path.dirname(path.resolve(lockfilePath)) });
+}
+
 // Spread the optional registry override only when one was supplied.
 function registryOption(defaultRegistry) {
   return defaultRegistry ? { defaultRegistry } : {};
@@ -680,6 +688,7 @@ async function runReportCommand() {
         deprecated: opts.deprecated, failOnDeprecated: opts.failOnDeprecated, minSeverity: opts.minSeverity,
         strict: opts.strict, maxWarnings: opts.maxWarnings, concurrency: opts.concurrency,
         timeoutMs: opts.timeoutMs, failOnUnresolved: opts.failOnUnresolved, verbose: opts.verbose, onProgress,
+        registryAuth: registryAuthFor(filePath),
         ...registryOption(opts.defaultRegistry),
         ...(opts.licensesCsv ? { licensesCsv: opts.licensesCsv } : {})
       }
@@ -865,6 +874,7 @@ async function runFixChecksumsCommand() {
     onProgress, concurrency, timeoutMs, localFallback,
     baseDir: lockfileDir,
     nodeModulesPath: path.join(lockfileDir, 'node_modules'),
+    registryAuth: registryAuthFor(filePath),
     ...registryOption(defaultRegistry)
   });
 
@@ -1374,7 +1384,8 @@ async function runCheckCommand(command) {
     if (checkType === 'hash' || checkType === 'all') {
       console.log('Verifying integrity against the registry...');
       const hashResult = await checkIntegrity(lockfile, {
-        ...options, concurrency, timeoutMs, failOnUnresolved, ...registryOption(defaultRegistry)
+        ...options, concurrency, timeoutMs, failOnUnresolved, registryAuth: registryAuthFor(filePath),
+        ...registryOption(defaultRegistry)
       });
       printHashResult(hashResult, failOnUnresolved);
       allValid = allValid && hashResult.valid;
@@ -1455,6 +1466,7 @@ async function runVulnCommand(command) {
     if (format === 'human' && !offline) console.log('Scanning locked packages for known vulnerabilities…');
     const result = await checkVulnerabilities(lockfile, {
       concurrency, timeoutMs, minSeverity, offline, failOnUnresolved, onProgress,
+      registryAuth: registryAuthFor(filePath),
       ...registryOption(defaultRegistry)
     });
 
@@ -1543,6 +1555,7 @@ async function runDeprecatedCommand(command) {
     if (format === 'human' && !offline) console.log('Scanning locked packages for deprecation notices…');
     const result = await checkDeprecations(lockfile, {
       concurrency, timeoutMs, offline, failOnDeprecated, failOnUnresolved, onProgress,
+      registryAuth: registryAuthFor(filePath),
       ...registryOption(defaultRegistry)
     });
 
@@ -1613,6 +1626,7 @@ async function runRemediateCommand(command) {
     if (format === 'human') console.log('Scanning for remediable direct dependencies…');
     const result = await remediateDependencies(lockfile, packageJson, {
       minSeverity, includeDeprecated, onProgress,
+      registryAuth: registryAuthFor(lockfilePath),
       ...registryOption(defaultRegistry)
     });
     if (onProgress) clearProgressLine();

@@ -177,16 +177,18 @@ function collectJsonBody(res, url, maxBytes, settle) {
  * can keep resetting the idle timer forever — issue #12), plus a response-stream
  * error handler.
  */
-function buildRequestHeaders(payload, accept) {
+function buildRequestHeaders(payload, accept, authorization) {
+  const headers = {};
   if (payload !== null) {
-    return {
-      'Content-Type': 'application/json',
-      'Accept': accept || 'application/json',
-      'Content-Length': Buffer.byteLength(payload)
-    };
+    headers['Content-Type'] = 'application/json';
+    headers['Accept'] = accept || 'application/json';
+    headers['Content-Length'] = Buffer.byteLength(payload);
+  } else if (accept) {
+    // GET with an explicit Accept (e.g. the abbreviated-packument media type).
+    headers['Accept'] = accept;
   }
-  // GET with an explicit Accept (e.g. the abbreviated-packument media type).
-  return accept ? { 'Accept': accept } : undefined;
+  if (authorization) headers['Authorization'] = authorization;
+  return Object.keys(headers).length ? headers : undefined;
 }
 
 // Handle a same-host redirect. Returns true if the response WAS a redirect (and
@@ -231,11 +233,12 @@ function handleRegistryResponse(res, ctx) {
   collectJsonBody(res, url, maxBytes, settle);
 }
 
-function requestJson({ url, method, payload, timeoutMs, redirectsLeft, maxBytes, deadlineMs, accept, followRedirect }) {
+function requestJson({ url, method, payload, timeoutMs, redirectsLeft, maxBytes, deadlineMs, accept, authFor, followRedirect }) {
   return new Promise((resolve, reject) => {
     const settle = onceSettlers(resolve, reject);
     const requestOptions = { method };
-    const headers = buildRequestHeaders(payload, accept);
+    // Resolved per URL, so a followed redirect re-asks for its own target.
+    const headers = buildRequestHeaders(payload, accept, authFor ? authFor(url) : null);
     if (headers) requestOptions.headers = headers;
     const ctx = { url, redirectsLeft, maxBytes, settle, followRedirect };
 
@@ -271,7 +274,8 @@ function requestJson({ url, method, payload, timeoutMs, redirectsLeft, maxBytes,
  * @param {string} url - Full URL
  * @param {number} timeoutMs - Per-request idle timeout (also the default deadline)
  * @param {number} [redirectsLeft] - Remaining same-host redirect hops
- * @param {object} [options] - { maxBytes, deadlineMs } (deadlineMs defaults to timeoutMs)
+ * @param {object} [options] - { maxBytes, deadlineMs, accept, authFor } (deadlineMs defaults to timeoutMs;
+ *   authFor(url) returns the Authorization header for a URL, or null — see registry-auth.js)
  * @returns {Promise<object|null>} Parsed JSON, or null on 404
  */
 export function getJson(url, timeoutMs, redirectsLeft = 1, options = {}) {
@@ -286,6 +290,7 @@ export function getJson(url, timeoutMs, redirectsLeft = 1, options = {}) {
     maxBytes,
     deadlineMs,
     accept: options.accept,
+    authFor: options.authFor,
     followRedirect: (target, left) => getJson(target, timeoutMs, left, options)
   });
 }
@@ -300,7 +305,7 @@ export function getJson(url, timeoutMs, redirectsLeft = 1, options = {}) {
  * @param {object} bodyObject - JSON-serializable request body
  * @param {number} timeoutMs - Per-request idle timeout (also the default deadline)
  * @param {number} [redirectsLeft] - Remaining redirect hops
- * @param {object} [options] - { maxBytes, deadlineMs }
+ * @param {object} [options] - { maxBytes, deadlineMs, accept, authFor }
  * @returns {Promise<object|null>} Parsed JSON, or null on 404
  */
 export function postJson(url, bodyObject, timeoutMs, redirectsLeft = 1, options = {}) {
@@ -316,6 +321,7 @@ export function postJson(url, bodyObject, timeoutMs, redirectsLeft = 1, options 
     maxBytes,
     deadlineMs,
     accept: options.accept,
+    authFor: options.authFor,
     followRedirect: (target, left) => postJson(target, bodyObject, timeoutMs, left, options)
   });
 }
@@ -372,11 +378,11 @@ function packumentVersionUrl(registryBase, packageName, version) {
  * need dist-tags + dist.integrity.
  * Resolves the parsed packument, null on 404, rejects on network errors/timeouts.
  * @param {string} packageName - Name of the package
- * @param {object} options - { registryBase, timeoutMs, fetchJson (injectable transport for tests) }
+ * @param {object} options - { registryBase, timeoutMs, fetchJson (injectable transport for tests), authFor }
  * @returns {Promise<object|null>} Abbreviated packument or null
  */
 export async function fetchPackument(packageName, options = {}) {
-  const { registryBase = DEFAULT_REGISTRY, timeoutMs = 10000, fetchJson = getJson, maxBytes, deadlineMs } = options;
+  const { registryBase = DEFAULT_REGISTRY, timeoutMs = 10000, fetchJson = getJson, maxBytes, deadlineMs, authFor } = options;
   let base = registryBase;
   while (base.endsWith('/')) base = base.slice(0, -1);
   // Request the ABBREVIATED packument. The full document can be enormous
@@ -389,7 +395,8 @@ export async function fetchPackument(packageName, options = {}) {
   return fetchJson(`${base}/${encodePackageNamePath(packageName)}`, timeoutMs, 1, {
     accept: 'application/vnd.npm.install-v1+json; q=1.0, application/json; q=0.8, */*',
     maxBytes,
-    deadlineMs
+    deadlineMs,
+    authFor
   });
 }
 
@@ -413,13 +420,13 @@ export async function fetchLatestVersion(packageName, options = {}) {
  * distinguish "offline" from "not on npm".
  * @param {string} packageName - Name of the package
  * @param {string} version - Exact version
- * @param {object} options - { registryBase, timeoutMs, fetchJson (injectable transport for tests) }
+ * @param {object} options - { registryBase, timeoutMs, fetchJson (injectable transport for tests), authFor }
  * @returns {Promise<object|null>} Version manifest or null
  */
 export async function fetchPackumentManifest(packageName, version, options = {}) {
-  const { registryBase = DEFAULT_REGISTRY, timeoutMs = 10000, fetchJson = getJson } = options;
+  const { registryBase = DEFAULT_REGISTRY, timeoutMs = 10000, fetchJson = getJson, authFor } = options;
   const url = packumentVersionUrl(registryBase, packageName, version);
-  return fetchJson(url, timeoutMs);
+  return fetchJson(url, timeoutMs, 1, { authFor });
 }
 
 /**
@@ -428,14 +435,14 @@ export async function fetchPackumentManifest(packageName, version, options = {})
  * rejects on network errors/timeouts so callers can distinguish "offline" from "not on npm".
  * @param {string} packageName - Name of the package
  * @param {string} version - Exact version
- * @param {object} options - { registryBase, timeoutMs, fetchJson (injectable transport for tests) }
+ * @param {object} options - { registryBase, timeoutMs, fetchJson (injectable transport for tests), authFor }
  * @returns {Promise<string|null>} Integrity hash or null
  */
 export async function fetchPackumentIntegrity(packageName, version, options = {}) {
-  const { registryBase = DEFAULT_REGISTRY, timeoutMs = 10000, fetchJson = getJson } = options;
+  const { registryBase = DEFAULT_REGISTRY, timeoutMs = 10000, fetchJson = getJson, authFor } = options;
   const url = packumentVersionUrl(registryBase, packageName, version);
 
-  const pkg = await fetchJson(url, timeoutMs);
+  const pkg = await fetchJson(url, timeoutMs, 1, { authFor });
   if (pkg && pkg.dist && pkg.dist.integrity) {
     return pkg.dist.integrity;
   }

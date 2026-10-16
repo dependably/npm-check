@@ -434,12 +434,12 @@ async function mapWithConcurrency(items, limit, fn) {
  * null when the endpoint 404s (registry doesn't support it), and rejects on
  * network errors / timeouts.
  */
-function fetchBulkAdvisories(registryBase, bodyObject, timeoutMs) {
+function fetchBulkAdvisories(registryBase, bodyObject, timeoutMs, authFor) {
   // Strip trailing slashes without a regex (linear scan, no backtracking).
   let base = registryBase;
   while (base.endsWith('/')) base = base.slice(0, -1);
   const url = `${base}/-/npm/v1/security/advisories/bulk`;
-  return postJson(url, bodyObject, timeoutMs);
+  return postJson(url, bodyObject, timeoutMs, 1, { authFor });
 }
 
 /**
@@ -465,6 +465,7 @@ function fetchBulkAdvisories(registryBase, bodyObject, timeoutMs) {
  * @param {boolean} options.failOnUnresolved - Fail the run when advisory data can't be
  *   obtained (registry unreachable / endpoint unsupported). Default true (fail closed);
  *   set false to tolerate an incomplete scan.
+ * @param {object} [options.registryAuth] - Credential resolver from loadRegistryAuth() ({ authFor(url) }); no credentials when absent
  * @param {Function} options.fetchAdvisories - Injectable (registryBase, body, timeoutMs) => Promise<object|null>
  * @param {Function} options.onProgress - Progress callback
  * @returns {Promise<object>} Results object with summary and details
@@ -479,6 +480,7 @@ export async function checkVulnerabilities(lockfileData, options = {}) {
     offline = false,
     failOnUnresolved = true, // fail closed: a scan that couldn't complete must not pass as "clean"
     fetchAdvisories = null,
+    registryAuth = null,
     onProgress = null
   } = options;
 
@@ -528,7 +530,8 @@ export async function checkVulnerabilities(lockfileData, options = {}) {
     return results;
   }
 
-  const fetcher = fetchAdvisories || fetchBulkAdvisories;
+  const fetcher = fetchAdvisories ||
+    ((registryBase, body, timeoutMs) => fetchBulkAdvisories(registryBase, body, timeoutMs, registryAuth?.authFor));
 
   // Group candidates by registry/name into POST units of at most `batchSize` names.
   const units = buildUnits(candidates, batchSize);
