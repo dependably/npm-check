@@ -310,6 +310,50 @@ describe('runReport', () => {
     expect(pinned.findings.some((f) => /not pinned/.test(f.message))).toBe(true);
   });
 
+  it('scans pnpm registry entries that carry a non-default-layout tarball URL', async () => {
+    // pnpm records `tarball` for a registry package whenever the registry's
+    // tarball URL isn't the default layout (Dependably: `/npm/tarballs/...`).
+    // These were misclassified as URL-tarball deps, so every scan ran on zero
+    // packages and still reported `ok`.
+    const pnpmLock = {
+      lockfileVersion: '9.0',
+      importers: { '.': { dependencies: { 'good-pkg': { specifier: '1.0.0', version: '1.0.0' } } } },
+      packages: {
+        'good-pkg@1.0.0': {
+          resolution: { integrity: HASH_A, tarball: 'https://dependably.example/npm/tarballs/good-pkg/good-pkg-1.0.0.tgz' }
+        }
+      }
+    };
+    const report = await runReport(
+      { lockfile: pnpmLock, packageJson: cleanPackageJson(), filePath: 'pnpm-lock.yaml' },
+      baseOpts({ fetchAdvisories: fakeAdvisories({ 'good-pkg': [advisory('critical')] }) })
+    );
+    const integrity = report.sections.find((s) => s.id === 'integrity');
+    expect(integrity.summary).toMatch(/1 verified/);
+    const vuln = report.sections.find((s) => s.id === 'vuln');
+    expect(vuln.status).toBe('error');
+    expect(vuln.summary).toMatch(/1 scanned/);
+    expect(report.sections.find((s) => s.id === 'deprecated').summary).toMatch(/1 scanned/);
+  });
+
+  it('reports a registry scan that checked nothing as skipped, not ok', async () => {
+    // Only unverifiable entries (a git dep): every scan attempts zero packages.
+    const lockfile = cleanLockfile();
+    lockfile.packages['node_modules/good-pkg'] = {
+      version: '1.0.0',
+      resolved: 'git+ssh://git@github.com/x/good-pkg.git#abc123'
+    };
+    const report = await runReport(
+      { lockfile, packageJson: cleanPackageJson(), filePath: 'package-lock.json' },
+      baseOpts()
+    );
+    for (const id of ['integrity', 'vuln', 'deprecated']) {
+      const section = report.sections.find((s) => s.id === id);
+      expect(section.status).toBe('skip');
+      expect(section.summary).toMatch(/nothing checkable · \d+ skipped/);
+    }
+  });
+
   it('surfaces an id-LESS critical advisory instead of silently passing (fail-open regression)', async () => {
     // The vuln envelope was fixed to discriminate on `reason`, but report.js still
     // dropped advisories with no `id` (the check gated on advisoryId), so an

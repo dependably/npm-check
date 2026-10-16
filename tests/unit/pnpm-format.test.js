@@ -134,6 +134,12 @@ describe('forEachPnpmPackageEntry', () => {
           tarball: 'https://registry.npmjs.org/is-positive/-/is-positive-3.1.0.tgz'
         }
       },
+      '@scope/mirrored@2.1.0': {
+        resolution: {
+          integrity: 'sha512-FFF==',
+          tarball: 'https://dependably.example/npm/tarballs/@scope/mirrored/mirrored-2.1.0.tgz'
+        }
+      },
       '@scope/peer-thing@1.2.3(react@18.2.0)': { resolution: { integrity: 'sha512-DDD==' } }
     },
     __npmCheckMeta: {
@@ -195,6 +201,17 @@ describe('forEachPnpmPackageEntry', () => {
     expect(t.node.kind).toBe('tarball');
     expect(t.isFileDep).toBe(true);
     expect(t.registryBase).toBeNull();
+  });
+
+  test('treats a semver-keyed entry with integrity + tarball as a registry package', () => {
+    // pnpm records `tarball` for a registry package whose registry uses a
+    // non-default tarball layout (Dependably: `/npm/tarballs/...`).
+    const r = collect().find((i) => i.name === '@scope/mirrored');
+    expect(r.node.kind).toBe('registry');
+    expect(r.isFileDep).toBe(false);
+    expect(r.entry.version).toBe('2.1.0');
+    // Registry comes from config (scoped), never from the tarball URL.
+    expect(r.registryBase).toBe('https://npm.mycorp.example');
   });
 
   test('strips a peer suffix on a packages key', () => {
