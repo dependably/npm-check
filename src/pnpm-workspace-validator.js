@@ -39,6 +39,8 @@ const KNOWN_KEYS = {
   neverBuiltDependencies: isStringArray,
   ignoredBuiltDependencies: isStringArray,
   onlyBuiltDependenciesFile: (v) => typeof v === 'string',
+  // pnpm 11's build allowlist, replacing onlyBuiltDependencies: `{ esbuild: true }`.
+  allowBuilds: isPlainObject,
   packageConfigs: isPlainObject,
   // Common scalar settings that legitimately live here in pnpm 9/10.
   nodeLinker: (v) => typeof v === 'string',

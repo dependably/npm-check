@@ -12,6 +12,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `report` applies `.dependably` exceptions to the registry scans, not just the audit rules. New exception rule ids: `vulnerable-package` (match an advisory by GHSA or npm advisory id), `deprecated-package`, and `unresolved-package` (`id` names the scan that couldn't check the entry). Suppressed scan findings stop gating, are counted in the section summary and footer, and are listed under `extra.suppressed` in the JSON envelope. Integrity mismatches stay unsuppressible.
 - `report` now prints the unused/expired exception notices on stderr, as `audit` does.
 
+### Fixed
+
+- pnpm 11's `allowBuilds` key in `pnpm-workspace.yaml` is recognized (it must be a mapping) instead of being warned about as unknown.
+
 ### Security
 
 - Replaced `fast-glob` with `tinyglobby` in the import-facts path. fast-glob's micromatch → braces chain carries GHSA-vfj7-8cjw-p6xm (high) with no patched braces release, and every consumer of `@dependably/npm-check` (sbom-reach bundles it) inherited it. braces is now a dev-only dependency (via jest).
