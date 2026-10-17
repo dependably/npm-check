@@ -1,6 +1,6 @@
 {
   "name": "@dependably/npm-check",
-  "version": "1.11.0",
+  "version": "1.12.0",
   "description": "A comprehensive tool for validating, migrating, and updating npm package-lock.json files across versions 1, 2, and 3.",
   "main": "src/index.js",
   "type": "module",
@@ -37,7 +37,7 @@
     "docker:test:all": "docker-compose -f tests/integration/docker/docker-compose.yml up --abort-on-container-exit",
     "lint": "eslint .",
     "typecheck": "tsc -p tsconfig.facts.json --noEmit",
-    "sbom":"cyclonedx-npm --output-format json --output-file sbom.json",
+    "sbom": "cyclonedx-npm --output-format json --output-file sbom.json",
     "sbom:prod": "cyclonedx-npm --omit dev --output-format json --output-file sbom-prod.json",
     "prepublishOnly": "npm run test && npm run lint"
   },
