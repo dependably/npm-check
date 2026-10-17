@@ -7,9 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.12.0] - 2026-10-16
+
 ### Fixed
 - **pnpm projects on a non-default-layout registry got no integrity, vulnerability or deprecation checks.** pnpm records `resolution.tarball` for a plain registry package whenever the registry's tarball URL isn't `{registry}/{name}/-/{name}-{ver}.tgz` (Dependably serves `/npm/tarballs/...`), and `classifyPnpmPackage` treated every entry with a `tarball` as a URL-tarball dependency. On such a lockfile every entry was skipped: oci-check's report showed `0 verified · 243 skipped` / `0 scanned · 243 skipped` under green `ok` rows. An entry whose key carries a semver version and whose resolution has `integrity` is now a registry package even with a `tarball`; its registry still comes from `.npmrc`, never from the tarball URL. A real URL-tarball dep, whose key version is the URL, is still skipped.
 - **A registry scan that checked nothing no longer reports `ok`.** When the integrity, vulnerability or deprecation scan attempts zero packages and skips at least one, with no findings to show, its section now reports `skipped (nothing checkable · N skipped)` instead of a passing row.
+- **Import-specifier cleanup no longer uses a backtracking regex.** `src/facts/resolve.js` stripped a specifier's `?query` / `#fragment` with `/[?#].*$/`, which SonarQube flagged as a ReDoS risk (S5852); it now cuts at the first `?` or `#` with a linear scan. Same result, no behaviour change.
 
 ### Added
 - **Registry credentials from `.npmrc`.** The registry-backed checks (integrity, `vuln`, `deprecated`, `fix-checksums`, `remediate`, and `report`) sent no credentials, so a registry that requires authentication — Dependably among them — answered every request with `401` and the whole scan landed in "Unresolved". They now read the user-level `.npmrc` (`~/.npmrc` or `NPM_CONFIG_USERCONFIG`), overridden by the project `.npmrc` beside the lockfile, and send the credential scoped to each request's registry: `_authToken` as `Bearer`, `_auth` or `username` + base64 `_password` as `Basic`, with `${VAR}` expansion. A credential goes only to `https://` URLs under the registry path it is scoped to (longest match), and is looked up again for a redirect target; unscoped `_authToken` / `_auth` keys name no registry and are ignored. Library callers pass `registryAuth: loadRegistryAuth({ projectDir })`; omitting it keeps the old unauthenticated behaviour.
