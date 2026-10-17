@@ -8,6 +8,7 @@ const codes = (list) => list.map((e) => e.code);
 const VALID_SETTINGS = {
   packages: ['packages/*'],
   onlyBuiltDependenciesFile: 'allowed-builds.json',
+  allowBuilds: { esbuild: true },
   nodeLinker: 'hoisted',
   shamefullyHoist: false,
   hoistPattern: ['*'],
@@ -58,6 +59,7 @@ describe('validatePnpmWorkspace settings', () => {
     ['hoistPattern', '*', 'an array of strings'],
     ['publicHoistPattern', [1], 'an array of strings'],
     ['catalog', ['react'], 'an object'],
+    ['allowBuilds', ['esbuild'], 'an object'],
     ['minimumReleaseAge', '1440', 'a number'],
     ['minimumReleaseAge', Number.POSITIVE_INFINITY, 'a number']
   ])('rejects %s = %p and names the expected type', (key, value, label) => {
