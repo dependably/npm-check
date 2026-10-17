@@ -20,7 +20,7 @@
 // `discoverInstalledPackages` (index.ts), here `discoverLockfileGraphs`.
 import { readFileSync } from 'node:fs';
 import { relative } from 'node:path';
-import fg from 'fast-glob';
+import { globSync } from 'tinyglobby';
 import { parse as parseYaml } from 'yaml';
 
 /** @typedef {import('./types.d.ts').DiscoveredPackage} DiscoveredPackage */
@@ -562,11 +562,9 @@ export function discoverLockfileGraphs(srcDir) {
     for (const graphDiagnostic of graph.diagnostics) diagnostics.push(graphDiagnostic);
   };
 
-  const npmLockPaths = fg
-    .sync('**/package-lock.json', { cwd: srcDir, absolute: true, ignore: LOCKFILE_IGNORE_DIRS, dot: false })
+  const npmLockPaths = globSync('**/package-lock.json', { cwd: srcDir, absolute: true, ignore: LOCKFILE_IGNORE_DIRS, dot: false, expandDirectories: false })
     .sort();
-  const pnpmLockPaths = fg
-    .sync('**/pnpm-lock.yaml', { cwd: srcDir, absolute: true, ignore: LOCKFILE_IGNORE_DIRS, dot: false })
+  const pnpmLockPaths = globSync('**/pnpm-lock.yaml', { cwd: srcDir, absolute: true, ignore: LOCKFILE_IGNORE_DIRS, dot: false, expandDirectories: false })
     .sort();
 
   /** @type {[string[], (path: string) => LockfileGraph, string][]} */

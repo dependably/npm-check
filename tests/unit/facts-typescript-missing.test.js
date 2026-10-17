@@ -8,7 +8,7 @@
 // Jest workers run in parallel and every other facts test needs typescript,
 // so this never touches this repo's node_modules. It stages a copy of
 // src/facts + src/schema.js in a temp package whose node_modules holds
-// symlinks to the real fast-glob / ignore / yaml and NO typescript, then
+// symlinks to the real tinyglobby / ignore / yaml and NO typescript, then
 // drives it in a child node process.
 import { spawnSync } from 'node:child_process';
 import { cpSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from 'node:fs';
@@ -26,7 +26,7 @@ beforeAll(() => {
   cpSync(join(REPO, 'src', 'facts'), join(stage, 'src', 'facts'), { recursive: true });
   cpSync(join(REPO, 'src', 'schema.js'), join(stage, 'src', 'schema.js'));
   mkdirSync(join(stage, 'node_modules'), { recursive: true });
-  for (const dep of ['fast-glob', 'ignore', 'yaml']) {
+  for (const dep of ['tinyglobby', 'ignore', 'yaml']) {
     // Node realpaths a symlinked package, so each one's own dependencies
     // still resolve from this repo's node_modules.
     symlinkSync(join(REPO, 'node_modules', dep), join(stage, 'node_modules', dep), 'dir');
