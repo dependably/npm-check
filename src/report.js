@@ -268,30 +268,27 @@ function applyScanExceptions(buckets, exceptions) {
   return { suppressed, used };
 }
 
-// The scan rules whose findings could have appeared this run. An exception for a
-// scan that was switched off (`--offline`, `--no-vuln`) matched nothing because
-// nothing ran, which is not the stale entry the unused notice is for.
-function rulesThatRan(opts) {
-  const ran = new Set();
-  if (opts.vuln) ran.add('vulnerable-package');
-  if (opts.deprecated) ran.add('deprecated-package');
-  if (opts.integrity || opts.vuln || opts.deprecated) ran.add('unresolved-package');
-  return ran;
+// Whether the scan an exception targets ran this run. An exception for a scan
+// that was switched off (`--offline`, `--no-vuln`) matched nothing because
+// nothing ran, which is not the stale entry the unused notice is for. An
+// `unresolved-package` exception with an `id` targets the one scan it names.
+function scanRanFor(ex, opts) {
+  const { rule, id } = ex.selectors;
+  if (rule === 'vulnerable-package') return opts.vuln;
+  if (rule === 'deprecated-package') return opts.deprecated;
+  if (id === 'integrity' || id === 'vuln' || id === 'deprecated') return opts[id];
+  return opts.integrity || opts.vuln || opts.deprecated;
 }
 
-// Merge the audit's exception bookkeeping with the scans'. runAudit reports every
-// scan-rule exception as unused (it never sees those findings), so an entry is
-// unused only when neither side matched it.
-function exceptionsMetaFor(audit, scanUsed, opts) {
+// Merge the audit's exception bookkeeping with the scans'. runAudit leaves every
+// scan-rule exception out of its unused list (it never sees those findings), so
+// the scan-rule entries are judged here: live, their scan ran, nothing matched.
+function exceptionsMetaFor(audit, scanUsed, exceptions, opts) {
   const meta = audit.exceptionsMeta || { unused: [], expired: [] };
   const scanRules = new Set(Object.values(SCAN_EXCEPTION_RULE));
-  const ran = rulesThatRan(opts);
-  const unused = meta.unused.filter((ex) => {
-    const rule = ex.selectors && ex.selectors.rule;
-    if (!scanRules.has(rule)) return true;
-    return ran.has(rule) && !scanUsed.has(ex);
-  });
-  return { unused, expired: meta.expired };
+  const scanUnused = (exceptions || []).filter((ex) => ex.selectors && scanRules.has(ex.selectors.rule)
+    && !isExpired(ex) && !scanUsed.has(ex) && scanRanFor(ex, opts));
+  return { unused: [...meta.unused, ...scanUnused], expired: meta.expired };
 }
 
 // Bucket license findings: rejected licenses are errors, unknown licenses warn.
@@ -760,7 +757,7 @@ export async function runReport(target, options = {}) {
 
   return {
     filePath, scanned: countExaminedPackages(lockfile), sections, summary, suppressed,
-    exceptionsMeta: exceptionsMetaFor(audit, scanExceptions.used, opts)
+    exceptionsMeta: exceptionsMetaFor(audit, scanExceptions.used, opts.auditConfig.exceptions, opts)
   };
 }
 

@@ -12,6 +12,7 @@ import {
   DEPRECATED_SHARED_CONFIG_FILENAME,
   AuditConfigError
 } from '../../src/audit-config.js';
+import { runAudit } from '../../src/audit.js';
 
 let tmpDir;
 const write = (name, obj) => fs.writeFileSync(path.join(tmpDir, name), typeof obj === 'string' ? obj : JSON.stringify(obj));
@@ -269,5 +270,27 @@ describe('loadSharedConfig extras', () => {
     } catch (e) {
       expect(e).toBeInstanceOf(AuditConfigError);
     }
+  });
+});
+
+describe('scan-rule exceptions', () => {
+  const scanException = { rule: 'vulnerable-package', id: 'GHSA-vfj7-8cjw-p6xm', reason: 'unreachable' };
+
+  it('loads a report scan rule from npm-check\'s own section', () => {
+    write(SHARED_CONFIG_FILENAME, { 'npm-check': { exceptions: [scanException] } });
+
+    const config = loadAuditConfig(tmpDir);
+
+    expect(config.exceptions.map((e) => e.selectors.rule)).toEqual(['vulnerable-package']);
+  });
+
+  it('is not reported unused by the audit, which never sees scan findings', () => {
+    write(SHARED_CONFIG_FILENAME, { 'npm-check': { exceptions: [scanException] } });
+    const config = loadAuditConfig(tmpDir);
+    const lockfile = { name: 'demo', version: '1.0.0', lockfileVersion: 3, packages: { '': { name: 'demo', version: '1.0.0' } } };
+
+    const report = runAudit({ lockfile, filePath: path.join(tmpDir, 'package-lock.json') }, config);
+
+    expect(report.exceptionsMeta.unused).toEqual([]);
   });
 });

@@ -783,6 +783,25 @@ describe('runReport applies .dependably exceptions to the scan findings', () => 
     ]);
   });
 
+  it('judges an unresolved-package exception by the scan its id names', async () => {
+    const entries = [{ rule: 'unresolved-package', package: 'good-pkg@1.0.0', id: 'vuln', reason: 'vuln gap' }];
+    expect((await run(entries, { vuln: false })).exceptionsMeta.unused).toEqual([]);
+    expect((await run(entries)).exceptionsMeta.unused).toHaveLength(1);
+  });
+
+  it('never suppresses an integrity mismatch, whatever the exception', async () => {
+    const report = await run(
+      [
+        { rule: 'unresolved-package', package: 'good-pkg', reason: 'any gap' },
+        { rule: 'unresolved-package', package: 'good-pkg@1.0.0', id: 'integrity', reason: 'integrity gap' }
+      ],
+      { fetchIntegrity: fakeRegistry({ 'good-pkg': HASH_B }) }
+    );
+    expect(section(report, 'integrity').findings).toHaveLength(1);
+    expect(report.summary.pass).toBe(false);
+    expect(report.summary.suppressed).toBe(0);
+  });
+
   it('rejects an exception rule npm-check does not know', () => {
     expect(() => exceptionsFor([{ rule: 'integrity-mismatch', package: 'x', reason: 'r' }])).toThrow(/Unknown rule/);
   });

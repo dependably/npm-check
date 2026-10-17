@@ -259,7 +259,7 @@ The audit rules above name findings by their rule id. The `report` command's reg
 | `deprecated-package` | a deprecated version | — |
 | `unresolved-package` | an entry a scan could not check | the scan: `integrity`, `vuln` or `deprecated` |
 
-Pin `package` to `name@version` so the exception lapses when the dependency moves. An integrity mismatch has no rule id and can't be suppressed: a lockfile hash that disagrees with the registry is a tamper signal. The report lists suppressed findings under `extra.suppressed` in `--format json`, adds `N suppressed` to the section summary and the footer, and warns on stderr about unused or expired exceptions (a scan switched off with `--offline` doesn't make its exceptions unused).
+Pin `package` to `name@version` so the exception lapses when the dependency moves. An integrity mismatch has no rule id and can't be suppressed: a lockfile hash that disagrees with the registry is a tamper signal. The report lists suppressed findings under `extra.suppressed` in `--format json`, adds `N suppressed` to the section summary and the footer, and warns on stderr about unused or expired exceptions (a scan switched off with `--offline` doesn't make its exceptions unused). Only `report` applies them: the standalone `vuln` and `deprecated` commands still report every finding, so gate CI on `report`.
 
 Exit codes follow the [shared convention](#exit-codes) (`1` also covers warnings exceeding `maxWarnings` / `--fail-on count=`).
 
