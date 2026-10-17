@@ -35,7 +35,7 @@
 // to both, or note here why it does not apply to npm.
 import { readFileSync } from 'node:fs';
 import { dirname, relative, sep } from 'node:path';
-import fg from 'fast-glob';
+import { globSync } from 'tinyglobby';
 import ignoreFactory from 'ignore';
 
 /** @typedef {import('./types.d.ts').GitignoreLayer} GitignoreLayer */
@@ -58,13 +58,13 @@ import ignoreFactory from 'ignore';
  * @returns {GitignoreLayer[]}
  */
 export function loadGitignores(srcDir, ignoreDirs) {
-  const paths = fg.sync('**/.gitignore', {
+  const paths = globSync('**/.gitignore', {
     cwd: srcDir,
     absolute: true,
     ignore: [...ignoreDirs],
     dot: false,
     followSymbolicLinks: false,
-    suppressErrors: true
+    expandDirectories: false
   });
   /** @type {GitignoreLayer[]} */
   const layers = [];

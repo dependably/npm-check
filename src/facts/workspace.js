@@ -13,7 +13,7 @@
 // .gitignore, never by a directory name", GitLab #31).
 import { readFileSync } from 'node:fs';
 import { dirname, join, relative, sep } from 'node:path';
-import fg from 'fast-glob';
+import { globSync } from 'tinyglobby';
 import { aliasBaseFromPathsKey } from './specifier.js';
 import { filterGitignored, loadGitignores, outputDirScannedDiagnostic } from './sourcescan.js';
 import { loadTypeScript } from './ts.js';
@@ -62,12 +62,13 @@ export function discoverWorkspace(srcDir) {
   const filterIgnored = (paths) => filterGitignored(srcDir, gitignores, paths);
 
   const manifestPaths = filterIgnored(
-    fg.sync('**/package.json', {
+    globSync('**/package.json', {
       cwd: srcDir,
       absolute: true,
       ignore: IGNORE_DIRS,
       dot: false,
-      followSymbolicLinks: false
+      followSymbolicLinks: false,
+      expandDirectories: false
     })
   ).sort();
 
@@ -111,12 +112,13 @@ export function discoverWorkspace(srcDir) {
   /** @type {AliasLayer[]} */
   const aliasLayers = [];
   const aliasConfigPaths = filterIgnored(
-    fg.sync(['**/tsconfig*.json', '**/jsconfig*.json'], {
+    globSync(['**/tsconfig*.json', '**/jsconfig*.json'], {
       cwd: srcDir,
       absolute: true,
       ignore: IGNORE_DIRS,
       dot: false,
-      followSymbolicLinks: false
+      followSymbolicLinks: false,
+      expandDirectories: false
     })
   ).sort();
   for (const path of aliasConfigPaths) {
@@ -177,12 +179,13 @@ export function discoverWorkspace(srcDir) {
   const aliasScope = buildAliasScope(aliasLayers);
 
   const sourceFiles = filterIgnored(
-    fg.sync(SOURCE_GLOB, {
+    globSync(SOURCE_GLOB, {
       cwd: srcDir,
       absolute: true,
       ignore: IGNORE_DIRS,
       dot: false,
-      followSymbolicLinks: false
+      followSymbolicLinks: false,
+      expandDirectories: false
     })
   ).sort();
 

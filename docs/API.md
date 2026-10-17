@@ -264,11 +264,11 @@ condition), so a TypeScript consumer gets `ImportSite`, `ScanResult`,
 
 ### Bundling
 
-`@dependably/npm-check/facts` is plain ESM with three CommonJS dependencies
-(`fast-glob`, `ignore`, `yaml`) and one lazily `createRequire`'d optional peer
+`@dependably/npm-check/facts` is plain ESM with three runtime dependencies
+(`tinyglobby`, `ignore`, `yaml`; the last two CommonJS) and one lazily `createRequire`'d optional peer
 (`typescript`). Two things follow for a consumer that bundles it:
 
-- **An ESM bundle needs a `createRequire` banner.** `fast-glob` and `ignore`
+- **An ESM bundle needs a `createRequire` banner.** `ignore` and `yaml`
   are CJS; a bundler emits `__require("os")`-style shims for their own
   builtin imports, which fail in an ESM output unless a top-of-bundle
   `import { createRequire } from 'node:module'; const require =
