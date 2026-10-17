@@ -695,6 +695,7 @@ async function runReportCommand() {
     );
 
     if (onProgress) clearProgressLine();
+    emitExceptionWarnings(report.exceptionsMeta, opts.format);
     const rendered = formatReport(report, { format: opts.format });
     console.log(opts.format === 'human' ? '\n' + rendered : rendered);
   } catch (error) {

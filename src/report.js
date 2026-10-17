@@ -10,6 +10,7 @@ import { checkIntegrity, checkLicenses } from './checker.js';
 import { checkVulnerabilities } from './vuln.js';
 import { checkDeprecations } from './deprecation.js';
 import { detectLockfileFlavor } from './format-library.js';
+import { matchException, isExpired } from './exceptions.js';
 import { buildEnvelope } from './schema.js';
 
 // Sections that apply to a pnpm lockfile: the registry-backed scans, the config
@@ -139,6 +140,8 @@ function collectUnresolvedFindings(buckets, check, category, unresolvedItems, fa
       severity,
       location: item.packagePath,
       message: `[${check}] ${item.package}@${item.version}: ${item.reason}`,
+      package: item.package,
+      version: item.version,
       check,
       category
     });
@@ -196,6 +199,10 @@ function collectVulnFindings(buckets, vulnResult, failOnUnresolved) {
   collectUnresolvedFindings(buckets, 'vuln', 'vulnerability', vulnResult.unresolvedItems, failOnUnresolved);
 }
 
+function deprecationFinding(level, f) {
+  return { severity: level, location: f.packagePath, message: `${f.package}@${f.version}: ${f.message}`, package: f.package, version: f.version };
+}
+
 // Bucket deprecation findings. A *found* deprecation is an error only under
 // failOnDeprecated (it lands in `errors` with a message), else a warning. Entries
 // the scan could not check at all go to the shared "Unresolved" section (those in
@@ -203,12 +210,88 @@ function collectVulnFindings(buckets, vulnResult, failOnUnresolved) {
 function collectDeprecationFindings(buckets, deprecationResult, failOnUnresolved) {
   for (const err of deprecationResult.errors) {
     if (!err.message) continue;
-    pushFinding(buckets, 'deprecated', { severity: 'error', location: err.packagePath, message: `${err.package}@${err.version}: ${err.message}` });
+    pushFinding(buckets, 'deprecated', deprecationFinding('error', err));
   }
   for (const warn of deprecationResult.warnings) {
-    pushFinding(buckets, 'deprecated', { severity: 'warn', location: warn.packagePath, message: `${warn.package}@${warn.version}: ${warn.message}` });
+    pushFinding(buckets, 'deprecated', deprecationFinding('warn', warn));
   }
   collectUnresolvedFindings(buckets, 'deprecated', 'deprecated', deprecationResult.unresolvedItems, failOnUnresolved);
+}
+
+// The `.dependably` exception rule each registry-scan section answers to (see
+// SCAN_RULES in audit-config.js). Audit-rule findings are matched inside
+// runAudit; the integrity section has no entry, so a mismatch is never
+// suppressible.
+const SCAN_EXCEPTION_RULE = { vuln: 'vulnerable-package', deprecated: 'deprecated-package', unresolved: 'unresolved-package' };
+
+// The GHSA id in an advisory's URL (`https://github.com/advisories/GHSA-…`), or null.
+function ghsaOf(f) {
+  const match = typeof f.url === 'string' ? f.url.match(/GHSA(?:-[0-9a-z]{4}){3}/i) : null;
+  return match ? match[0] : null;
+}
+
+// The exception probes one scan finding is matched against (any probe matching
+// suppresses it). An advisory answers to its npm advisory id AND its GHSA id —
+// the GHSA is what people copy from an advisory page. An unresolved entry's `id`
+// is the scan that couldn't complete (`integrity` / `vuln` / `deprecated`), so an
+// exception can accept one gap without hiding the package from the other scans.
+function scanExceptionProbes(sectionId, f) {
+  const base = { rule: SCAN_EXCEPTION_RULE[sectionId], package: f.package, version: f.version };
+  if (sectionId === 'unresolved') return [{ ...base, id: f.check }];
+  if (sectionId === 'vuln') {
+    const ids = [f.advisoryId != null ? String(f.advisoryId) : null, ghsaOf(f)].filter(Boolean);
+    if (ids.length) return ids.map((id) => ({ ...base, id }));
+  }
+  return [base];
+}
+
+// Remove the scan findings named by a live `.dependably` exception from their
+// buckets. Returns the suppressed copies (stamped like runAudit's) and the set of
+// exceptions that matched, for the unused-exception notice.
+function applyScanExceptions(buckets, exceptions) {
+  const rules = new Set(Object.values(SCAN_EXCEPTION_RULE));
+  const live = (exceptions || []).filter((ex) => ex.selectors && rules.has(ex.selectors.rule) && !isExpired(ex));
+  const used = new Set();
+  const suppressed = [];
+  if (live.length === 0) return { suppressed, used };
+  for (const sectionId of Object.keys(SCAN_EXCEPTION_RULE)) {
+    if (!buckets[sectionId]) continue;
+    buckets[sectionId] = buckets[sectionId].filter((f) => {
+      const probes = scanExceptionProbes(sectionId, f);
+      const hit = live.find((ex) => probes.some((probe) => matchException(ex, probe)));
+      if (!hit) return true;
+      used.add(hit);
+      suppressed.push({ ...f, section: sectionId, suppressed: true, suppressedBy: hit.reason });
+      return false;
+    });
+  }
+  return { suppressed, used };
+}
+
+// The scan rules whose findings could have appeared this run. An exception for a
+// scan that was switched off (`--offline`, `--no-vuln`) matched nothing because
+// nothing ran, which is not the stale entry the unused notice is for.
+function rulesThatRan(opts) {
+  const ran = new Set();
+  if (opts.vuln) ran.add('vulnerable-package');
+  if (opts.deprecated) ran.add('deprecated-package');
+  if (opts.integrity || opts.vuln || opts.deprecated) ran.add('unresolved-package');
+  return ran;
+}
+
+// Merge the audit's exception bookkeeping with the scans'. runAudit reports every
+// scan-rule exception as unused (it never sees those findings), so an entry is
+// unused only when neither side matched it.
+function exceptionsMetaFor(audit, scanUsed, opts) {
+  const meta = audit.exceptionsMeta || { unused: [], expired: [] };
+  const scanRules = new Set(Object.values(SCAN_EXCEPTION_RULE));
+  const ran = rulesThatRan(opts);
+  const unused = meta.unused.filter((ex) => {
+    const rule = ex.selectors && ex.selectors.rule;
+    if (!scanRules.has(rule)) return true;
+    return ran.has(rule) && !scanUsed.has(ex);
+  });
+  return { unused, expired: meta.expired };
 }
 
 // Bucket license findings: rejected licenses are errors, unknown licenses warn.
@@ -244,9 +327,9 @@ function integritySummary(r) {
 // don't map 1:1 to packages (a vulnerable package can carry more than one
 // advisory). Unresolved entries are summarized in the shared "Unresolved (could
 // not check)" section instead.
-function scanSummary(r, flaggedKey, flaggedAdjective, detail = null) {
+function scanSummary(r, flaggedKey, flaggedAdjective, detail = null, flaggedOverride = null) {
   const bits = [`${r.scanned} scanned`];
-  const n = r[flaggedKey];
+  const n = flaggedOverride ?? r[flaggedKey];
   if (n) {
     const unit = `${flaggedAdjective} package${n === 1 ? '' : 's'}`;
     const suffix = detail ? ` (${detail})` : '';
@@ -288,6 +371,20 @@ function genericSummary(id, findings) {
   const sev = worstSeverity(findings);
   if (sev) return `${findings.length} ${findings.length === 1 ? 'finding' : 'findings'}`;
   return DEFAULT_PASS_SUMMARY[id] || 'pass';
+}
+
+// Distinct packages among a section's remaining findings: the flagged count once
+// exceptions have removed some, since the scan's own tally still includes them.
+function flaggedAfterSuppression(findings, suppressedCount) {
+  if (!suppressedCount) return null;
+  return new Set(findings.map((f) => `${f.package}@${f.version}`)).size;
+}
+
+// Append `N suppressed` to a section summary when exceptions removed findings.
+function withSuppressed(section, suppressedCount) {
+  if (!suppressedCount) return section;
+  const bit = `${suppressedCount} suppressed`;
+  return { ...section, summary: section.summary && section.summary !== 'none' ? `${section.summary} · ${bit}` : bit };
 }
 
 // Build a passing/severity result whose summary comes from the given producer.
@@ -336,20 +433,25 @@ const SECTION_DESCRIBERS = {
     const advisoryWord = n === 1 ? 'advisory' : 'advisories';
     const detail = n ? `${n} ${advisoryWord}` : null;
     const r = state.vulnResult;
-    return nothingCheckedSection(r.scanned, r.skipped, findings) || liveSection(findings, scanSummary(state.vulnResult, 'vulnerable', 'vulnerable', detail));
+    const suppressed = state.suppressedBySection.vuln;
+    const flagged = flaggedAfterSuppression(findings, suppressed);
+    return withSuppressed(nothingCheckedSection(r.scanned, r.skipped, findings) || liveSection(findings, scanSummary(r, 'vulnerable', 'vulnerable', detail, flagged)), suppressed);
   },
   deprecated(findings, state) {
     if (!state.deprecated) return { status: 'skip', summary: '--offline' };
     const r = state.deprecationResult;
-    return nothingCheckedSection(r.scanned, r.skipped, findings) || liveSection(findings, scanSummary(r, 'deprecated', 'deprecated'));
+    const suppressed = state.suppressedBySection.deprecated;
+    const flagged = flaggedAfterSuppression(findings, suppressed);
+    return withSuppressed(nothingCheckedSection(r.scanned, r.skipped, findings) || liveSection(findings, scanSummary(r, 'deprecated', 'deprecated', null, flagged)), suppressed);
   },
   // moonlitlabs/npm-check#35: the shared "Unresolved (could not check)" section.
   // Each finding carries `check` (integrity/vuln/deprecated); the summary breaks
   // the total down by check so a reader can tell WHICH scan(s) couldn't complete
   // without opening the detail block.
-  unresolved(findings) {
-    if (findings.length === 0) return { status: 'pass', summary: 'none' };
-    return liveSection(findings, unresolvedSummary(findings));
+  unresolved(findings, state) {
+    const suppressed = state.suppressedBySection.unresolved;
+    if (findings.length === 0) return withSuppressed({ status: 'pass', summary: 'none' }, suppressed);
+    return withSuppressed(liveSection(findings, unresolvedSummary(findings)), suppressed);
   },
   licenses(findings, state) {
     // An unexpected checkLicenses failure (malformed CSV, fs permission error,
@@ -639,15 +741,27 @@ export async function runReport(target, options = {}) {
     ? { licenseResult: null, licenseSkip: 'N/A (pnpm)' }
     : await runLicenseStage(buckets, lockfile, opts);
 
+  // 5. `.dependably` exceptions over the scan findings (runAudit already applied
+  //    them to the audit rules). Suppressed findings stop gating but are counted.
+  const scanExceptions = applyScanExceptions(buckets, opts.auditConfig.exceptions);
+  const suppressedBySection = {};
+  for (const f of scanExceptions.suppressed) suppressedBySection[f.section] = (suppressedBySection[f.section] || 0) + 1;
+
   // Assemble ordered sections with status + one-line summary, then roll up totals.
   const sectionState = {
     flavor,
     integrity: opts.integrity, integrityResult, vuln: opts.vuln, vulnResult,
-    deprecated: opts.deprecated, deprecationResult, licenseSkip, licenseError, licenseResult, scriptTally
+    deprecated: opts.deprecated, deprecationResult, licenseSkip, licenseError, licenseResult, scriptTally,
+    suppressedBySection
   };
   const { sections, summary } = assembleSections(buckets, sectionState, opts.maxWarnings, opts.minSeverity);
+  const suppressed = [...(audit.suppressed || []), ...scanExceptions.suppressed];
+  summary.suppressed = suppressed.length;
 
-  return { filePath, scanned: countExaminedPackages(lockfile), sections, summary };
+  return {
+    filePath, scanned: countExaminedPackages(lockfile), sections, summary, suppressed,
+    exceptionsMeta: exceptionsMetaFor(audit, scanExceptions.used, opts)
+  };
 }
 
 // Count the package entries the report examined (the non-root lockfile entries):
@@ -753,6 +867,17 @@ function reportFindingToSchema(sectionId, f) {
   };
 }
 
+// One suppressed finding (audit or scan) for the envelope: what it was, and why
+// it no longer gates.
+function suppressedToSchema(f) {
+  return {
+    ruleId: f.ruleId || SCAN_EXCEPTION_RULE[f.section] || null,
+    message: f.message,
+    location: f.packagePath || f.location || null,
+    reason: f.suppressedBy
+  };
+}
+
 /**
  * Wrap a runReport() result in the shared finding-schema envelope. The COMPLETE
  * set of findings (every section, in section order) becomes the top-level
@@ -779,7 +904,9 @@ export function reportEnvelope(report, meta = {}) {
     exitCode,
     extra: {
       sections: report.sections.map((s) => ({ id: s.id, title: s.title, status: s.status, summary: s.summary })),
-      summary: report.summary
+      summary: report.summary,
+      // Findings `.dependably` exceptions suppressed: listed, never gating.
+      suppressed: (report.suppressed || []).map(suppressedToSchema)
     }
   });
 }
@@ -890,7 +1017,13 @@ function renderSectionDetail(s) {
 // Closing totals line: an all-clear, or an error/warning count plus a next-step
 // hint when warnings alone did not fail the run (so "N warnings" doesn't read
 // as ambiguous next to an exit code of 0).
-function renderFooter({ errors, warnings, total, pass }) {
+function renderFooter(summary) {
+  const line = footerLine(summary);
+  if (!summary.suppressed) return line;
+  return `${line}\n${summary.suppressed} suppressed by .dependably exceptions`;
+}
+
+function footerLine({ errors, warnings, total, pass }) {
   if (total === 0) return 'all checks passed';
   const word = total === 1 ? 'problem' : 'problems';
   const line = `${total} ${word} (${errors} error${errors === 1 ? '' : 's'}, ${warnings} warning${warnings === 1 ? '' : 's'})`;

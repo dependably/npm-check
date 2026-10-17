@@ -87,6 +87,14 @@ export const DEFAULT_CONFIG = {
 
 export const KNOWN_RULES = Object.keys(DEFAULT_CONFIG.rules);
 
+// Rule ids the report's registry scans answer to in `.dependably` exceptions.
+// They are not audit rules (no severity to configure, nothing for `rules` to
+// turn off), so they're accepted only as an exception's `rule`. The names match
+// nucheck's `vulnerable-package`. An integrity mismatch has no id on purpose: a
+// lockfile hash that disagrees with the registry is a tamper signal, never an
+// accepted risk.
+export const SCAN_RULES = ['vulnerable-package', 'deprecated-package', 'unresolved-package'];
+
 /**
  * Normalize a config rule entry to { severity, options }.
  * Accepts 'error' | 'warn' | 'off' | [severity, options].
@@ -261,7 +269,7 @@ function mergeExceptions(common, tool) {
     source: 'common', applicableSelectors: APPLICABLE_SELECTORS
   });
   const ownEx = parseExceptions(tool && tool.exceptions, {
-    source: 'own', applicableSelectors: APPLICABLE_SELECTORS, knownRules: KNOWN_RULES
+    source: 'own', applicableSelectors: APPLICABLE_SELECTORS, knownRules: [...KNOWN_RULES, ...SCAN_RULES]
   });
   return [...commonEx, ...ownEx];
 }
