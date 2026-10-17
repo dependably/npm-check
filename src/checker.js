@@ -561,6 +561,7 @@ async function verifyIntegrityCandidate(candidate, ctx) {
  * @param {string} options.defaultRegistry - Registry for entries without a derivable base
  * @param {boolean} options.failOnUnresolved - Fail the run when the registry hash can't
  *   be obtained. Default true (fail closed); set false to keep unresolved non-fatal.
+ * @param {object} [options.registryAuth] - Credential resolver from loadRegistryAuth() ({ authFor(url) }); no credentials when absent
  * @param {Function} options.fetchIntegrity - Injectable (name, version, registryBase) => Promise<string|null>
  * @param {Function} options.onProgress - Progress callback
  * @returns {Promise<object>} Results object with summary and details
@@ -578,6 +579,7 @@ export async function checkIntegrity(lockfileData, options = {}) {
     // (not verified against it), closing that self-referential-trust gap.
     allowedHosts = null,
     fetchIntegrity = null,
+    registryAuth = null,
     onProgress = null
   } = options;
   const hostAllowlist = Array.isArray(allowedHosts) && allowedHosts.length ? new Set(allowedHosts) : null;
@@ -590,7 +592,7 @@ export async function checkIntegrity(lockfileData, options = {}) {
   }
 
   const fetcher = fetchIntegrity ||
-    ((name, ver, registryBase) => fetchPackumentIntegrity(name, ver, { registryBase, timeoutMs }));
+    ((name, ver, registryBase) => fetchPackumentIntegrity(name, ver, { registryBase, timeoutMs, authFor: registryAuth?.authFor }));
 
   const results = {
     valid: true,

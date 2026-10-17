@@ -345,6 +345,7 @@ export async function fixChecksums(lockfile, options = {}) {
     // used — the on-disk path is derived from baseDir + the lockfile key (fix #17).
     defaultRegistry = DEFAULT_REGISTRY,
     fetchIntegrity = null,
+    registryAuth = null,
     baseDir = '.'
   } = options;
 
@@ -356,7 +357,7 @@ export async function fixChecksums(lockfile, options = {}) {
   }
 
   const fetcher = fetchIntegrity ||
-    ((name, ver, registryBase) => fetchPackumentIntegrity(name, ver, { registryBase, timeoutMs }));
+    ((name, ver, registryBase) => fetchPackumentIntegrity(name, ver, { registryBase, timeoutMs, authFor: registryAuth?.authFor }));
 
   const { candidates, skipped, total } = collectCandidates(lockfile, baseDir);
 

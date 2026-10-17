@@ -207,6 +207,7 @@ async function processUnit(unit, fetcher, failOnDeprecated, failOnUnresolved, re
  * @param {boolean} options.failOnDeprecated - Treat a *found* deprecation as a failure (default: false)
  * @param {boolean} options.failOnUnresolved - Fail the run when the scan can't complete
  *   (registry unreachable / version not found). Default true (fail closed); set false to tolerate.
+ * @param {object} [options.registryAuth] - Credential resolver from loadRegistryAuth() ({ authFor(url) }); no credentials when absent
  * @param {Function} options.fetchManifest - Injectable (name, version, registryBase) => Promise<object|null>
  * @param {Function} options.onProgress - Progress callback
  * @returns {Promise<object>} Results object with summary and details
@@ -220,6 +221,7 @@ export async function checkDeprecations(lockfileData, options = {}) {
     failOnDeprecated = false,
     failOnUnresolved = true, // fail closed: a scan that couldn't complete must not pass as "clean"
     fetchManifest = null,
+    registryAuth = null,
     onProgress = null
   } = options;
 
@@ -242,7 +244,7 @@ export async function checkDeprecations(lockfileData, options = {}) {
   }
 
   const fetcher = fetchManifest ||
-    ((name, version, registryBase) => fetchPackumentManifest(name, version, { registryBase, timeoutMs }));
+    ((name, version, registryBase) => fetchPackumentManifest(name, version, { registryBase, timeoutMs, authFor: registryAuth?.authFor }));
 
   // Dedupe identical name@version@registry so each unique version is fetched once;
   // the single manifest result is attributed to every lockfile entry that shares it.

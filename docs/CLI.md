@@ -105,6 +105,24 @@ The registry-backed scans — `check --check hash` (integrity), `vuln`, `depreca
 
 The programmatic API matches: `checkIntegrity`, `checkVulnerabilities`, and `checkDeprecations` default `failOnUnresolved: true`; pass `false` for lenient behavior.
 
+## Private registries and credentials
+
+The registry-backed commands (`check --check hash`, `vuln`, `deprecated`, `report`, `fix-checksums`, `remediate`) read registry credentials from the same `.npmrc` files npm and pnpm do: the user-level file (`~/.npmrc`, or the path in `NPM_CONFIG_USERCONFIG`), overridden by the project `.npmrc` next to the lockfile. Without this, a registry that requires authentication answers every request with `401` and every package lands in "Unresolved".
+
+Credentials must be scoped to a registry, the way npm writes them:
+
+```ini
+registry=https://registry.example.com/npm/
+//registry.example.com/npm/:_authToken=${NPM_TOKEN}
+```
+
+- `_authToken` is sent as `Bearer`; `_auth`, or `username` with a base64 `_password`, as `Basic`.
+- `${VAR}` references are expanded from the environment. A credential whose variable is unset is not sent.
+- A credential is sent only to `https://` URLs under the registry path it is scoped to, longest match first. Unscoped `_authToken` / `_auth` keys name no registry, so they are ignored.
+- For a pnpm lockfile, which records no `resolved` URL, the registry also comes from these files: `@scope:registry`, then `registry`, then the public npm registry.
+
+In CI, writing the registry and token to `$HOME/.npmrc` (as an install step usually does) is enough; nothing has to be committed.
+
 ## Progress output
 
 Registry-backed commands (`check --check hash`, `vuln`, `deprecated`, `report`) write progress to **stderr**, never stdout — stdout stays report-only. On a real terminal this is an animated redraw-in-place bar; when stdout is not a TTY (piped, redirected, `tee`'d, CI logs) it degrades to periodic one-line milestones (0/25/50/75/100%) instead, so a piped/CI run's log isn't flooded with redraw frames.
@@ -238,7 +256,7 @@ Exit codes follow the [shared convention](#exit-codes) (`1` also covers warnings
 
 ## Fix-checksums command
 
-Fills missing, placeholder (`sha512-PLACEHOLDER`), and weak (`sha1-`) integrity hashes with the authoritative `dist.integrity` from each package's registry. The registry is derived per-package from the entry's `resolved` URL, so scoped/private registries work without configuration.
+Fills missing, placeholder (`sha512-PLACEHOLDER`), and weak (`sha1-`) integrity hashes with the authoritative `dist.integrity` from each package's registry. The registry is derived per-package from the entry's `resolved` URL, so scoped/private registries work without configuration; credentials come from `.npmrc` (see [Private registries and credentials](#private-registries-and-credentials)).
 
 ```bash
 npm-check fix-checksums                  # Dry-run: show what would change

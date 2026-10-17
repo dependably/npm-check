@@ -74,16 +74,16 @@ function assertValidInputs(lockfile, packageJson) {
  * warnings and skipped).
  */
 async function gatherFlagged(lockfile, options) {
-  const { includeDeprecated, timeoutMs, concurrency, defaultRegistry, minSeverity, fetchManifest, fetchAdvisories, onProgress } = options;
+  const { includeDeprecated, timeoutMs, concurrency, defaultRegistry, minSeverity, fetchManifest, fetchAdvisories, registryAuth, onProgress } = options;
 
   // remediate gathers *actual* findings to bump — it is not a CI gate, so it opts
   // out of the scanners' fail-closed default (failOnUnresolved). Otherwise an
   // unreachable-registry entry would land in `errors` and be mistaken for a finding.
   const [deprecationResult, vulnResult] = await Promise.all([
     includeDeprecated
-      ? checkDeprecations(lockfile, { timeoutMs, concurrency, defaultRegistry, fetchManifest, onProgress, failOnUnresolved: false })
+      ? checkDeprecations(lockfile, { timeoutMs, concurrency, defaultRegistry, fetchManifest, registryAuth, onProgress, failOnUnresolved: false })
       : Promise.resolve({ warnings: [], errors: [] }),
-    checkVulnerabilities(lockfile, { timeoutMs, concurrency, defaultRegistry, minSeverity, fetchAdvisories, onProgress, failOnUnresolved: false })
+    checkVulnerabilities(lockfile, { timeoutMs, concurrency, defaultRegistry, minSeverity, fetchAdvisories, registryAuth, onProgress, failOnUnresolved: false })
   ]);
 
   const flagged = new Map(); // name -> Set of reasons
@@ -124,13 +124,13 @@ function indexDirectDeps(packageJson) {
  * registry is unreachable or has no latest version.
  */
 async function resolveLatest(name, current, options) {
-  const { fetchLatest, defaultRegistry, timeoutMs } = options;
+  const { fetchLatest, defaultRegistry, timeoutMs, registryAuth } = options;
   const registryBase = (current && deriveRegistryBase(current.resolved, name)) || defaultRegistry;
   let latest;
   try {
     latest = fetchLatest
       ? await fetchLatest(name, registryBase)
-      : await fetchLatestVersion(name, { registryBase, timeoutMs });
+      : await fetchLatestVersion(name, { registryBase, timeoutMs, authFor: registryAuth?.authFor });
   } catch (e) {
     return { warning: { package: name, reason: `registry unreachable (${e.message})` } };
   }
@@ -232,6 +232,7 @@ function applyBumps(lockfile, packageJson, bumped) {
  * @param {boolean} options.includeDeprecated - Treat deprecated direct deps as remediation targets (default: true)
  * @param {number} options.timeoutMs / options.concurrency / options.defaultRegistry
  * @param {Function} options.fetchManifest / options.fetchAdvisories - Injected scan transports (tests)
+ * @param {object} [options.registryAuth] - Credential resolver from loadRegistryAuth() ({ authFor(url) }); no credentials when absent
  * @param {Function} options.fetchLatest - Injected (name, registryBase) => Promise<version|null> (tests)
  * @param {Function} options.onProgress
  * @returns {Promise<object>} { packageJson, lockfile, bumped, guidance, skipped, warnings, changed }
@@ -246,9 +247,10 @@ export async function remediateDependencies(lockfile, packageJson, options = {})
     fetchManifest = null,
     fetchAdvisories = null,
     fetchLatest = null,
+    registryAuth = null,
     onProgress = null
   } = options;
-  const resolved = { minSeverity, includeDeprecated, timeoutMs, concurrency, defaultRegistry, fetchManifest, fetchAdvisories, fetchLatest, onProgress };
+  const resolved = { minSeverity, includeDeprecated, timeoutMs, concurrency, defaultRegistry, fetchManifest, fetchAdvisories, fetchLatest, registryAuth, onProgress };
 
   assertValidInputs(lockfile, packageJson);
 
