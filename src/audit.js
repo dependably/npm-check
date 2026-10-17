@@ -11,7 +11,7 @@ import { classifyRange } from './pinner.js';
 import { walkOverrides } from './overrides.js';
 import { findOrphanedPackages } from './pruner.js';
 import { findUnusedDependencies } from './usage-scanner.js';
-import { mergeConfig } from './audit-config.js';
+import { mergeConfig, SCAN_RULES } from './audit-config.js';
 import { matchException, isExpired } from './exceptions.js';
 
 export class AuditError extends Error {
@@ -941,7 +941,10 @@ function applyAuditExceptions(findings, exceptions) {
       kept.push(finding);
     }
   }
-  return { kept, suppressed, unused: live.filter((ex) => !used.has(ex)), expired };
+  // A scan-rule exception (`vulnerable-package`, …) can never match an audit
+  // finding, so the audit can't call it unused; `report` judges those.
+  const unused = live.filter((ex) => !used.has(ex) && !SCAN_RULES.includes(ex.selectors.rule));
+  return { kept, suppressed, unused, expired };
 }
 
 export function runAudit(target, config = {}) {

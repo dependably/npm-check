@@ -172,11 +172,13 @@ const WAIVED = {
     'cslint case: the tool half of the union lives in the `cslint` section, which ' +
     'npm-check never reads, and the common half selects on `path`, which npm-check findings never carry.',
   'exceptions-id-advisory':
-    'nucheck case: the exception lives in the `nucheck` section and names the ' +
-    '`vulnerable-package` rule, neither of which npm-check resolves.',
+    'nucheck case: the exception lives in the `nucheck` section, which npm-check never ' +
+    'reads. (npm-check does resolve `vulnerable-package` since 1.13, but only in `report`, ' +
+    'from its own section or `common`.)',
   'exceptions-package-version-pin':
-    'nucheck case: the exception lives in the `nucheck` section, and npm-check findings ' +
-    'carry no version, so an @version pin has nothing to pin against.',
+    'nucheck case: the exception lives in the `nucheck` section, which npm-check never ' +
+    'reads. (npm-check\'s report scan findings carry a version, so @version pins work ' +
+    'there; audit-rule findings still carry none.)',
   'exceptions-path-and-symbol-and':
     'codemetrics case: the exception lives in the `codemetrics` section and ANDs ' +
     '`path` with `symbol`, selectors npm-check rejects in its own section by design.'

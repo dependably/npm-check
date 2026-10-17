@@ -1,5 +1,7 @@
 // tests/unit/report.test.js
 import { runReport, formatReport, ReportError } from '../../src/report.js';
+import { parseExceptions } from '../../src/exceptions.js';
+import { KNOWN_RULES, SCAN_RULES } from '../../src/audit-config.js';
 
 const HASH_A = 'sha512-' + 'A'.repeat(86) + '==';
 const HASH_B = 'sha512-' + 'B'.repeat(86) + '==';
@@ -686,5 +688,121 @@ describe('formatReport', () => {
   it('rejects an unknown format', () => {
     expect(() => formatReport({ filePath: 'x', sections: [], summary: { errors: 0, warnings: 0, total: 0 } }, { format: 'xml' }))
       .toThrow(ReportError);
+  });
+});
+
+describe('runReport applies .dependably exceptions to the scan findings', () => {
+  const exceptionsFor = (entries) => ({
+    rules: { 'min-release-age': 'off' },
+    exceptions: parseExceptions(entries, { source: 'own', knownRules: [...KNOWN_RULES, ...SCAN_RULES] })
+  });
+  const run = (entries, extra = {}) => runReport(
+    { lockfile: cleanLockfile(), packageJson: cleanPackageJson(), filePath: 'package-lock.json' },
+    baseOpts({ auditConfig: exceptionsFor(entries), ...extra })
+  );
+  const section = (report, id) => report.sections.find((s) => s.id === id);
+  const ghsa = { id: 1102341, url: 'https://github.com/advisories/GHSA-vfj7-8cjw-p6xm' };
+
+  it('suppresses an advisory by its GHSA id, so it no longer gates', async () => {
+    const report = await run(
+      [{ rule: 'vulnerable-package', id: 'GHSA-vfj7-8cjw-p6xm', reason: 'unreachable: constant glob' }],
+      { fetchAdvisories: fakeAdvisories({ 'good-pkg': [advisory('high', ghsa)] }) }
+    );
+    expect(report.summary.pass).toBe(true);
+    expect(section(report, 'vuln')).toMatchObject({ status: 'pass', findings: [] });
+    expect(section(report, 'vuln').summary).toBe('1 scanned · 1 skipped · 1 suppressed');
+    expect(report.summary.suppressed).toBe(1);
+    expect(report.suppressed[0]).toMatchObject({ section: 'vuln', suppressedBy: 'unreachable: constant glob' });
+    expect(report.exceptionsMeta.unused).toEqual([]);
+  });
+
+  it('also matches the npm advisory id and a package@version pin', async () => {
+    const report = await run(
+      [{ rule: 'vulnerable-package', package: 'good-pkg@1.0.0', id: '1102341', reason: 'accepted' }],
+      { fetchAdvisories: fakeAdvisories({ 'good-pkg': [advisory('high', ghsa)] }) }
+    );
+    expect(report.summary.pass).toBe(true);
+  });
+
+  it('does not suppress another version of the package', async () => {
+    const report = await run(
+      [{ rule: 'vulnerable-package', package: 'good-pkg@0.9.0', reason: 'old pin' }],
+      { fetchAdvisories: fakeAdvisories({ 'good-pkg': [advisory('high', ghsa)] }) }
+    );
+    expect(report.summary.pass).toBe(false);
+    expect(report.exceptionsMeta.unused).toHaveLength(1);
+  });
+
+  it('suppresses an unresolved entry only for the scan its id names', async () => {
+    const report = await run(
+      [{ rule: 'unresolved-package', package: 'good-pkg@1.0.0', id: 'integrity', reason: 'registry strips this manifest' }],
+      { fetchIntegrity: fakeRegistry({}), fetchAdvisories: () => Promise.reject(new Error('ECONNREFUSED')) }
+    );
+    const unresolved = section(report, 'unresolved');
+    expect(unresolved.findings.map((f) => f.check)).toEqual(['vuln']);
+    expect(unresolved.summary).toBe('1 vuln · 1 suppressed');
+    expect(report.summary.pass).toBe(false);
+  });
+
+  it('suppresses a deprecation warning', async () => {
+    const report = await run(
+      [{ rule: 'deprecated-package', package: 'good-pkg', reason: 'replacement tracked' }],
+      { fetchManifest: () => Promise.resolve({ deprecated: 'use better-pkg' }), maxWarnings: 0 }
+    );
+    expect(section(report, 'deprecated').findings).toEqual([]);
+    expect(report.summary.pass).toBe(true);
+  });
+
+  it('never suppresses with an expired exception', async () => {
+    const report = await run(
+      [{ rule: 'vulnerable-package', id: 'GHSA-vfj7-8cjw-p6xm', reason: 'accepted', expires: '2020-01-01' }],
+      { fetchAdvisories: fakeAdvisories({ 'good-pkg': [advisory('high', ghsa)] }) }
+    );
+    expect(report.summary.pass).toBe(false);
+    expect(report.exceptionsMeta.expired).toHaveLength(1);
+  });
+
+  it('does not call an exception unused when its scan was switched off', async () => {
+    const report = await run(
+      [{ rule: 'vulnerable-package', id: 'GHSA-vfj7-8cjw-p6xm', reason: 'accepted' }],
+      { vuln: false }
+    );
+    expect(report.exceptionsMeta.unused).toEqual([]);
+  });
+
+  it('renders the suppressed count and lists suppressions in the JSON envelope', async () => {
+    const report = await run(
+      [{ rule: 'vulnerable-package', id: 'GHSA-vfj7-8cjw-p6xm', reason: 'unreachable' }],
+      { fetchAdvisories: fakeAdvisories({ 'good-pkg': [advisory('high', ghsa)] }) }
+    );
+    expect(formatReport(report)).toContain('1 suppressed by .dependably exceptions');
+    const envelope = JSON.parse(formatReport(report, { format: 'json' }));
+    expect(envelope.findings).toEqual([]);
+    expect(envelope.extra.suppressed).toEqual([
+      expect.objectContaining({ ruleId: 'vulnerable-package', reason: 'unreachable' })
+    ]);
+  });
+
+  it('judges an unresolved-package exception by the scan its id names', async () => {
+    const entries = [{ rule: 'unresolved-package', package: 'good-pkg@1.0.0', id: 'vuln', reason: 'vuln gap' }];
+    expect((await run(entries, { vuln: false })).exceptionsMeta.unused).toEqual([]);
+    expect((await run(entries)).exceptionsMeta.unused).toHaveLength(1);
+  });
+
+  it('never suppresses an integrity mismatch, whatever the exception', async () => {
+    const report = await run(
+      [
+        { rule: 'unresolved-package', package: 'good-pkg', reason: 'any gap' },
+        { rule: 'unresolved-package', package: 'good-pkg@1.0.0', id: 'integrity', reason: 'integrity gap' }
+      ],
+      { fetchIntegrity: fakeRegistry({ 'good-pkg': HASH_B }) }
+    );
+    expect(section(report, 'integrity').findings).toHaveLength(1);
+    expect(report.summary.pass).toBe(false);
+    expect(report.summary.suppressed).toBe(0);
+  });
+
+  it('rejects an exception rule npm-check does not know', () => {
+    expect(() => exceptionsFor([{ rule: 'integrity-mismatch', package: 'x', reason: 'r' }])).toThrow(/Unknown rule/);
   });
 });

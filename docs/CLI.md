@@ -242,13 +242,24 @@ Config resolution follows the suite-wide convention: `--config <file>` (or, when
     "failOn": { "count": 0 },
     "exceptions": [
       { "rule": "install-scripts", "package": "esbuild", "reason": "vendored build tool; reviewed", "expires": "2027-01-01" },
-      { "rule": "unused-dependencies", "package": "tslib", "reason": "injected by tsc importHelpers" }
+      { "rule": "unused-dependencies", "package": "tslib", "reason": "injected by tsc importHelpers" },
+      { "rule": "vulnerable-package", "package": "braces@3.0.3", "id": "GHSA-vfj7-8cjw-p6xm", "reason": "only constant glob patterns reach it", "expires": "2027-01-01" }
     ]
   }
 }
 ```
 
 Each exception needs a `rule`, at least one selector (npm-check matches `package` and `id`), and a non-empty `reason`; `expires` (`YYYY-MM-DD`) makes it inert afterward. Suppressed findings don't gate but are still counted (`--show-suppressed` lists them); unused/expired exceptions warn on stderr. `failOn: {count}` is the standard form of `maxWarnings`; `failOn: {severity}` gates on a finding-severity level.
+
+The audit rules above name findings by their rule id. The `report` command's registry scans answer to three more ids, accepted only as an exception's `rule`:
+
+| Rule | Finding | `id` selector |
+|------|---------|---------------|
+| `vulnerable-package` | a known-vulnerability advisory | the GHSA id or the npm advisory id |
+| `deprecated-package` | a deprecated version | — |
+| `unresolved-package` | an entry a scan could not check | the scan: `integrity`, `vuln` or `deprecated` |
+
+Pin `package` to `name@version` so the exception lapses when the dependency moves. An integrity mismatch has no rule id and can't be suppressed: a lockfile hash that disagrees with the registry is a tamper signal. The report lists suppressed findings under `extra.suppressed` in `--format json`, adds `N suppressed` to the section summary and the footer, and warns on stderr about unused or expired exceptions (a scan switched off with `--offline` doesn't make its exceptions unused). Only `report` applies them: the standalone `vuln` and `deprecated` commands still report every finding, so gate CI on `report`.
 
 Exit codes follow the [shared convention](#exit-codes) (`1` also covers warnings exceeding `maxWarnings` / `--fail-on count=`).
 

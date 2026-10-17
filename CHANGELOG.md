@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `report` applies `.dependably` exceptions to the registry scans, not just the audit rules. New exception rule ids: `vulnerable-package` (match an advisory by GHSA or npm advisory id), `deprecated-package`, and `unresolved-package` (`id` names the scan that couldn't check the entry). Suppressed scan findings stop gating, are counted in the section summary and footer, and are listed under `extra.suppressed` in the JSON envelope. Integrity mismatches stay unsuppressible.
+- `report` now prints the unused/expired exception notices on stderr, as `audit` does.
+
 ## [1.12.0] - 2026-10-16
 
 ### Fixed
