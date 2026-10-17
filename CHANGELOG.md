@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **pnpm projects on a non-default-layout registry got no integrity, vulnerability or deprecation checks.** pnpm records `resolution.tarball` for a plain registry package whenever the registry's tarball URL isn't `{registry}/{name}/-/{name}-{ver}.tgz` (Dependably serves `/npm/tarballs/...`), and `classifyPnpmPackage` treated every entry with a `tarball` as a URL-tarball dependency. On such a lockfile every entry was skipped: oci-check's report showed `0 verified · 243 skipped` / `0 scanned · 243 skipped` under green `ok` rows. An entry whose key carries a semver version and whose resolution has `integrity` is now a registry package even with a `tarball`; its registry still comes from `.npmrc`, never from the tarball URL. A real URL-tarball dep, whose key version is the URL, is still skipped.
+- **A registry scan that checked nothing no longer reports `ok`.** When the integrity, vulnerability or deprecation scan attempts zero packages and skips at least one, with no findings to show, its section now reports `skipped (nothing checkable · N skipped)` instead of a passing row.
+
 ## [1.11.0] - 2026-09-15
 
 ### Fixed

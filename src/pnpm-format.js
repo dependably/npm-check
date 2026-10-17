@@ -93,6 +93,14 @@ export function parsePnpmDepPath(depPath) {
   return { name: bare, version: null }; // name with no version / no separator
 }
 
+// A plain semver version (`1.2.3`, `1.2.3-beta.1+build`) — what a registry key
+// carries, as opposed to the URL/path a tarball/file key carries.
+const SEMVER_VERSION = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
+
+function isSemverVersion(version) {
+  return typeof version === 'string' && SEMVER_VERSION.test(version);
+}
+
 /**
  * Classify a pnpm `packages` entry into the boolean flags the checkers already
  * understand. Only a plain registry package (integrity, semver version, no
@@ -119,10 +127,16 @@ function classifyPnpmPackage(version, entry) {
     return { kind: 'git', flags };
   }
   if (resolution.tarball) {
-    // Remote URL-tarball dep — may or may not carry its own `integrity`. pnpm records
-    // BOTH `tarball` and `integrity` for these (a plain registry entry has integrity
-    // and NO tarball). The `version` parsed from the key is the tarball URL, not a
-    // registry version, so no registry advisory/manifest applies — treat like a
+    // pnpm also records `tarball` for a plain REGISTRY package whenever the
+    // registry's tarball URL isn't the default `{registry}/{name}/-/{name}-{ver}.tgz`
+    // layout (e.g. Dependably's `/npm/tarballs/...`). Those keys still carry a semver
+    // version, so with integrity they are registry packages — skipping them silently
+    // turned every scan into a no-op on such projects.
+    if (resolution.integrity && isSemverVersion(version)) {
+      return { kind: 'registry', flags };
+    }
+    // Remote URL-tarball dep: the `version` parsed from the key is the tarball URL,
+    // not a registry version, so no registry advisory/manifest applies — treat like a
     // file/url dep so the checkers skip it, regardless of integrity.
     flags.isFileDep = true;
     return { kind: 'tarball', flags };

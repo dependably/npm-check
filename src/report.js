@@ -295,6 +295,15 @@ function liveSection(findings, summary) {
   return { status: worstSeverity(findings) || 'pass', summary };
 }
 
+// A registry scan that attempted zero packages while skipping some checked
+// NOTHING — it must not render as a green `ok` (a pnpm lockfile whose every entry
+// was misclassified as a tarball dep passed this way with "0 scanned · 243
+// skipped"). With no findings to carry, report it as skipped and say why.
+function nothingCheckedSection(attempted, skipped, findings) {
+  if (attempted > 0 || !skipped || findings.length > 0) return null;
+  return { status: 'skip', summary: `nothing checkable · ${skipped} skipped` };
+}
+
 // Per-section describers keyed by section id. Each returns { status, summary },
 // short-circuiting to a 'skip' when the underlying check didn't run.
 const SECTION_DESCRIBERS = {
@@ -314,7 +323,8 @@ const SECTION_DESCRIBERS = {
       const n = findings.length;
       return liveSection(findings, `registry check skipped · ${n} offline finding${n === 1 ? '' : 's'}`);
     }
-    return liveSection(findings, integritySummary(state.integrityResult));
+    const r = state.integrityResult;
+    return nothingCheckedSection(r.checked, r.skipped, findings) || liveSection(findings, integritySummary(r));
   },
   vuln(findings, state) {
     if (!state.vuln) return { status: 'skip', summary: '--offline' };
@@ -325,11 +335,13 @@ const SECTION_DESCRIBERS = {
     const n = findings.length;
     const advisoryWord = n === 1 ? 'advisory' : 'advisories';
     const detail = n ? `${n} ${advisoryWord}` : null;
-    return liveSection(findings, scanSummary(state.vulnResult, 'vulnerable', 'vulnerable', detail));
+    const r = state.vulnResult;
+    return nothingCheckedSection(r.scanned, r.skipped, findings) || liveSection(findings, scanSummary(state.vulnResult, 'vulnerable', 'vulnerable', detail));
   },
   deprecated(findings, state) {
     if (!state.deprecated) return { status: 'skip', summary: '--offline' };
-    return liveSection(findings, scanSummary(state.deprecationResult, 'deprecated', 'deprecated'));
+    const r = state.deprecationResult;
+    return nothingCheckedSection(r.scanned, r.skipped, findings) || liveSection(findings, scanSummary(r, 'deprecated', 'deprecated'));
   },
   // moonlitlabs/npm-check#35: the shared "Unresolved (could not check)" section.
   // Each finding carries `check` (integrity/vuln/deprecated); the summary breaks
